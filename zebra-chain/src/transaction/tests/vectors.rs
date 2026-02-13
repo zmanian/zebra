@@ -933,7 +933,7 @@ fn binding_signatures() {
                                 .expect("network upgrade is valid for tx");
 
                             let bvk = redjubjub::VerificationKey::try_from(
-                                sapling_shielded_data.binding_verification_key(),
+                                sapling_shielded_data.binding_verification_key().expect("valid value commitments"),
                             )
                             .expect("a valid redjubjub::VerificationKey");
 
@@ -964,7 +964,7 @@ fn binding_signatures() {
                                 .expect("network upgrade is valid for tx");
 
                             let bvk = redjubjub::VerificationKey::try_from(
-                                sapling_shielded_data.binding_verification_key(),
+                                sapling_shielded_data.binding_verification_key().expect("valid value commitments"),
                             )
                             .expect("a valid redjubjub::VerificationKey");
 
@@ -996,7 +996,7 @@ fn binding_signatures() {
                                 .expect("network upgrade is valid for tx");
 
                             let bvk = redjubjub::VerificationKey::try_from(
-                                sapling_shielded_data.binding_verification_key(),
+                                sapling_shielded_data.binding_verification_key().expect("valid value commitments"),
                             )
                             .expect("a valid redjubjub::VerificationKey");
 

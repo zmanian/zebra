@@ -279,15 +279,35 @@ where
     /// descriptions of the transaction, and the balancing value.
     ///
     /// <https://zips.z.cash/protocol/protocol.pdf#saplingbalance>
-    pub fn binding_verification_key(&self) -> redjubjub::VerificationKeyBytes<Binding> {
-        let cv_old: sapling_crypto::value::CommitmentSum =
-            self.spends().map(|spend| spend.cv.0.clone()).sum();
-        let cv_new: sapling_crypto::value::CommitmentSum =
-            self.outputs().map(|output| output.cv.0.clone()).sum();
+    pub fn binding_verification_key(
+        &self,
+    ) -> Result<redjubjub::VerificationKeyBytes<Binding>, &'static str> {
+        let cv_old: sapling_crypto::value::CommitmentSum = self
+            .spends()
+            .map(|spend| {
+                spend
+                    .cv
+                    .inner()
+                    .ok_or("invalid ValueCommitment in Sapling spend")
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .sum();
+        let cv_new: sapling_crypto::value::CommitmentSum = self
+            .outputs()
+            .map(|output| {
+                output
+                    .cv
+                    .inner()
+                    .ok_or("invalid ValueCommitment in Sapling output")
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .sum();
 
-        (cv_old - cv_new)
+        Ok((cv_old - cv_new)
             .into_bvk(self.value_balance.zatoshis())
-            .into()
+            .into())
     }
 }
 
