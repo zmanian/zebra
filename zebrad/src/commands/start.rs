@@ -389,10 +389,13 @@ impl StartCmd {
                     )
                 }
 
-                // Networks with locally-provided genesis blocks (regtest, custom testnets)
-                // don't have peers to sync from, so the syncer is replaced with a pending future.
-                // Block production is handled by the internal miner instead.
-                tokio::spawn(std::future::pending().in_current_span())
+                if should_skip_peer_sync_after_local_genesis_commit(&config.network.network) {
+                    // Regtest does not have peers to sync from, so the syncer is replaced with
+                    // a pending future and block production is handled by the internal miner.
+                    tokio::spawn(std::future::pending().in_current_span())
+                } else {
+                    tokio::spawn(syncer.sync().in_current_span())
+                }
             } else {
                 tokio::spawn(syncer.sync().in_current_span())
             };
@@ -582,6 +585,52 @@ impl StartCmd {
         .into_iter()
         .max()
         .unwrap()
+    }
+}
+
+fn should_skip_peer_sync_after_local_genesis_commit(
+    network: &zebra_chain::parameters::Network,
+) -> bool {
+    network.is_regtest()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_skip_peer_sync_after_local_genesis_commit;
+    use zebra_chain::parameters::{
+        testnet::{self, ConfiguredActivationHeights},
+        Network,
+    };
+
+    #[test]
+    fn only_regtest_skips_peer_sync_after_local_genesis_commit() {
+        let custom_network = testnet::Parameters::build()
+            .with_network_name("CustomGenesis")
+            .expect("valid network name")
+            .with_activation_heights(ConfiguredActivationHeights {
+                canopy: Some(1),
+                nu5: Some(1),
+                nu6: Some(1),
+                nu7: Some(1),
+                ..Default::default()
+            })
+            .expect("valid activation heights")
+            .clear_funding_streams()
+            .with_disable_pow(true)
+            .with_generated_genesis_block(1_700_000_000)
+            .to_network()
+            .expect("generated-genesis testnet should build when PoW is disabled");
+
+        assert!(
+            should_skip_peer_sync_after_local_genesis_commit(&Network::new_regtest(
+                Default::default()
+            )),
+            "regtest should continue skipping peer sync after inserting its local genesis block"
+        );
+        assert!(
+            !should_skip_peer_sync_after_local_genesis_commit(&custom_network),
+            "generated-genesis custom testnets should still sync historical blocks from peers"
+        );
     }
 }
 

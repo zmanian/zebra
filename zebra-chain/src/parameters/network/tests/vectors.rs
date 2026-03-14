@@ -709,6 +709,7 @@ fn custom_testnet_with_generated_genesis_block() {
         })
         .expect("valid activation heights")
         .clear_funding_streams()
+        .with_disable_pow(true)
         .with_generated_genesis_block(custom_timestamp)
         .to_network()
         .expect("failed to build configured network with generated genesis block");
@@ -757,5 +758,33 @@ fn custom_testnet_with_generated_genesis_block() {
     assert!(
         default_params.genesis_block().is_none(),
         "default testnet should not have a stored genesis block"
+    );
+}
+
+/// Checks that unmined generated genesis blocks are rejected while proof-of-work is enabled.
+#[test]
+fn generated_genesis_block_requires_disable_pow() {
+    let err = testnet::Parameters::build()
+        .with_network_name("CustomGenesis")
+        .expect("valid network name")
+        .with_activation_heights(ConfiguredActivationHeights {
+            canopy: Some(1),
+            nu5: Some(1),
+            nu6: Some(1),
+            nu7: Some(1),
+            ..Default::default()
+        })
+        .expect("valid activation heights")
+        .clear_funding_streams()
+        .with_generated_genesis_block(1_700_000_000)
+        .to_network()
+        .expect_err("unmined generated genesis should require disable_pow");
+
+    assert!(
+        matches!(
+            err,
+            ParametersBuilderError::GeneratedGenesisRequiresDisablePow
+        ),
+        "unexpected error: {err:?}"
     );
 }

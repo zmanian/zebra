@@ -33,6 +33,10 @@ pub enum ParametersBuilderError {
     #[non_exhaustive]
     InvalidGenesisHash,
 
+    #[error("generated unmined genesis blocks require disable_pow = true")]
+    #[non_exhaustive]
+    GeneratedGenesisRequiresDisablePow,
+
     #[error(
         "activation heights on ParametersBuilder must not be set after setting funding streams"
     )]

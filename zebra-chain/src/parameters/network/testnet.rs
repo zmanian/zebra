@@ -479,6 +479,9 @@ pub struct ParametersBuilder {
     checkpoints: Arc<CheckpointList>,
     /// The generated genesis block, if one was created via `with_generated_genesis_block()`.
     genesis_block: Option<Arc<Block>>,
+    /// Whether the generated genesis block uses a null nonce and solution, and therefore
+    /// requires proof-of-work validation to be disabled.
+    generated_genesis_requires_disable_pow: bool,
 }
 
 impl Default for ParametersBuilder {
@@ -519,6 +522,7 @@ impl Default for ParametersBuilder {
                 .map(Arc::new)
                 .expect("must be able to parse checkpoints"),
             genesis_block: None,
+            generated_genesis_requires_disable_pow: false,
         }
     }
 }
@@ -609,6 +613,7 @@ impl ParametersBuilder {
         // Update builder fields
         self.genesis_hash = genesis_hash;
         self.genesis_block = Some(genesis_block);
+        self.generated_genesis_requires_disable_pow = true;
 
         // Update checkpoints to include the new genesis hash at Height(0)
         self.checkpoints = Arc::new(
@@ -649,6 +654,7 @@ impl ParametersBuilder {
         // Update builder fields
         self.genesis_hash = genesis_hash;
         self.genesis_block = Some(genesis_block);
+        self.generated_genesis_requires_disable_pow = false;
 
         // Update checkpoints to include the new genesis hash at Height(0)
         self.checkpoints = Arc::new(
@@ -906,6 +912,7 @@ impl ParametersBuilder {
             lockbox_disbursements,
             checkpoints,
             genesis_block,
+            generated_genesis_requires_disable_pow: _,
         } = self;
         Parameters {
             network_name,
@@ -933,6 +940,10 @@ impl ParametersBuilder {
 
     /// Checks funding streams and converts the builder to a configured [`Network::Testnet`]
     pub fn to_network(self) -> Result<Network, ParametersBuilderError> {
+        if self.generated_genesis_requires_disable_pow && !self.disable_pow {
+            return Err(ParametersBuilderError::GeneratedGenesisRequiresDisablePow);
+        }
+
         let network = self.to_network_unchecked();
 
         // Final check that the configured funding streams will be valid for these Testnet parameters.
@@ -970,6 +981,7 @@ impl ParametersBuilder {
             lockbox_disbursements,
             checkpoints: _,
             genesis_block: _,
+            generated_genesis_requires_disable_pow: _,
         } = Self::default();
 
         self.activation_heights == activation_heights
