@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, fmt, sync::Arc};
 
 use crate::{
     amount::{Amount, NonNegative},
-    block::{self, Height, HeightDiff},
+    block::{self, genesis::create_genesis_block, Block, Height, HeightDiff},
     parameters::{
         checkpoint::list::{CheckpointList, TESTNET_CHECKPOINTS},
         constants::{magics, SLOW_START_INTERVAL, SLOW_START_SHIFT},
@@ -477,6 +477,8 @@ pub struct ParametersBuilder {
     lockbox_disbursements: Vec<(String, Amount<NonNegative>)>,
     /// Checkpointed block hashes and heights for this network.
     checkpoints: Arc<CheckpointList>,
+    /// The generated genesis block, if one was created via `with_generated_genesis_block()`.
+    genesis_block: Option<Arc<Block>>,
 }
 
 impl Default for ParametersBuilder {
@@ -516,6 +518,7 @@ impl Default for ParametersBuilder {
                 .parse()
                 .map(Arc::new)
                 .expect("must be able to parse checkpoints"),
+            genesis_block: None,
         }
     }
 }
@@ -580,6 +583,80 @@ impl ParametersBuilder {
             .parse()
             .map_err(|_| ParametersBuilderError::InvalidGenesisHash)?;
         Ok(self)
+    }
+
+    /// Generates a genesis block with the given timestamp and the builder's current
+    /// `target_difficulty_limit`, then sets the genesis hash, updates checkpoints to
+    /// include the new genesis hash at Height(0), and stores the block for later retrieval.
+    ///
+    /// The generated block uses a null nonce and solution (suitable for regtest-style
+    /// networks where proof-of-work is not validated).
+    ///
+    /// # Panics
+    ///
+    /// If `target_difficulty_limit` converts to an invalid compact difficulty value.
+    pub fn with_generated_genesis_block(mut self, timestamp: i64) -> Self {
+        // Convert the difficulty limit to big-endian bytes for create_genesis_block()
+        let target_u256: U256 = self.target_difficulty_limit.into();
+        let difficulty_target_bytes = target_u256.to_big_endian();
+
+        // Generate the genesis block with null nonce/solution
+        let genesis_block = create_genesis_block(timestamp, difficulty_target_bytes, None);
+
+        // Compute the genesis hash
+        let genesis_hash = genesis_block.hash();
+
+        // Update builder fields
+        self.genesis_hash = genesis_hash;
+        self.genesis_block = Some(genesis_block);
+
+        // Update checkpoints to include the new genesis hash at Height(0)
+        self.checkpoints = Arc::new(
+            CheckpointList::from_list([(Height(0), genesis_hash)])
+                .expect("single genesis checkpoint is always valid"),
+        );
+
+        self
+    }
+
+    /// Generates a genesis block with the given timestamp and the builder's current
+    /// `target_difficulty_limit`, then mines a valid Equihash solution for it.
+    ///
+    /// Sets the genesis hash, updates checkpoints to include the new genesis hash
+    /// at Height(0), and stores the block for later retrieval.
+    ///
+    /// This is suitable for custom testnets that require proof-of-work validation.
+    /// For networks with PoW disabled, use [`with_generated_genesis_block()`](Self::with_generated_genesis_block) instead.
+    ///
+    /// # Performance
+    ///
+    /// This function is CPU and memory-intensive (144 MB RAM). With an easy difficulty
+    /// target it completes quickly; with a hard target it may run for a long time.
+    #[cfg(feature = "internal-miner")]
+    pub fn with_mined_genesis_block(mut self, timestamp: i64) -> Self {
+        use crate::block::genesis::create_and_mine_genesis_block;
+
+        // Convert the difficulty limit to big-endian bytes
+        let target_u256: U256 = self.target_difficulty_limit.into();
+        let difficulty_target_bytes = target_u256.to_big_endian();
+
+        // Mine the genesis block
+        let genesis_block = create_and_mine_genesis_block(timestamp, difficulty_target_bytes);
+
+        // Compute the genesis hash
+        let genesis_hash = genesis_block.hash();
+
+        // Update builder fields
+        self.genesis_hash = genesis_hash;
+        self.genesis_block = Some(genesis_block);
+
+        // Update checkpoints to include the new genesis hash at Height(0)
+        self.checkpoints = Arc::new(
+            CheckpointList::from_list([(Height(0), genesis_hash)])
+                .expect("single genesis checkpoint is always valid"),
+        );
+
+        self
     }
 
     /// Checks that the provided network upgrade activation heights are in the correct order, then
@@ -828,6 +905,7 @@ impl ParametersBuilder {
             post_blossom_halving_interval,
             lockbox_disbursements,
             checkpoints,
+            genesis_block,
         } = self;
         Parameters {
             network_name,
@@ -844,6 +922,7 @@ impl ParametersBuilder {
             post_blossom_halving_interval,
             lockbox_disbursements,
             checkpoints,
+            genesis_block,
         }
     }
 
@@ -890,6 +969,7 @@ impl ParametersBuilder {
             post_blossom_halving_interval,
             lockbox_disbursements,
             checkpoints: _,
+            genesis_block: _,
         } = Self::default();
 
         self.activation_heights == activation_heights
@@ -963,6 +1043,8 @@ pub struct Parameters {
     lockbox_disbursements: Vec<(String, Amount<NonNegative>)>,
     /// List of checkpointed block heights and hashes
     checkpoints: Arc<CheckpointList>,
+    /// The generated genesis block, if one was created via `with_generated_genesis_block()`.
+    genesis_block: Option<Arc<Block>>,
 }
 
 impl Default for Parameters {
@@ -1047,6 +1129,7 @@ impl Parameters {
             post_blossom_halving_interval,
             lockbox_disbursements: _,
             checkpoints: _,
+            genesis_block: _,
         } = Self::new_regtest(Default::default()).expect("default regtest parameters are valid");
 
         self.network_name == network_name
@@ -1147,6 +1230,11 @@ impl Parameters {
     /// Returns the checkpoints for this network.
     pub fn checkpoints(&self) -> Arc<CheckpointList> {
         self.checkpoints.clone()
+    }
+
+    /// Returns the generated genesis block, if one was created via `with_generated_genesis_block()`.
+    pub fn genesis_block(&self) -> Option<&Arc<Block>> {
+        self.genesis_block.as_ref()
     }
 }
 

@@ -95,6 +95,16 @@ impl CoinbaseData {
     }
 }
 
+impl CoinbaseData {
+    /// Create a new `CoinbaseData` for genesis block construction.
+    ///
+    /// This is needed because the genesis block coinbase does not use BIP34
+    /// height encoding, so `Input::new_coinbase` cannot be used at `Height(0)`.
+    pub(crate) fn for_genesis(data: Vec<u8>) -> CoinbaseData {
+        CoinbaseData(data)
+    }
+}
+
 impl AsRef<[u8]> for CoinbaseData {
     fn as_ref(&self) -> &[u8] {
         self.0.as_ref()

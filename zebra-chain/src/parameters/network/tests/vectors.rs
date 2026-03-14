@@ -688,3 +688,74 @@ fn funding_streams_default_values() {
         1
     );
 }
+
+/// Checks that `with_generated_genesis_block()` creates a valid custom testnet
+/// with a generated genesis block that differs from the default testnet.
+#[test]
+fn custom_testnet_with_generated_genesis_block() {
+    let custom_timestamp = 1_700_000_000i64; // 2023-11-14
+
+    // Set all upgrades at Height(1) so that mandatory_checkpoint_height() is Height(0),
+    // allowing a single genesis checkpoint to satisfy the checkpoint coverage check.
+    let custom_network = testnet::Parameters::build()
+        .with_network_name("CustomGenesis")
+        .expect("valid network name")
+        .with_activation_heights(ConfiguredActivationHeights {
+            canopy: Some(1),
+            nu5: Some(1),
+            nu6: Some(1),
+            nu7: Some(1),
+            ..Default::default()
+        })
+        .expect("valid activation heights")
+        .clear_funding_streams()
+        .with_generated_genesis_block(custom_timestamp)
+        .to_network()
+        .expect("failed to build configured network with generated genesis block");
+
+    let default_testnet = Network::new_default_testnet();
+
+    // Verify genesis hash differs from default testnet
+    assert_ne!(
+        custom_network.genesis_hash(),
+        default_testnet.genesis_hash(),
+        "generated genesis hash should differ from the default testnet genesis hash"
+    );
+
+    // Verify checkpoint at height 0 matches genesis hash
+    let checkpoint_hash = custom_network
+        .checkpoint_list()
+        .hash(Height(0))
+        .expect("checkpoint at height 0 must exist");
+    assert_eq!(
+        checkpoint_hash,
+        custom_network.genesis_hash(),
+        "checkpoint at height 0 must match the genesis hash"
+    );
+
+    // Verify genesis_block() returns Some
+    let params = match &custom_network {
+        Network::Testnet(params) => params,
+        _ => panic!("expected Testnet variant"),
+    };
+    let genesis_block = params
+        .genesis_block()
+        .expect("genesis_block() should return Some for a generated genesis block");
+
+    // Verify the block's hash matches the genesis hash
+    assert_eq!(
+        genesis_block.hash(),
+        custom_network.genesis_hash(),
+        "stored genesis block hash must match the network genesis hash"
+    );
+
+    // Verify the default testnet has no stored genesis block
+    let default_params = match &default_testnet {
+        Network::Testnet(params) => params,
+        _ => panic!("expected Testnet variant"),
+    };
+    assert!(
+        default_params.genesis_block().is_none(),
+        "default testnet should not have a stored genesis block"
+    );
+}

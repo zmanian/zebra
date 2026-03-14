@@ -82,7 +82,7 @@ use tokio::{pin, select, sync::oneshot};
 use tower::{builder::ServiceBuilder, util::BoxService, ServiceExt};
 use tracing_futures::Instrument;
 
-use zebra_chain::block::genesis::regtest_genesis_block;
+use zebra_chain::block::genesis::genesis_block_for_network;
 use zebra_consensus::router::BackgroundTaskHandles;
 use zebra_rpc::{methods::RpcImpl, server::RpcServer, SubmitBlockChannel};
 
@@ -370,28 +370,32 @@ impl StartCmd {
         );
 
         info!("spawning syncer task");
-        let syncer_task_handle = if is_regtest {
-            if !syncer
-                .state_contains(config.network.network.genesis_hash())
-                .await?
-            {
-                let genesis_hash = block_verifier_router
-                    .clone()
-                    .oneshot(zebra_consensus::Request::Commit(regtest_genesis_block()))
-                    .await
-                    .expect("should validate Regtest genesis block");
+        let syncer_task_handle =
+            if let Some(genesis_block) = genesis_block_for_network(&config.network.network) {
+                if !syncer
+                    .state_contains(config.network.network.genesis_hash())
+                    .await?
+                {
+                    let genesis_hash = block_verifier_router
+                        .clone()
+                        .oneshot(zebra_consensus::Request::Commit(genesis_block))
+                        .await
+                        .expect("should validate genesis block");
 
-                assert_eq!(
-                    genesis_hash,
-                    config.network.network.genesis_hash(),
-                    "validated block hash should match network genesis hash"
-                )
-            }
+                    assert_eq!(
+                        genesis_hash,
+                        config.network.network.genesis_hash(),
+                        "validated block hash should match network genesis hash"
+                    )
+                }
 
-            tokio::spawn(std::future::pending().in_current_span())
-        } else {
-            tokio::spawn(syncer.sync().in_current_span())
-        };
+                // Networks with locally-provided genesis blocks (regtest, custom testnets)
+                // don't have peers to sync from, so the syncer is replaced with a pending future.
+                // Block production is handled by the internal miner instead.
+                tokio::spawn(std::future::pending().in_current_span())
+            } else {
+                tokio::spawn(syncer.sync().in_current_span())
+            };
 
         // And finally, spawn the internal Zcash miner, if it is enabled.
         //
