@@ -24,6 +24,7 @@ members = [
         "tower-batch-control",
         "tower-fallback", "zebra-crosslink"
 ]
+exclude = ["forks/tenderlink"]
 
 # Use the edition 2021 dependency resolver in the workspace, to match the crates
 resolver = "2"

@@ -209,6 +209,17 @@ async fn block_height_hash_from_hash(
     }
 }
 
+fn proposal_status_against_current_stream(
+    proposal_candidate: (BlockHeight, BlockHash),
+    current_candidate: (BlockHeight, BlockHash),
+) -> tenderlink::TMStatus {
+    if proposal_candidate == current_candidate {
+        tenderlink::TMStatus::Pass
+    } else {
+        tenderlink::TMStatus::Stale
+    }
+}
+
 async fn _block_header_from_hash(
     call: &TFLServiceCalls,
     hash: BlockHash,
@@ -444,7 +455,7 @@ async fn propose_new_bft_block(tfl_handle: &TFLServiceHandle) -> Option<BftBlock
         params,
         internal.bft_blocks.len() as u32 + 1,
         internal.fat_pointer_to_tip.clone(),
-        0,
+        finality_candidate_height.0,
         headers,
     ) {
         Ok(v) => Some(v),
@@ -496,6 +507,12 @@ async fn malachite_wants_to_know_what_the_current_validator_set_is(
     finalizers
 }
 
+#[derive(Clone, Copy)]
+enum BftValidationMode {
+    Voting,
+    Decided,
+}
+
 async fn new_decided_bft_block_from_malachite(
     tfl_handle: &TFLServiceHandle,
     new_block: &BftBlock,
@@ -535,8 +552,13 @@ async fn new_decided_bft_block_from_malachite(
     }
 
     assert_eq!(
-        validate_bft_block_from_malachite_already_locked(&tfl_handle, &mut internal, new_block)
-            .await,
+        validate_bft_block_from_malachite_already_locked(
+            &tfl_handle,
+            &mut internal,
+            new_block,
+            BftValidationMode::Decided,
+        )
+        .await,
         tenderlink::TMStatus::Pass
     );
 
@@ -785,12 +807,19 @@ async fn validate_bft_block_from_malachite(
     new_block: &BftBlock,
 ) -> tenderlink::TMStatus {
     let mut internal = tfl_handle.internal.lock().await;
-    validate_bft_block_from_malachite_already_locked(tfl_handle, &mut internal, new_block).await
+    validate_bft_block_from_malachite_already_locked(
+        tfl_handle,
+        &mut internal,
+        new_block,
+        BftValidationMode::Voting,
+    )
+    .await
 }
 async fn validate_bft_block_from_malachite_already_locked(
     tfl_handle: &TFLServiceHandle,
     internal: &mut TFLServiceInternal,
     new_block: &BftBlock,
+    mode: BftValidationMode,
 ) -> tenderlink::TMStatus {
     let call = tfl_handle.call.clone();
     let params = &PROTOTYPE_PARAMETERS;
@@ -806,18 +835,57 @@ async fn validate_bft_block_from_malachite_already_locked(
         return tenderlink::TMStatus::Fail;
     }
 
-    let new_final_hash = new_block.headers.first().expect("at least 1 header").hash();
-    let new_final_pow_height =
-        if let Some(new_final_height) = block_height_from_hash(&call, new_final_hash).await {
-            new_final_height.0
-        } else {
-            warn!(
-                "Didn't have hash available for confirmation: {}",
-                new_final_hash
-            );
+    let Some(new_final_hash) = new_block.headers.first().map(|header| header.hash()) else {
+        warn!("Block had no finalization candidate header.");
+        return tenderlink::TMStatus::Fail;
+    };
+    let Some(new_final_pow_height) = block_height_from_hash(&call, new_final_hash).await else {
+        warn!(
+            "Didn't have hash available for confirmation: {}",
+            new_final_hash
+        );
+        return tenderlink::TMStatus::Indeterminate;
+    };
+
+    if matches!(mode, BftValidationMode::Voting) {
+        use std::ops::Sub;
+        use zebra_chain::block::HeightDiff as BlockHeightDiff;
+
+        let current_candidate_height = match (call.state)(StateRequest::Tip).await {
+            Ok(StateResponse::Tip(Some((tip_height, _tip_hash)))) => tip_height.sub(
+                BlockHeightDiff::from(params.bc_confirmation_depth_sigma as i64),
+            ),
+            Ok(StateResponse::Tip(None)) => None,
+            _ => return tenderlink::TMStatus::Indeterminate,
+        };
+
+        let Some(current_candidate_height) = current_candidate_height else {
             return tenderlink::TMStatus::Indeterminate;
         };
-    return tenderlink::TMStatus::Pass;
+
+        let current_candidate_hash =
+            match (call.state)(StateRequest::BlockHeader(current_candidate_height.into())).await {
+                Ok(StateResponse::BlockHeader { hash, .. }) => hash,
+                _ => return tenderlink::TMStatus::Indeterminate,
+            };
+
+        let status = proposal_status_against_current_stream(
+            (new_final_pow_height, new_final_hash),
+            (current_candidate_height, current_candidate_hash),
+        );
+        if status != tenderlink::TMStatus::Pass {
+            warn!(
+                "Block finalization candidate is stale: proposal {} at height {}, current {} at height {}",
+                new_final_hash,
+                new_final_pow_height.0,
+                current_candidate_hash,
+                current_candidate_height.0,
+            );
+            return status;
+        }
+    }
+
+    tenderlink::TMStatus::Pass
 }
 
 fn fat_pointer_to_block_at_height(
@@ -2061,5 +2129,28 @@ impl MalVote {
             typ,
             round,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn proposal_status_against_current_stream_reports_stale_on_stream_change() {
+        let proposal = (BlockHeight(10), BlockHash([1; 32]));
+
+        assert_eq!(
+            proposal_status_against_current_stream(proposal, proposal),
+            tenderlink::TMStatus::Pass
+        );
+        assert_eq!(
+            proposal_status_against_current_stream(proposal, (BlockHeight(11), BlockHash([1; 32]))),
+            tenderlink::TMStatus::Stale
+        );
+        assert_eq!(
+            proposal_status_against_current_stream(proposal, (BlockHeight(10), BlockHash([2; 32]))),
+            tenderlink::TMStatus::Stale
+        );
     }
 }
