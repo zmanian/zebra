@@ -74,7 +74,7 @@ audio = ["macroquad/audio"]
 [dependencies.tenderlink]
 version = "0.1.0"
 git = "https://github.com/zmanian/tenderlink.git"
-rev = "cbf1bc5b2109518711deaf6ac635d017bbfe6271"
+rev = "4121363ef8234ae4f61195f802e919f0312e8f82"
 package = "tenderlink"
 
 [build-dependencies]

@@ -322,6 +322,58 @@ module CrosslinkResampling {
     }
   }
 
+  action ApplyLateNilPrecommitCertificate(p: Proc_t, certRound: Round_t): bool = {
+    all {
+      certRound.in(Rounds),
+      certRound < round.get(p),
+      ResampleOnNilPrecommit,
+      NilPrecommitCert(certRound),
+      round' = round,
+      step' = step,
+      validValue' =
+        if (validRound.get(p) == certRound) {
+          validValue.set(p, NilSnapshot)
+        } else {
+          validValue
+        },
+      validRound' =
+        if (validRound.get(p) == certRound) {
+          validRound.set(p, NilRound)
+        } else {
+          validRound
+        },
+      lockedValue' =
+        if (lockedRound.get(p) == certRound) {
+          lockedValue.set(p, NilSnapshot)
+        } else {
+          lockedValue
+        },
+      lockedRound' =
+        if (lockedRound.get(p) == certRound) {
+          lockedRound.set(p, NilRound)
+        } else {
+          lockedRound
+        },
+      cachedProposal' =
+        if (cachedProposalRound.get(p) == certRound) {
+          cachedProposal.set(p, NilSnapshot)
+        } else {
+          cachedProposal
+        },
+      cachedProposalRound' =
+        if (cachedProposalRound.get(p) == certRound) {
+          cachedProposalRound.set(p, NilRound)
+        } else {
+          cachedProposalRound
+        },
+      firedAction' = "ApplyLateNilPrecommitCertificate",
+      decision' = decision,
+      msgsPropose' = msgsPropose,
+      msgsPrevote' = msgsPrevote,
+      msgsPrecommit' = msgsPrecommit,
+    }
+  }
+
   action Decide(p: Proc_t, r: Round_t, v: Snapshot_t): bool = all {
     decision.get(p) == NilSnapshot,
     HasProposal(r, v),
@@ -403,6 +455,30 @@ module CrosslinkResampling {
       cachedProposalRound' = cachedProposalRound,
       BroadcastPrecommit(p, r, locked),
       firedAction' = "SeedSameRoundValueLock",
+      decision' = decision,
+      msgsPropose' = msgsPropose,
+      msgsPrevote' = msgsPrevote,
+    }
+  }
+
+  action SeedTimedOutSameRoundValueLock(p: Proc_t): bool = {
+    val r = 0
+    val nextRound = 1
+    val locked = Stream.get(r)
+    all {
+      r.in(Rounds),
+      nextRound.in(Rounds),
+      p.in(Corr),
+      round' = round.set(p, nextRound),
+      step' = step.set(p, "propose"),
+      lockedValue' = lockedValue.set(p, locked),
+      lockedRound' = lockedRound.set(p, r),
+      validValue' = validValue.set(p, locked),
+      validRound' = validRound.set(p, r),
+      cachedProposal' = cachedProposal,
+      cachedProposalRound' = cachedProposalRound,
+      BroadcastPrecommit(p, r, locked),
+      firedAction' = "SeedTimedOutSameRoundValueLock",
       decision' = decision,
       msgsPropose' = msgsPropose,
       msgsPrevote' = msgsPrevote,
@@ -791,6 +867,25 @@ module CrosslinkNilResamplingModel {
         assert(lockedRound.get("p3") == -1),
         assert(validValue.get("p3") == "None"),
         assert(validRound.get("p3") == -1),
+        assert(NilPrecommitCert(0)),
+        assert(not(PrecommitQuorum(0, "s0"))),
+        unchangedAll,
+      })
+  }
+
+  run lateNilPrecommitCertificateUnlocksAbandonedRoundTest = {
+    Init
+      .then(SeedValidNilPrecommitState("p1"))
+      .then(SeedValidNilPrecommitState("p2"))
+      .then(SeedFaultyNilPrecommit("p4"))
+      .then(SeedTimedOutSameRoundValueLock("p3"))
+      .then(ApplyLateNilPrecommitCertificate("p3", 0))
+      .then(all {
+        assert(round.get("p3") == 1),
+        assert(validValue.get("p3") == "None"),
+        assert(validRound.get("p3") == -1),
+        assert(lockedValue.get("p3") == "None"),
+        assert(lockedRound.get("p3") == -1),
         assert(NilPrecommitCert(0)),
         assert(not(PrecommitQuorum(0, "s0"))),
         unchangedAll,

@@ -220,6 +220,13 @@ fn proposal_status_against_current_stream(
     }
 }
 
+fn proposal_candidate_height_matches_declared_height(
+    declared_candidate_height: u32,
+    observed_candidate_height: BlockHeight,
+) -> bool {
+    declared_candidate_height == observed_candidate_height.0
+}
+
 async fn _block_header_from_hash(
     call: &TFLServiceCalls,
     hash: BlockHash,
@@ -513,6 +520,37 @@ enum BftValidationMode {
     Decided,
 }
 
+fn fat_pointer_has_roster_quorum(
+    fat_pointer: &FatPointerToBftBlock2,
+    roster: &[MalValidator],
+) -> bool {
+    let total_voting_power: u128 = roster
+        .iter()
+        .map(|validator| validator.voting_power as u128)
+        .sum();
+    if total_voting_power == 0 {
+        return false;
+    }
+
+    let mut seen_signers = HashSet::new();
+    let signed_voting_power: u128 = fat_pointer
+        .signatures
+        .iter()
+        .filter_map(|signature| {
+            if !seen_signers.insert(signature.public_key) {
+                return None;
+            }
+
+            roster
+                .iter()
+                .find(|validator| <[u8; 32]>::from(validator.public_key) == signature.public_key)
+                .map(|validator| validator.voting_power as u128)
+        })
+        .sum();
+
+    signed_voting_power * 3 > total_voting_power * 2
+}
+
 async fn new_decided_bft_block_from_malachite(
     tfl_handle: &TFLServiceHandle,
     new_block: &BftBlock,
@@ -548,6 +586,10 @@ async fn new_decided_bft_block_from_malachite(
     // TODO: check public keys on the fat pointer against the roster
     if fat_pointer.validate_signatures() == false {
         error!("Signatures are not valid. Rejecting block.");
+        panic!();
+    }
+    if fat_pointer_has_roster_quorum(fat_pointer, &internal.validators_at_current_height) == false {
+        error!("Signatures do not represent a quorum of the active roster. Rejecting block.");
         panic!();
     }
 
@@ -846,6 +888,16 @@ async fn validate_bft_block_from_malachite_already_locked(
         );
         return tenderlink::TMStatus::Indeterminate;
     };
+    if !proposal_candidate_height_matches_declared_height(
+        new_block.finalization_candidate_height,
+        new_final_pow_height,
+    ) {
+        warn!(
+            "Block finalization candidate height mismatch: declared {}, observed {}",
+            new_block.finalization_candidate_height, new_final_pow_height.0,
+        );
+        return tenderlink::TMStatus::Fail;
+    }
 
     if matches!(mode, BftValidationMode::Voting) {
         use std::ops::Sub;
@@ -2152,5 +2204,46 @@ mod tests {
             proposal_status_against_current_stream(proposal, (BlockHeight(10), BlockHash([2; 32]))),
             tenderlink::TMStatus::Stale
         );
+    }
+
+    #[test]
+    fn fat_pointer_roster_quorum_rejects_unknown_signers() {
+        let roster = vec![
+            MalValidator::new(MalPublicKey::from([1; 32]), 1),
+            MalValidator::new(MalPublicKey::from([2; 32]), 1),
+            MalValidator::new(MalPublicKey::from([3; 32]), 1),
+            MalValidator::new(MalPublicKey::from([4; 32]), 1),
+        ];
+        let fat_pointer = FatPointerToBftBlock2 {
+            vote_for_block_without_finalizer_public_key: [0; 44],
+            signatures: vec![
+                FatPointerSignature2 {
+                    public_key: [9; 32],
+                    vote_signature: [0; 64],
+                },
+                FatPointerSignature2 {
+                    public_key: [8; 32],
+                    vote_signature: [0; 64],
+                },
+                FatPointerSignature2 {
+                    public_key: [7; 32],
+                    vote_signature: [0; 64],
+                },
+            ],
+        };
+
+        assert!(!fat_pointer_has_roster_quorum(&fat_pointer, &roster));
+    }
+
+    #[test]
+    fn proposal_candidate_height_rejects_mismatched_declared_height() {
+        assert!(proposal_candidate_height_matches_declared_height(
+            10,
+            BlockHeight(10)
+        ));
+        assert!(!proposal_candidate_height_matches_declared_height(
+            9,
+            BlockHeight(10)
+        ));
     }
 }

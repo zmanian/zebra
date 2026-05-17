@@ -115,6 +115,7 @@ This runs:
 - `nilPrecommitResamplesFreshStreamTest`
 - `nilPrecommitPreservesOlderTendermintValueLockTest`
 - `nilPrecommitUnlocksSameRoundTendermintStateTest`
+- `lateNilPrecommitCertificateUnlocksAbandonedRoundTest`
 - `nilPrecommitUnlockResamplesAndDecidesFreshValueTest`
 - `conflictingCommitsExposeInvalidUnlockEvidenceTest`
 - `conflictWithBogusNilUnlockExposesEquivocationEvidenceTest`
@@ -133,6 +134,12 @@ lock before recovery. The fifth test is the bounded liveness witness: after a
 same-round nil certificate and stream change, the resampling model reaches a
 fresh `s1` decision.
 
+The late-certificate test covers a real implementation race: a validator may
+timeout into the next round before it receives the `2f + 1` nil-precommit
+certificate for the abandoned round. The certificate still clears lock and valid
+state whose round equals the certificate round, but it does not rewind or
+re-propose the current round.
+
 The final four tests are the accountability witnesses. They check that:
 
 - two conflicting value commits across rounds expose an invalid unlock
@@ -142,6 +149,12 @@ The final four tests are the accountability witnesses. They check that:
 - a valid same-round nil certificate justifies switching away from a minority
   same-round value lock
 - a later nil certificate does not justify abandoning an older value lock
+
+One limitation is intentional: a mixed precommit set with some value precommits
+and some nil precommits is not treated as unlock evidence unless nil itself has
+quorum. A mixed set does not rule out a hidden value-commit quorum under
+Byzantine equivocation, so unlocking on it would be a safety change rather than
+the nil-certificate liveness improvement modelled here.
 
 Witness Crosslink finality value semantics:
 
