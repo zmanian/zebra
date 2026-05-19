@@ -147,6 +147,18 @@ Apalache starts a local checker server on port `8822` during `quint verify`.
 
 ## Checks
 
+Run the quick local sweep:
+
+```sh
+QUINT="$QUINT" spec/quint/check.sh quick
+```
+
+Run the bounded Apalache sweep:
+
+```sh
+QUINT="$QUINT" JVM_ARGS=-Xmx8192m spec/quint/check.sh symbolic
+```
+
 Typecheck:
 
 ```sh

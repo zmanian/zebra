@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: spec/quint/check.sh [quick|symbolic|all]
+
+Modes:
+  quick     typecheck all specs, run witness tests, and run Rust safety checks
+  symbolic  run bounded Apalache checks from README.md
+  all       run quick and symbolic
+
+Set QUINT to override the command, for example:
+  QUINT="node /private/tmp/quint-global-patched/dist/src/cli.js" spec/quint/check.sh quick
+USAGE
+}
+
+mode="${1:-quick}"
+if [[ "${mode}" != "quick" && "${mode}" != "symbolic" && "${mode}" != "all" ]]; then
+  usage
+  exit 2
+fi
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "${root}"
+
+if [[ -n "${QUINT:-}" ]]; then
+  read -r -a quint_cmd <<< "${QUINT}"
+else
+  quint_cmd=(quint)
+fi
+
+run_quint() {
+  printf '+'
+  printf ' %q' "${quint_cmd[@]}" "$@"
+  printf '\n'
+  "${quint_cmd[@]}" "$@"
+}
+
+typecheck_all() {
+  local specs=(
+    spec/quint/CrosslinkResampling.qnt
+    spec/quint/CrosslinkForkFinality.qnt
+    spec/quint/CrosslinkPowForkSchedule.qnt
+    spec/quint/CrosslinkPowBranchCompetition.qnt
+    spec/quint/CrosslinkComposed.qnt
+    spec/quint/CrosslinkBftHeights.qnt
+    spec/quint/CrosslinkDynamicSigma.qnt
+    spec/quint/CrosslinkDynamicSigmaCalibration.qnt
+    spec/quint/CrosslinkDynamicSigmaTelemetry.qnt
+    spec/quint/CrosslinkDynamicSigmaForkSchedule.qnt
+    spec/quint/CrosslinkDynamicSigmaBranchCompetition.qnt
+    spec/quint/CrosslinkDynamicSigmaResampling.qnt
+    spec/quint/CrosslinkDynamicSigmaFinality.qnt
+  )
+
+  for spec in "${specs[@]}"; do
+    run_quint typecheck "${spec}"
+  done
+}
+
+test_model() {
+  local spec="$1"
+  local main="$2"
+  run_quint test "${spec}" --main="${main}" --max-samples=100 --backend=rust
+}
+
+run_model() {
+  local spec="$1"
+  local main="$2"
+  local init="$3"
+  local step="$4"
+  local max_steps="$5"
+  local max_samples="$6"
+  local invariant="$7"
+  run_quint run "${spec}" \
+    --main="${main}" \
+    --init="${init}" \
+    --step="${step}" \
+    --max-steps="${max_steps}" \
+    --max-samples="${max_samples}" \
+    --invariant="${invariant}" \
+    --backend=rust \
+    --verbosity=0
+}
+
+verify_model() {
+  local spec="$1"
+  local main="$2"
+  local max_steps="$3"
+  local init="$4"
+  local step="$5"
+  local invariant="$6"
+  run_quint verify "${spec}" \
+    --main="${main}" \
+    --max-steps="${max_steps}" \
+    --init="${init}" \
+    --step="${step}" \
+    --invariant="${invariant}"
+}
+
+quick_checks() {
+  typecheck_all
+
+  test_model spec/quint/CrosslinkResampling.qnt CrosslinkStickyModel
+  test_model spec/quint/CrosslinkResampling.qnt CrosslinkNilResamplingModel
+  test_model spec/quint/CrosslinkForkFinality.qnt CrosslinkForkFinalityModel
+  test_model spec/quint/CrosslinkPowForkSchedule.qnt CrosslinkPowForkScheduleModel
+  test_model spec/quint/CrosslinkPowBranchCompetition.qnt CrosslinkPowBranchCompetitionModel
+  test_model spec/quint/CrosslinkComposed.qnt CrosslinkComposedResamplingModel
+  test_model spec/quint/CrosslinkBftHeights.qnt CrosslinkBftHeightsModel
+  test_model spec/quint/CrosslinkDynamicSigma.qnt CrosslinkDynamicSigmaHashParticipationModel
+  test_model spec/quint/CrosslinkDynamicSigmaCalibration.qnt CrosslinkDynamicSigmaCalibrationModel
+  test_model spec/quint/CrosslinkDynamicSigmaTelemetry.qnt CrosslinkDynamicSigmaTelemetryModel
+  test_model spec/quint/CrosslinkDynamicSigmaForkSchedule.qnt CrosslinkDynamicSigmaForkScheduleModel
+  test_model spec/quint/CrosslinkDynamicSigmaBranchCompetition.qnt CrosslinkDynamicSigmaBranchCompetitionModel
+  test_model spec/quint/CrosslinkDynamicSigmaResampling.qnt CrosslinkDynamicSigmaResamplingModel
+  test_model spec/quint/CrosslinkDynamicSigmaFinality.qnt CrosslinkDynamicSigmaFinalityModel
+
+  run_model spec/quint/CrosslinkResampling.qnt CrosslinkStickyModel Init Next 10 1000 Safety
+  run_model spec/quint/CrosslinkResampling.qnt CrosslinkNilResamplingModel Init Next 10 1000 Safety
+  run_model spec/quint/CrosslinkForkFinality.qnt CrosslinkForkFinalityModel Init Next 6 1000 Safety
+  run_model spec/quint/CrosslinkPowForkSchedule.qnt CrosslinkPowForkScheduleModel Init Next 4 1000 Safety
+  run_model spec/quint/CrosslinkPowBranchCompetition.qnt CrosslinkPowBranchCompetitionModel Init Next 4 1000 Safety
+  run_model spec/quint/CrosslinkResampling.qnt CrosslinkNilResamplingLivenessModel LivenessInit LivenessStep 15 1 LivenessSafety
+  run_model spec/quint/CrosslinkComposed.qnt CrosslinkComposedResamplingModel ComposedInit ComposedNext 10 1000 ComposedSafety
+  run_model spec/quint/CrosslinkComposed.qnt CrosslinkComposedLivenessModel LivenessInit LivenessStep 16 1 LivenessSafety
+  run_model spec/quint/CrosslinkBftHeights.qnt CrosslinkBftHeightsModel Init Next 5 1000 Safety
+  run_model spec/quint/CrosslinkDynamicSigma.qnt CrosslinkDynamicSigmaHashParticipationModel Init Next 7 1000 Safety
+  run_model spec/quint/CrosslinkDynamicSigmaCalibration.qnt CrosslinkDynamicSigmaCalibrationModel Init Next 8 1000 Safety
+  run_model spec/quint/CrosslinkDynamicSigmaTelemetry.qnt CrosslinkDynamicSigmaTelemetryModel Init Next 8 1000 Safety
+  run_model spec/quint/CrosslinkDynamicSigmaForkSchedule.qnt CrosslinkDynamicSigmaForkScheduleModel DerivedInit DerivedNext 4 1000 DerivedSafety
+  run_model spec/quint/CrosslinkDynamicSigmaBranchCompetition.qnt CrosslinkDynamicSigmaBranchCompetitionModel BranchCompetitionDynamicInit BranchCompetitionDynamicNext 4 1000 BranchCompetitionDynamicSafety
+  run_model spec/quint/CrosslinkDynamicSigmaResampling.qnt CrosslinkDynamicSigmaResamplingModel DynamicResamplingInit DynamicResamplingNext 8 1000 DynamicResamplingSafety
+  run_model spec/quint/CrosslinkDynamicSigmaFinality.qnt CrosslinkDynamicSigmaFinalityModel FullComposedInit FullComposedNext 10 1000 FullComposedSafety
+}
+
+symbolic_checks() {
+  verify_model spec/quint/CrosslinkResampling.qnt CrosslinkStickyModel 3 Init Next Safety
+  verify_model spec/quint/CrosslinkResampling.qnt CrosslinkNilResamplingModel 3 Init Next Safety
+  verify_model spec/quint/CrosslinkForkFinality.qnt CrosslinkForkFinalityModel 4 Init Next Safety
+  verify_model spec/quint/CrosslinkPowForkSchedule.qnt CrosslinkPowForkScheduleModel 4 Init Next Safety
+  verify_model spec/quint/CrosslinkPowBranchCompetition.qnt CrosslinkPowBranchCompetitionModel 4 Init Next Safety
+  verify_model spec/quint/CrosslinkResampling.qnt CrosslinkNilResamplingLivenessModel 15 LivenessInit LivenessStep LivenessSafety
+  verify_model spec/quint/CrosslinkComposed.qnt CrosslinkComposedResamplingModel 5 ComposedInit ComposedNext ComposedSafety
+  verify_model spec/quint/CrosslinkComposed.qnt CrosslinkComposedLivenessModel 16 LivenessInit LivenessStep LivenessSafety
+  verify_model spec/quint/CrosslinkBftHeights.qnt CrosslinkBftHeightsModel 5 Init Next Safety
+  verify_model spec/quint/CrosslinkDynamicSigma.qnt CrosslinkDynamicSigmaHashParticipationModel 7 Init Next Safety
+  verify_model spec/quint/CrosslinkDynamicSigmaCalibration.qnt CrosslinkDynamicSigmaCalibrationModel 8 Init Next Safety
+  verify_model spec/quint/CrosslinkDynamicSigmaTelemetry.qnt CrosslinkDynamicSigmaTelemetryModel 8 Init Next Safety
+  verify_model spec/quint/CrosslinkDynamicSigmaForkSchedule.qnt CrosslinkDynamicSigmaForkScheduleModel 4 DerivedInit DerivedNext DerivedSafety
+  verify_model spec/quint/CrosslinkDynamicSigmaBranchCompetition.qnt CrosslinkDynamicSigmaBranchCompetitionModel 4 BranchCompetitionDynamicInit BranchCompetitionDynamicNext BranchCompetitionDynamicSafety
+  verify_model spec/quint/CrosslinkDynamicSigmaResampling.qnt CrosslinkDynamicSigmaResamplingModel 8 DynamicResamplingInit DynamicResamplingNext DynamicResamplingSafety
+  verify_model spec/quint/CrosslinkDynamicSigmaFinality.qnt CrosslinkDynamicSigmaFinalityModel 8 FullComposedInit FullComposedNext FullComposedSafety
+  verify_model spec/quint/CrosslinkDynamicSigmaFinality.qnt CrosslinkDynamicSigmaFinalityModel 10 FullComposedInit FullComposedNext FullProtocolProjectionSafety
+  verify_model spec/quint/CrosslinkDynamicSigmaFinality.qnt CrosslinkDynamicSigmaFinalityModel 10 FullComposedInit FullComposedNext FullFinalityProjectionSafety
+  verify_model spec/quint/CrosslinkDynamicSigmaFinality.qnt CrosslinkDynamicSigmaFinalityModel 10 FullComposedInit FullComposedNext FullWorkCompetitionProjectionSafety
+}
+
+case "${mode}" in
+  quick)
+    quick_checks
+    ;;
+  symbolic)
+    symbolic_checks
+    ;;
+  all)
+    quick_checks
+    symbolic_checks
+    ;;
+esac
