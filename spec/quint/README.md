@@ -65,6 +65,11 @@ hash-power participation floor into the composed model, so low participation by
 Crosslink-aware miners can raise sigma even when the latest best-tip transition
 does not add a new fork-switch signal.
 
+`CrosslinkDynamicSigmaFinality.qnt` composes dynamic sigma, nil-precommit
+resampling, and Crosslink finality. It uses the live `dynSigma` value as the
+tail-confirmation depth for finality, so a fork-derived sigma increase delays
+finalization until the fresh decision is confirmed deeply enough.
+
 ## Upstream Base
 
 The best current Tendermint Quint base is the Quint repository's Cosmos example:
@@ -113,6 +118,7 @@ $QUINT typecheck spec/quint/CrosslinkComposed.qnt
 $QUINT typecheck spec/quint/CrosslinkDynamicSigma.qnt
 $QUINT typecheck spec/quint/CrosslinkDynamicSigmaForkSchedule.qnt
 $QUINT typecheck spec/quint/CrosslinkDynamicSigmaResampling.qnt
+$QUINT typecheck spec/quint/CrosslinkDynamicSigmaFinality.qnt
 ```
 
 Witness the current sticky behavior:
@@ -326,6 +332,27 @@ The hash-participation witness then advances over a same-branch transition with
 rollback depth 0 and still raises sigma to the maximum when participating hash
 power falls below the configured critical threshold.
 
+Witness the full dynamic-sigma/resampling/finality composition:
+
+```sh
+$QUINT test spec/quint/CrosslinkDynamicSigmaFinality.qnt \
+  --main=CrosslinkDynamicSigmaFinalityModel \
+  --max-samples=100 \
+  --backend=rust
+```
+
+This runs:
+
+- `dynamicSigmaResamplingFinalizesTailConfirmedFreshCandidateTest`
+- `dynamicSigmaRejectsUnderconfirmedFreshCandidateTest`
+
+The witness forms a nil-precommit recovery scenario, derives a rollback-depth
+signal from an `a3 -> b4` fork switch, raises dynamic sigma from 1 to 3,
+resamples and decides fresh `b2`, then finalizes `b2` only with tail-confirming
+tip `b5`. The under-confirmed test rejects finalizing the same `b2` decision
+against tip `b4`, showing that finality uses the raised dynamic sigma rather
+than the base confirmation depth.
+
 Randomized Rust-backend safety simulation:
 
 ```sh
@@ -428,6 +455,16 @@ $QUINT run spec/quint/CrosslinkDynamicSigmaResampling.qnt \
   --invariant=DynamicResamplingSafety \
   --backend=rust \
   --verbosity=0
+
+$QUINT run spec/quint/CrosslinkDynamicSigmaFinality.qnt \
+  --main=CrosslinkDynamicSigmaFinalityModel \
+  --init=FullComposedInit \
+  --step=FullComposedNext \
+  --max-steps=10 \
+  --max-samples=1000 \
+  --invariant=FullComposedSafety \
+  --backend=rust \
+  --verbosity=0
 ```
 
 Bounded Apalache verification:
@@ -502,6 +539,13 @@ $QUINT verify spec/quint/CrosslinkDynamicSigmaResampling.qnt \
   --init=DynamicResamplingInit \
   --step=DynamicResamplingNext \
   --invariant=DynamicResamplingSafety
+
+$QUINT verify spec/quint/CrosslinkDynamicSigmaFinality.qnt \
+  --main=CrosslinkDynamicSigmaFinalityModel \
+  --max-steps=8 \
+  --init=FullComposedInit \
+  --step=FullComposedNext \
+  --invariant=FullComposedSafety
 ```
 
 The bounded resampling checks currently report no violation for `Safety`, which
@@ -575,13 +619,19 @@ The dynamic-sigma/resampling composition reports no violation for
   lower sigma than higher participation
 - the controller status matches current hash-power participation
 
+The full dynamic-sigma/resampling/finality composition reports no violation for
+`FullComposedSafety`, which combines:
+
+- the dynamic-sigma/resampling safety invariants
+- finalized snapshots remain prefix-linear
+- the latest finalized snapshot extends all prior finalized snapshots
+- the initial finalized snapshot remains finalized
+- finality uses the live dynamic sigma as the tail-confirmation depth
+
 ## Next Extensions
 
 This model is intentionally narrow. The next useful extensions are:
 
-- compose dynamic sigma, nil-precommit resampling, and Crosslink finality so a
-  fork switch can raise sigma, resample into a fresh Tenderlink decision, and
-  finalize a tail-confirmed snapshot
 - refine `CrosslinkDynamicSigma.qnt` with a calibrated stochastic controller
   that uses measured hash-power participation, round-failure rate, block
   interval variance, and observed reorg depth rather than the current three-step
