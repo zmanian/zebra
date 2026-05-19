@@ -3,12 +3,14 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: spec/quint/check.sh [quick|symbolic|all]
+Usage: spec/quint/check.sh [quick|symbolic|all|quick-baseline|symbolic-baseline]
 
 Modes:
-  quick     typecheck all specs, run witness tests, and run Rust safety checks
-  symbolic  run bounded Apalache checks from README.md
-  all       run quick and symbolic
+  quick              typecheck all specs, run witness tests, and run Rust safety checks
+  symbolic           run bounded Apalache checks from README.md
+  all                run quick and symbolic
+  quick-baseline     run only the baseline Crosslink quick checks
+  symbolic-baseline  run only the baseline Crosslink bounded Apalache checks
 
 Set QUINT to override the command, for example:
   QUINT="node /private/tmp/quint-global-patched/dist/src/cli.js" spec/quint/check.sh quick
@@ -16,7 +18,13 @@ USAGE
 }
 
 mode="${1:-quick}"
-if [[ "${mode}" != "quick" && "${mode}" != "symbolic" && "${mode}" != "all" ]]; then
+if [[
+  "${mode}" != "quick" &&
+  "${mode}" != "symbolic" &&
+  "${mode}" != "all" &&
+  "${mode}" != "quick-baseline" &&
+  "${mode}" != "symbolic-baseline"
+]]; then
   usage
   exit 2
 fi
@@ -58,6 +66,21 @@ typecheck_all() {
     spec/quint/CrosslinkDynamicSigmaBranchCompetition.qnt
     spec/quint/CrosslinkDynamicSigmaResampling.qnt
     spec/quint/CrosslinkDynamicSigmaFinality.qnt
+  )
+
+  for spec in "${specs[@]}"; do
+    run_quint typecheck "${spec}"
+  done
+}
+
+typecheck_baseline() {
+  local specs=(
+    spec/quint/CrosslinkResampling.qnt
+    spec/quint/CrosslinkBaseline.qnt
+    spec/quint/CrosslinkBaselineAccountability.qnt
+    spec/quint/CrosslinkBaselineBftHeights.qnt
+    spec/quint/CrosslinkBaselineFinality.qnt
+    spec/quint/CrosslinkBaselinePowSampling.qnt
   )
 
   for spec in "${specs[@]}"; do
@@ -158,6 +181,29 @@ quick_checks() {
   run_model spec/quint/CrosslinkDynamicSigmaFinality.qnt CrosslinkDynamicSigmaFinalityModel FullComposedInit FullComposedNext 10 1000 FullComposedSafety
 }
 
+baseline_quick_checks() {
+  typecheck_baseline
+
+  test_model spec/quint/CrosslinkResampling.qnt CrosslinkStickyModel
+  test_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStableModel
+  test_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStreamChangeModel
+  test_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineAccountabilityModel
+  test_model spec/quint/CrosslinkBaselineBftHeights.qnt CrosslinkBaselineBftHeightsModel
+  test_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStableModel
+  test_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStreamChangeModel
+  test_model spec/quint/CrosslinkBaselinePowSampling.qnt CrosslinkBaselinePowSamplingModel
+
+  run_model spec/quint/CrosslinkResampling.qnt CrosslinkStickyModel Init Next 10 1000 Safety
+  run_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStableModel Init Next 10 1000 BaselineSafety
+  run_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStreamChangeModel Init Next 10 1000 BaselineSafety
+  run_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineAccountabilityModel Init Next 10 1000 BaselineAccountabilitySafety
+  run_model spec/quint/CrosslinkBaselineBftHeights.qnt CrosslinkBaselineBftHeightsModel Init Next 5 1000 BaselineBftHeightSafety
+  run_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStableModel ComposedInit ComposedNext 10 1000 ComposedSafety
+  run_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStreamChangeModel ComposedInit ComposedNext 10 1000 ComposedSafety
+  run_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityLivenessModel LivenessInit LivenessStep 9 1 LivenessSafety
+  run_model spec/quint/CrosslinkBaselinePowSampling.qnt CrosslinkBaselinePowSamplingModel Init Next 10 1000 BaselinePowSamplingSafety
+}
+
 symbolic_checks() {
   verify_model spec/quint/CrosslinkResampling.qnt CrosslinkStickyModel 3 Init Next Safety
   verify_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStableModel 3 Init Next BaselineSafety
@@ -189,12 +235,30 @@ symbolic_checks() {
   verify_model spec/quint/CrosslinkDynamicSigmaFinality.qnt CrosslinkDynamicSigmaFinalityModel 10 FullComposedInit FullComposedNext FullWorkCompetitionProjectionSafety
 }
 
+baseline_symbolic_checks() {
+  verify_model spec/quint/CrosslinkResampling.qnt CrosslinkStickyModel 3 Init Next Safety
+  verify_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStableModel 3 Init Next BaselineSafety
+  verify_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStreamChangeModel 3 Init Next BaselineSafety
+  verify_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineAccountabilityModel 3 Init Next BaselineAccountabilitySafety
+  verify_model spec/quint/CrosslinkBaselineBftHeights.qnt CrosslinkBaselineBftHeightsModel 5 Init Next BaselineBftHeightSafety
+  verify_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStableModel 5 ComposedInit ComposedNext ComposedSafety
+  verify_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStreamChangeModel 5 ComposedInit ComposedNext ComposedSafety
+  verify_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityLivenessModel 9 LivenessInit LivenessStep LivenessSafety
+  verify_model spec/quint/CrosslinkBaselinePowSampling.qnt CrosslinkBaselinePowSamplingModel 3 Init Next BaselinePowSamplingSafety
+}
+
 case "${mode}" in
   quick)
     quick_checks
     ;;
+  quick-baseline)
+    baseline_quick_checks
+    ;;
   symbolic)
     symbolic_checks
+    ;;
+  symbolic-baseline)
+    baseline_symbolic_checks
     ;;
   all)
     quick_checks

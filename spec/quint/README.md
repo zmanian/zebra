@@ -274,6 +274,17 @@ Apalache starts a local checker server on port `8822` during `quint verify`.
 
 ## Checks
 
+Run the baseline Crosslink sweep:
+
+```sh
+QUINT="$QUINT" spec/quint/check.sh quick-baseline
+QUINT="$QUINT" JVM_ARGS=-Xmx8192m spec/quint/check.sh symbolic-baseline
+```
+
+This typechecks the shared sticky Tenderlink model plus the named baseline
+Crosslink specs, runs the Rust witness tests, runs the Rust safety checks, and
+then runs the bounded Apalache checks for the baseline-only proof obligations.
+
 Run the quick local sweep:
 
 ```sh
@@ -284,6 +295,14 @@ Run the bounded Apalache sweep:
 
 ```sh
 QUINT="$QUINT" JVM_ARGS=-Xmx8192m spec/quint/check.sh symbolic
+```
+
+For faster iteration on only the fixed-sigma/sticky baseline variant, use either
+half of that baseline sweep:
+
+```sh
+QUINT="$QUINT" spec/quint/check.sh quick-baseline
+QUINT="$QUINT" JVM_ARGS=-Xmx8192m spec/quint/check.sh symbolic-baseline
 ```
 
 Typecheck:
