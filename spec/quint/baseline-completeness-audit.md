@@ -76,6 +76,8 @@ The current branch has these baseline-specific files:
 - `CrosslinkBaselineAccountability.qnt`
   - records that baseline nil precommit preserves same-round value locks
   - records conflicting commit accountability through amnesia evidence
+  - records that faulty proposal, prevote, and nil/value precommit evidence
+    reaches the equivocation predicates
 - `CrosslinkBaselineBftHeights.qnt`
   - gives baseline finality explicit BFT consensus heights
   - rejects skipped consensus heights and fork finality after a finalized prefix
@@ -113,7 +115,8 @@ The current branch has these baseline-specific files:
 | Upstream-style model instances (`n4_f1`, `n4_f2`, `n5_f2`) | `CrosslinkBaselineModels.qnt`; `n4_f1_stable`, `n4_f1_forking`, `n5_f1_forking` | Partial; above-threshold faulty instances are still missing |
 | Upstream-style normal decision/no-double-proposal tests | `CrosslinkBaselineTest.qnt`; `decisionTest`; `noProposeTwiceTest` | Covered for `n4_f1_stable` |
 | Upstream-style stream-change/sticky-sample test | `CrosslinkBaselineTest.qnt`; `streamChangeDerivesFreshHeadMinusSigmaTest`; `stickyBaselineCarriesStaleFixedSigmaSampleTest` | Covered for `n4_f1_forking` |
-| Nondeterministic faulty message injection in `Init` | Current accountability tests are fixture/witness based | Missing |
+| Faulty proposal/prevote/precommit evidence reaches equivocation predicates | `CrosslinkBaselineAccountability.qnt`; `baselineFaultyProposalEvidenceFeedsEquivocationTest`; `baselineFaultyPrevoteEvidenceFeedsEquivocationTest`; `baselineFaultyNilValuePrecommitEvidenceFeedsEquivocationTest` | Covered as witnesses |
+| Nondeterministic faulty message injection in `Init` | Explicit faulty evidence seed actions and witnesses exist, but initial faulty evidence is not nondeterministic | Partial |
 | Full Tendermint transition surface | Current model isolates the Crosslink fork-recovery question | Missing |
 | Full agreement/validity/accountability invariant suite over arbitrary evidence | Current suite has bounded safety plus focused accountability witnesses | Partial |
 | False-invariant/counterexample harnesses for amnesia/equivocation/agreement | No baseline equivalent yet | Missing |
@@ -183,6 +186,10 @@ To finish an upstream-quality baseline spec, the remaining work is larger:
 ## Recommended Order
 
 1. Add upstream-style faulty message injection to the parameterized shell.
+   - Existing focused witnesses prove that manually seeded faulty proposal,
+     prevote, and precommit evidence reaches equivocation predicates.
+   - The missing piece is nondeterministic faulty evidence in `Init`, with
+     generated proposal, prevote, and precommit evidence sets.
 2. Port the full Tendermint transition surface into the parameterized shell
    while preserving the baseline sticky nil-precommit rule.
 3. Add remaining model instances, including above-threshold or

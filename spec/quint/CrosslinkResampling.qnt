@@ -648,6 +648,98 @@ module CrosslinkResampling {
       evidencePrevote' = evidencePrevote,
     }
 
+  action SeedFaultyProposalEvidence(
+    p: Proc_t,
+    r: Round_t,
+    v: Snapshot_t,
+    vr: Round_t,
+  ): bool =
+    all {
+      p.in(Faulty),
+      r.in(Rounds),
+      IsValidSnapshot(v),
+      vr == NilRound or vr.in(Rounds),
+      BroadcastProposal(p, r, v, vr),
+      firedAction' = "SeedFaultyProposalEvidence",
+      round' = round,
+      step' = step,
+      decision' = decision,
+      lockedValue' = lockedValue,
+      lockedRound' = lockedRound,
+      validValue' = validValue,
+      validRound' = validRound,
+      cachedProposal' = cachedProposal,
+      cachedProposalRound' = cachedProposalRound,
+      msgsPrevote' = msgsPrevote,
+      msgsPrecommit' = msgsPrecommit,
+      evidencePrevote' = evidencePrevote,
+      evidencePrecommit' = evidencePrecommit,
+    }
+
+  action SeedFaultyPrevoteEvidence(p: Proc_t, r: Round_t, v: Snapshot_t): bool =
+    all {
+      p.in(Faulty),
+      r.in(Rounds),
+      IsValidSnapshot(v),
+      BroadcastPrevote(p, r, v),
+      firedAction' = "SeedFaultyPrevoteEvidence",
+      round' = round,
+      step' = step,
+      decision' = decision,
+      lockedValue' = lockedValue,
+      lockedRound' = lockedRound,
+      validValue' = validValue,
+      validRound' = validRound,
+      cachedProposal' = cachedProposal,
+      cachedProposalRound' = cachedProposalRound,
+      msgsPropose' = msgsPropose,
+      msgsPrecommit' = msgsPrecommit,
+      evidencePropose' = evidencePropose,
+      evidencePrecommit' = evidencePrecommit,
+    }
+
+  action SeedFaultyNilPrevoteEvidence(p: Proc_t, r: Round_t): bool =
+    all {
+      p.in(Faulty),
+      r.in(Rounds),
+      BroadcastPrevote(p, r, NilSnapshot),
+      firedAction' = "SeedFaultyNilPrevoteEvidence",
+      round' = round,
+      step' = step,
+      decision' = decision,
+      lockedValue' = lockedValue,
+      lockedRound' = lockedRound,
+      validValue' = validValue,
+      validRound' = validRound,
+      cachedProposal' = cachedProposal,
+      cachedProposalRound' = cachedProposalRound,
+      msgsPropose' = msgsPropose,
+      msgsPrecommit' = msgsPrecommit,
+      evidencePropose' = evidencePropose,
+      evidencePrecommit' = evidencePrecommit,
+    }
+
+  action SeedFaultyNilPrecommitEvidence(p: Proc_t, r: Round_t): bool =
+    all {
+      p.in(Faulty),
+      r.in(Rounds),
+      BroadcastPrecommit(p, r, NilSnapshot),
+      firedAction' = "SeedFaultyNilPrecommitEvidence",
+      round' = round,
+      step' = step,
+      decision' = decision,
+      lockedValue' = lockedValue,
+      lockedRound' = lockedRound,
+      validValue' = validValue,
+      validRound' = validRound,
+      cachedProposal' = cachedProposal,
+      cachedProposalRound' = cachedProposalRound,
+      msgsPropose' = msgsPropose,
+      msgsPrevote' = msgsPrevote,
+      evidencePropose' = evidencePropose,
+      evidencePrevote' = evidencePrevote,
+    }
+
   action Next =
     nondet p = oneOf(Corr)
     any {

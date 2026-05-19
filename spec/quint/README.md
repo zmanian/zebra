@@ -58,7 +58,10 @@ that still carries the stale fixed-sigma sample.
 `CrosslinkBaselineAccountability.qnt` makes the baseline accountability
 projection explicit. It checks that a nil-precommit certificate does not clear
 same-round value locks in the sticky baseline, and that conflicting value
-commits without unlock evidence expose Tendermint-style amnesia evidence.
+commits without unlock evidence expose Tendermint-style amnesia evidence. It
+also includes focused faulty-evidence witnesses showing that faulty proposals,
+prevotes, and nil/value precommit conflicts are carried into the same
+equivocation predicates used by the accountability model.
 
 `CrosslinkBaselineBftHeights.qnt` gives the baseline variant a named
 heighted-finality model. It checks that fixed-sigma finality advances through
@@ -407,7 +410,10 @@ $QUINT test spec/quint/CrosslinkBaselineAccountability.qnt \
 
 This model checks that baseline nil precommit preserves same-round value-lock
 state and that conflicting value commits without nil-unlock evidence are
-accountable through the existing amnesia predicates.
+accountable through the existing amnesia predicates. It also checks that
+faulty proposal, prevote, and nil/value precommit evidence feeds the
+equivocation detector. This is explicit witness coverage, not yet the upstream
+style of nondeterministically seeding faulty evidence in `Init`.
 
 Witness baseline BFT-heighted finality:
 
@@ -1235,7 +1241,9 @@ The bounded baseline-accountability checks report no violation for
 Tenderlink safety invariant. The named witnesses show that a nil-precommit
 certificate advances the round without clearing same-round `validValue` or
 `lockedValue`, and that conflicting value commits without nil-unlock evidence
-are attributable through amnesia evidence.
+are attributable through amnesia evidence. The same test module now includes
+faulty proposal, prevote, and nil/value precommit evidence witnesses that prove
+observed faulty evidence reaches the equivocation predicates.
 
 The bounded upstream-shaped baseline checks report no violation for
 `BaselineN4F1StableSafety` or `BaselineN4F1ForkingSafety`. The stable instance

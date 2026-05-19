@@ -70,4 +70,46 @@ module CrosslinkBaselineAccountabilityModel {
         unchangedAll,
       })
   }
+
+  run baselineFaultyProposalEvidenceFeedsEquivocationTest = {
+    Init
+      .then(SeedFaultyProposalEvidence("p4", 0, "s0", -1))
+      .then(SeedFaultyProposalEvidence("p4", 0, "s1", -1))
+      .then(all {
+        assert(ProposalEquivocationIn("p4", EvidencePropose)),
+        assert(EquivocationBy("p4")),
+        assert(DetectableFaultBy("p4")),
+        assert(EvidenceCoversObservedMessages),
+        assert(BaselineAccountabilitySafety),
+        unchangedAll,
+      })
+  }
+
+  run baselineFaultyPrevoteEvidenceFeedsEquivocationTest = {
+    Init
+      .then(SeedFaultyPrevoteEvidence("p4", 0, "s0"))
+      .then(SeedFaultyPrevoteEvidence("p4", 0, "s1"))
+      .then(all {
+        assert(VoteEquivocationIn("p4", EvidencePrevote)),
+        assert(EquivocationBy("p4")),
+        assert(DetectableFaultBy("p4")),
+        assert(EvidenceCoversObservedMessages),
+        assert(BaselineAccountabilitySafety),
+        unchangedAll,
+      })
+  }
+
+  run baselineFaultyNilValuePrecommitEvidenceFeedsEquivocationTest = {
+    Init
+      .then(SeedFaultyNilPrecommitEvidence("p4", 0))
+      .then(SeedFaultyPrecommitEvidence("p4", 0, "s0"))
+      .then(all {
+        assert(VoteEquivocationIn("p4", EvidencePrecommit)),
+        assert(EquivocationBy("p4")),
+        assert(DetectableFaultBy("p4")),
+        assert(EvidenceCoversObservedMessages),
+        assert(BaselineAccountabilitySafety),
+        unchangedAll,
+      })
+  }
 }
