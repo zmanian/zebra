@@ -288,6 +288,168 @@ module CrosslinkBaselineFaultyInitForkingModel {
   }
 }
 
+module CrosslinkBaselineBoundedFaultyInitN4F2ForkingModel {
+  /*
+   A representative n4/f2 faulty-init symbolic harness. This keeps the
+   above-live-boundary f=2 shape in the symbolic gate without expanding the full
+   faulty-message powerset.
+   */
+
+  import CrosslinkBaselineModels.* from "./CrosslinkBaselineModels"
+
+  pure val TestRounds = 0.to(4)
+
+  pure def TestHeadMinusSigma(r: int): str =
+    AncestorByHeight
+      .get(ForkingBestTip.get(r))
+      .get(HeightBySnapshot.get(ForkingBestTip.get(r)) - 1)
+
+  pure val TestStream: int -> str =
+    TestRounds.mapBy(r => TestHeadMinusSigma(r))
+
+  pure val TestStreamMatchesFixedSigma =
+    TestRounds.forall(r => TestStream.get(r) == TestHeadMinusSigma(r))
+
+  import CrosslinkResampling(
+    Corr = Set("p1", "p2"),
+    Faulty = Set("p3", "p4"),
+    N = 4,
+    T = 2,
+    MaxRound = 4,
+    Proposer = ProposerSchedule,
+    Stream = TestStream,
+    Snapshots = ValidSnapshots,
+    ResampleOnNilPrecommit = false,
+  ).* from "./CrosslinkResampling"
+
+  action unchangedAll = all {
+    round' = round,
+    step' = step,
+    decision' = decision,
+    lockedValue' = lockedValue,
+    lockedRound' = lockedRound,
+    validValue' = validValue,
+    validRound' = validRound,
+    cachedProposal' = cachedProposal,
+    cachedProposalRound' = cachedProposalRound,
+    msgsPropose' = msgsPropose,
+    msgsPrevote' = msgsPrevote,
+    msgsPrecommit' = msgsPrecommit,
+    evidencePropose' = evidencePropose,
+    evidencePrevote' = evidencePrevote,
+    evidencePrecommit' = evidencePrecommit,
+    firedAction' = firedAction,
+  }
+
+  pure val RepresentativeN4F2FaultyInitProposals =
+    Set(
+      { src: "p3", round: 0, proposal: TestHeadMinusSigma(0), validRound: NilRound },
+      { src: "p4", round: 0, proposal: TestHeadMinusSigma(1), validRound: 0 },
+    )
+
+  pure val RepresentativeN4F2FaultyInitPrevotes =
+    Set(
+      { src: "p3", round: 0, id: TestHeadMinusSigma(0) },
+      { src: "p4", round: 0, id: TestHeadMinusSigma(1) },
+      { src: "p4", round: 0, id: NilSnapshot },
+    )
+
+  pure val RepresentativeN4F2FaultyInitPrecommits =
+    Set(
+      { src: "p3", round: 0, id: TestHeadMinusSigma(0) },
+      { src: "p4", round: 0, id: TestHeadMinusSigma(1) },
+      { src: "p4", round: 0, id: NilSnapshot },
+    )
+
+  pure val RepresentativeN4F2FaultyInitDomainWellFormed =
+    RepresentativeN4F2FaultyInitProposals.forall(m =>
+      m.src.in(Faulty) and
+      m.round.in(Rounds) and
+      m.proposal.in(Snapshots) and
+      m.validRound.in(RoundsOrNil)
+    ) and
+    RepresentativeN4F2FaultyInitPrevotes.forall(m =>
+      m.src.in(Faulty) and m.round.in(Rounds) and m.id.in(SnapshotsOrNil)
+    ) and
+    RepresentativeN4F2FaultyInitPrecommits.forall(m =>
+      m.src.in(Faulty) and m.round.in(Rounds) and m.id.in(SnapshotsOrNil)
+    )
+
+  pure val RepresentativeN4F2FaultyInitUsesBothFaultyValidators =
+    RepresentativeN4F2FaultyInitProposals.exists(m =>
+      m.src == "p3" and m.proposal == "a1" and m.validRound == NilRound
+    ) and
+    RepresentativeN4F2FaultyInitProposals.exists(m =>
+      m.src == "p4" and m.proposal == "b1" and m.validRound == 0
+    ) and
+    RepresentativeN4F2FaultyInitPrevotes.exists(m =>
+      m.src == "p4" and m.id == NilSnapshot
+    ) and
+    RepresentativeN4F2FaultyInitPrecommits.exists(m =>
+      m.src == "p4" and m.id == NilSnapshot
+    )
+
+  action InitWithRepresentativeN4F2FaultyEvidence =
+    nondet faultyProposals = RepresentativeN4F2FaultyInitProposals.powerset().oneOf()
+    nondet faultyPrevotes = RepresentativeN4F2FaultyInitPrevotes.powerset().oneOf()
+    nondet faultyPrecommits = RepresentativeN4F2FaultyInitPrecommits.powerset().oneOf()
+    all {
+      round' = Corr.mapBy(_ => 0),
+      step' = Corr.mapBy(_ => "propose"),
+      decision' = Corr.mapBy(_ => NilSnapshot),
+      lockedValue' = Corr.mapBy(_ => NilSnapshot),
+      lockedRound' = Corr.mapBy(_ => NilRound),
+      validValue' = Corr.mapBy(_ => NilSnapshot),
+      validRound' = Corr.mapBy(_ => NilRound),
+      cachedProposal' = Corr.mapBy(_ => NilSnapshot),
+      cachedProposalRound' = Corr.mapBy(_ => NilRound),
+      msgsPropose' = Rounds.mapBy(r =>
+        faultyProposals.filter(m => m.round == r)
+      ),
+      msgsPrevote' = Rounds.mapBy(r =>
+        faultyPrevotes.filter(m => m.round == r)
+      ),
+      msgsPrecommit' = Rounds.mapBy(r =>
+        faultyPrecommits.filter(m => m.round == r)
+      ),
+      evidencePropose' = faultyProposals,
+      evidencePrevote' = faultyPrevotes,
+      evidencePrecommit' = faultyPrecommits,
+      firedAction' = "InitWithRepresentativeN4F2FaultyEvidence",
+    }
+
+  val BaselineBoundedN4F2ForkingFaultyInitSafety =
+    Safety and
+    TestStreamMatchesFixedSigma and
+    RepresentativeN4F2FaultyInitDomainWellFormed
+
+  run baselineBoundedN4F2ForkingFaultyInitCoversEvidenceTest = {
+    InitWithRepresentativeN4F2FaultyEvidence.then(all {
+      assert(THRESHOLD1 == 3),
+      assert(THRESHOLD2 == 5),
+      assert(not(size(Corr) >= THRESHOLD1)),
+      assert(not(size(Corr) >= THRESHOLD2)),
+      assert(TestHeadMinusSigma(0) == "a1"),
+      assert(TestHeadMinusSigma(1) == "b1"),
+      assert(RepresentativeN4F2FaultyInitUsesBothFaultyValidators),
+      assert(EvidenceCoversObservedMessages),
+      assert(BaselineBoundedN4F2ForkingFaultyInitSafety),
+      unchangedAll,
+    })
+  }
+
+  run baselineBoundedN4F2ForkingFaultyInitAllowsCorrectProposalTest = {
+    InitWithRepresentativeN4F2FaultyEvidence
+      .then(InsertProposal("p1"))
+      .then(all {
+        assert(HasProposal(0, "a1")),
+        assert(EvidenceCoversObservedMessages),
+        assert(BaselineBoundedN4F2ForkingFaultyInitSafety),
+        unchangedAll,
+      })
+  }
+}
+
 module CrosslinkBaselineBoundedFaultyInitN5F2ForkingModel {
   /*
    A representative f=2 faulty-init symbolic harness. It uses the n5/f2
