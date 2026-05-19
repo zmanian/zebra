@@ -151,7 +151,7 @@ The current branch has these baseline-specific files:
 | Full agreement/validity/accountability invariant suite over arbitrary evidence | Current suite has bounded safety plus focused accountability witnesses | Partial |
 | False-invariant/counterexample harnesses for amnesia/equivocation/agreement | `CrosslinkBaselineCounterexampleModel`; `falseNoConflictingCommitsInvariantFailsTest`; `falseNoAmnesiaEvidenceInvariantFailsTest`; `falseNoEquivocationEvidenceInvariantFailsTest`; `falseAgreementInvariantFailsTest`; `falseAgreementOrAmnesiaInvariantFailsTest`; `falseAmnesiaImpliesEquivocationInvariantFailsTest`; `falseShowMeAmnesiaWithoutEquivocationInvariantFailsTest`; `falseNeverUndecidedInMaxRoundInvariantFailsTest` | Covered as seeded Rust witnesses; not yet an arbitrary-evidence symbolic suite |
 | Crosslink-specific false-invariant witnesses | `falseNoStaleFixedSigmaProposalInvariantFailsTest`; `falseForkFinalityAttemptIsValidTest` | Covered as seeded Rust witnesses |
-| Generated/adversarial PoW schedule for baseline long reorgs | `CrosslinkBaselinePowSampling.qnt`; `CrosslinkBaselinePowSamplingModel`; `CrosslinkBaselinePowLongReorgModel`; `CrosslinkBaselinePowGeneratedScheduleModel`; `BaselinePowSamplingSafety`; `BaselinePowLongReorgSafety`; `BaselinePowGeneratedScheduleSafety` | Partial; bounded fork-switch, long-reorg, and generated adversarial work-competition fixtures are covered, but stochastic repeated stream-change schedules remain open |
+| Generated/adversarial PoW schedule for baseline long reorgs | `CrosslinkBaselinePowSampling.qnt`; `CrosslinkBaselinePowSamplingModel`; `CrosslinkBaselinePowLongReorgModel`; `CrosslinkBaselinePowGeneratedScheduleModel`; `CrosslinkBaselinePowRepeatedGeneratedScheduleModel`; `BaselinePowSamplingSafety`; `BaselinePowLongReorgSafety`; `BaselinePowGeneratedScheduleSafety`; `BaselinePowRepeatedGeneratedScheduleSafety` | Partial; bounded fork-switch, long-reorg, generated adversarial work-competition, and repeated generated stream-change fixtures are covered, but stochastic block-production abstraction remains open |
 | Stochastic PoW block-production model | Not modeled in baseline | Missing |
 | Inductive or deeper multi-height finality argument | Current BFT-height model is bounded | Partial |
 
@@ -220,12 +220,14 @@ remaining upstream-quality gaps.
 7. Expand the PoW environment.
    - The baseline now has a generated bounded PoW schedule where published work
      selects `a3`, then `a4`, then an adversarially released `b4`.
+   - The baseline now has a repeated generated bounded PoW schedule where
+     published work selects `a3`, then `a4`, then adversarially released `b4`,
+     then adversarially released `c4`.
    - A long-reorg fixture now covers rollback depth 3 with sigma 2, where the
      sticky baseline carries the stale `head - sigma` sample across the fork
      switch.
-   - Add a simple stochastic block-production abstraction, and broaden the
-     generated schedule to repeated stream changes rather than one adversarial
-     release.
+   - Add a simple stochastic block-production abstraction rather than only
+     deterministic generated work schedules.
 8. Push finality beyond a bounded fixture.
    - Either add deeper symbolic projection checks or split the model into
      smaller lemmas that make the multi-height finalized-prefix argument more

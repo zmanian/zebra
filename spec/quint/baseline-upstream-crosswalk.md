@@ -85,7 +85,7 @@ without clearing same-round value or proposal-cache state.
 | Faulty init symbolic checking | Tiny full-powerset faulty init plus bounded forking faulty init; full forking faulty init remains quick-check-only for `n4_f1` and `n7_f2` | Partial |
 | `f = 2` symbolic checking | `symbolic-baseline` verifies `n4_f2`, `n5_f2`, and `n7_f2` safety invariants at depth 2 | Covered, shallow |
 | Full arbitrary-evidence accountability checking | Focused witnesses, upstream-shaped negative witnesses, and bounded faulty-init gates | Partial |
-| Full PoW environment checking | Fixed fork switch, long-reorg, generated adversarial work-competition, and fixed-sigma sampling fixtures | Partial |
+| Full PoW environment checking | Fixed fork switch, long-reorg, generated adversarial work-competition, repeated generated stream-change, and fixed-sigma sampling fixtures | Partial |
 | Stochastic or adversarial block production | Not in baseline | Missing |
 | Inductive multi-height finality proof | Bounded BFT-height and composed-finality fixtures | Partial |
 
@@ -124,8 +124,7 @@ The crosswalk leaves these concrete gaps:
    deepened beyond max depth 2.
 6. Broaden Crosslink-specific false-invariant witnesses beyond hand-authored
    stale-sample and fork-finality fixtures.
-7. Broaden the generated bounded PoW schedule beyond a single adversarial
-   release, and add a simple stochastic block-production abstraction for
-   repeated stream changes.
+7. Add a simple stochastic block-production abstraction beyond the deterministic
+   generated work-competition schedules.
 8. Strengthen finalized-prefix reasoning beyond bounded fixtures, either with
    deeper symbolic projections or smaller lemmas.
