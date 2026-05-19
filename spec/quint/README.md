@@ -35,6 +35,12 @@ normal propose/prevote/precommit path, while a changed stream carries the stale
 sample and can block a fresh decision because same-round Tendermint state is not
 cleared.
 
+`CrosslinkBaselineFinality.qnt` composes that baseline Tenderlink behavior with
+Crosslink finality. It shows that the fixed-sigma/sticky protocol can finalize a
+tail-confirmed stable-stream decision, and records the Crosslink-level failure
+mode when a stream change leaves the protocol carrying the stale sample while
+finality remains at the prior prefix.
+
 `CrosslinkForkFinality.qnt` is a separate value-semantics model. It abstracts
 PoW snapshots as a finite fork tree, then checks that Crosslink finality can skip
 heights on one branch while rejecting finalization of a fork after a block is
@@ -268,6 +274,7 @@ Typecheck:
 
 ```sh
 $QUINT typecheck spec/quint/CrosslinkBaseline.qnt
+$QUINT typecheck spec/quint/CrosslinkBaselineFinality.qnt
 $QUINT typecheck spec/quint/CrosslinkResampling.qnt
 $QUINT typecheck spec/quint/CrosslinkForkFinality.qnt
 $QUINT typecheck spec/quint/CrosslinkPowForkSchedule.qnt
@@ -303,6 +310,27 @@ snapshot when the PoW stream does not move. The stream-change model records the
 baseline limitation: after a nil-precommit quorum, the current protocol carries
 the stale sample into the next round and same-round Tendermint state can block a
 fresh decision.
+
+Witness the named baseline finality behavior:
+
+```sh
+$QUINT test spec/quint/CrosslinkBaselineFinality.qnt \
+  --main=CrosslinkBaselineFinalityStableModel \
+  --max-samples=100 \
+  --backend=rust
+
+$QUINT test spec/quint/CrosslinkBaselineFinality.qnt \
+  --main=CrosslinkBaselineFinalityStreamChangeModel \
+  --max-samples=100 \
+  --backend=rust
+```
+
+The stable finality model checks the current fixed-sigma/sticky protocol can
+decide and finalize a tail-confirmed sampled snapshot when the PoW stream is
+stable. The stream-change finality model records the Crosslink-level limitation:
+after a nil-precommit quorum, the current protocol can still carry the stale
+sample and leave finality at the previous prefix instead of reaching the fresh
+stream value.
 
 Witness the current sticky behavior:
 
@@ -1076,6 +1104,13 @@ combines:
   either correct-validator precommit equivocation, nil/value equivocation in the
   purported unlock round, or a correct-validator value switch without a valid
   same-round nil unlock certificate
+
+The bounded baseline-finality checks report no violation for `ComposedSafety`,
+which combines the current fixed-sigma/sticky Tenderlink safety invariant with
+the finalized-prefix invariant. The stable-stream liveness harness reaches an
+`a2` decision and finality update by phase 9; the stream-change witness records
+that the sticky baseline can carry `a1` into round 1 and leave finality at `g`
+instead of finalizing the fresh stream value.
 
 The bounded fork-finality check reports no violation for its `Safety`, which
 combines:
