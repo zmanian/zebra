@@ -43,6 +43,7 @@ use chain::*;
 pub mod dynamic_sigma;
 use crate::dynamic_sigma::{
     select_dynamic_sigma, DynamicSigmaProposalEvidence, DynamicSigmaRawTelemetry,
+    DynamicSigmaRoundCounters, DynamicSigmaRoundEvent, DynamicSigmaTelemetryComponents,
     RollbackRiskCurve, TelemetryEstimateMargins,
 };
 
@@ -617,12 +618,33 @@ fn dynamic_sigma_proposal_evidence_from_raw_telemetry(
     })
 }
 
-fn prototype_dynamic_sigma_raw_telemetry() -> DynamicSigmaRawTelemetry {
-    DynamicSigmaRawTelemetry {
-        total_hash_work: 100,
-        crosslink_participating_hash_work: 90,
-        total_tenderlink_rounds: 10,
-        failed_tenderlink_rounds: 0,
+fn dynamic_sigma_proposal_evidence_from_telemetry_components(
+    params: dynamic_sigma::DynamicSigmaParameters,
+    telemetry_components: DynamicSigmaTelemetryComponents,
+    margins: TelemetryEstimateMargins,
+) -> Result<DynamicSigmaProposalEvidence, TenderlinkPayloadEncodeError> {
+    let raw_telemetry = telemetry_components
+        .try_into_raw_telemetry()
+        .map_err(|_| TenderlinkPayloadEncodeError::DynamicSigmaInvalid)?;
+
+    dynamic_sigma_proposal_evidence_from_raw_telemetry(params, raw_telemetry, margins)
+}
+
+fn prototype_dynamic_sigma_round_counters() -> DynamicSigmaRoundCounters {
+    let mut round_counters = DynamicSigmaRoundCounters::default();
+    for _ in 0..10 {
+        round_counters.record_event(DynamicSigmaRoundEvent::StartedRound);
+        round_counters.record_event(DynamicSigmaRoundEvent::Decided);
+    }
+
+    round_counters
+}
+
+fn prototype_dynamic_sigma_telemetry_components() -> DynamicSigmaTelemetryComponents {
+    DynamicSigmaTelemetryComponents {
+        total_hash_work: Some(100),
+        crosslink_participating_hash_work: Some(90),
+        round_counters: prototype_dynamic_sigma_round_counters(),
         measured_block_interval_variance_pct: 0,
         measured_observed_reorg_depth: 0,
         rollback_risk: RollbackRiskCurve {
@@ -648,9 +670,9 @@ fn prototype_dynamic_sigma_telemetry_margins() -> TelemetryEstimateMargins {
 fn prototype_dynamic_sigma_proposal_evidence(
     params: dynamic_sigma::DynamicSigmaParameters,
 ) -> Result<DynamicSigmaProposalEvidence, TenderlinkPayloadEncodeError> {
-    dynamic_sigma_proposal_evidence_from_raw_telemetry(
+    dynamic_sigma_proposal_evidence_from_telemetry_components(
         params,
-        prototype_dynamic_sigma_raw_telemetry(),
+        prototype_dynamic_sigma_telemetry_components(),
         prototype_dynamic_sigma_telemetry_margins(),
     )
 }
@@ -2419,7 +2441,8 @@ impl MalVote {
 mod tests {
     use super::*;
     use crate::dynamic_sigma::{
-        DynamicSigmaProposalEvidence, DynamicSigmaRawTelemetry, RollbackRiskCurve,
+        DynamicSigmaProposalEvidence, DynamicSigmaRawTelemetry, DynamicSigmaRoundCounters,
+        DynamicSigmaRoundEvent, DynamicSigmaTelemetryComponents, RollbackRiskCurve,
         TelemetryEstimateMargins,
     };
     use chrono::Utc;
@@ -2477,6 +2500,34 @@ mod tests {
             coverage_risk_margin_pct: 2,
             round_failure_margin_pct: 0,
         }
+    }
+
+    fn dynamic_sigma_telemetry_components(
+        participating_hash_work: u128,
+        round_counters: DynamicSigmaRoundCounters,
+    ) -> DynamicSigmaTelemetryComponents {
+        DynamicSigmaTelemetryComponents {
+            total_hash_work: Some(100),
+            crosslink_participating_hash_work: Some(participating_hash_work),
+            round_counters,
+            measured_block_interval_variance_pct: 0,
+            measured_observed_reorg_depth: 0,
+            rollback_risk: RollbackRiskCurve {
+                base_sigma_ppm: 20,
+                raised_sigma_ppm: 10,
+                max_sigma_ppm: 2,
+            },
+            value_at_risk_units: 1_000,
+            max_acceptable_expected_loss_units: 1,
+        }
+    }
+
+    fn round_counters_from_events(events: &[DynamicSigmaRoundEvent]) -> DynamicSigmaRoundCounters {
+        let mut counters = DynamicSigmaRoundCounters::default();
+        for event in events {
+            counters.record_event(*event);
+        }
+        counters
     }
 
     #[test]
@@ -2765,6 +2816,73 @@ mod tests {
         assert_eq!(
             evidence.selected_sigma,
             PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS.max_sigma,
+        );
+    }
+
+    #[test]
+    fn dynamic_sigma_proposal_evidence_from_components_selects_sigma_from_event_counters() {
+        let round_counters = round_counters_from_events(&[
+            DynamicSigmaRoundEvent::StartedRound,
+            DynamicSigmaRoundEvent::Decided,
+            DynamicSigmaRoundEvent::StartedRound,
+            DynamicSigmaRoundEvent::Decided,
+            DynamicSigmaRoundEvent::StartedRound,
+            DynamicSigmaRoundEvent::Decided,
+            DynamicSigmaRoundEvent::StartedRound,
+            DynamicSigmaRoundEvent::Decided,
+            DynamicSigmaRoundEvent::StartedRound,
+            DynamicSigmaRoundEvent::Decided,
+            DynamicSigmaRoundEvent::StartedRound,
+            DynamicSigmaRoundEvent::Decided,
+            DynamicSigmaRoundEvent::StartedRound,
+            DynamicSigmaRoundEvent::Decided,
+            DynamicSigmaRoundEvent::StartedRound,
+            DynamicSigmaRoundEvent::Decided,
+            DynamicSigmaRoundEvent::StartedRound,
+            DynamicSigmaRoundEvent::StaleProposal,
+            DynamicSigmaRoundEvent::StartedRound,
+            DynamicSigmaRoundEvent::StaleProposal,
+        ]);
+
+        let evidence = dynamic_sigma_proposal_evidence_from_telemetry_components(
+            PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS,
+            dynamic_sigma_telemetry_components(90, round_counters),
+            dynamic_sigma_telemetry_margins(),
+        )
+        .expect("event-derived round telemetry should build proposal evidence");
+
+        assert_eq!(
+            evidence.raw_telemetry.total_tenderlink_rounds,
+            round_counters.started_rounds,
+        );
+        assert_eq!(
+            evidence.raw_telemetry.failed_tenderlink_rounds,
+            round_counters.failed_rounds,
+        );
+        assert_eq!(
+            evidence.selected_sigma,
+            PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS.raised_sigma,
+        );
+    }
+
+    #[test]
+    fn dynamic_sigma_proposal_evidence_from_components_rejects_missing_participation() {
+        let mut components = dynamic_sigma_telemetry_components(
+            90,
+            round_counters_from_events(&[
+                DynamicSigmaRoundEvent::StartedRound,
+                DynamicSigmaRoundEvent::Decided,
+            ]),
+        );
+        components.crosslink_participating_hash_work = None;
+
+        assert_eq!(
+            dynamic_sigma_proposal_evidence_from_telemetry_components(
+                PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS,
+                components,
+                dynamic_sigma_telemetry_margins(),
+            ),
+            Err(TenderlinkPayloadEncodeError::DynamicSigmaInvalid),
         );
     }
 

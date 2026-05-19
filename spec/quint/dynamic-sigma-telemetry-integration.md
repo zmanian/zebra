@@ -142,15 +142,16 @@ rejected by default, but a prototype-only config flag enables the proposer to
 emit the tagged envelope and enables validation callbacks to check the envelope
 against shared prototype dynamic-sigma parameters before accepting the carried
 BFT block. The proposer now derives `selected_sigma` by running the
-dynamic-sigma controller over the prototype telemetry fixture instead of
-hard-coding the base sigma. The decoded payload also carries its selected
-confirmation depth into the voting-time current-stream staleness check, so
-prototype dynamic proposals are compared against `head - selected_sigma` instead
-of the fixed-sigma sample. This preserves backward compatibility while
-preventing a dynamic-sigma payload from being silently treated as a fixed-sigma
-block, and it keeps the dynamic variant behind an explicit opt-in until
-production telemetry exists. If telemetry-to-evidence selection fails, the
-proposal path now fails closed instead of falling back to the base sigma.
+dynamic-sigma controller over prototype telemetry components instead of
+hard-coding the base sigma or bypassing assembly with raw counters. The decoded
+payload also carries its selected confirmation depth into the voting-time
+current-stream staleness check, so prototype dynamic proposals are compared
+against `head - selected_sigma` instead of the fixed-sigma sample. This
+preserves backward compatibility while preventing a dynamic-sigma payload from
+being silently treated as a fixed-sigma block, and it keeps the dynamic variant
+behind an explicit opt-in until production telemetry exists. If telemetry
+assembly or telemetry-to-evidence selection fails, the proposal path now fails
+closed instead of falling back to the base sigma.
 
 In that prototype-gated path, hash participation already affects payload
 validity through the carried evidence: if the Crosslink-participating work share
@@ -173,6 +174,13 @@ recovery, stale proposals, timeouts, invalid proposals, and mixed evidence into
 deterministic or proposal-carried evidence, but the event API gives live
 Tenderlink hooks a single place to accumulate the durable window. Validation
 rejects impossible totals and failure-reason overcounts.
+
+The prototype proposal path now uses this same assembly boundary through
+`dynamic_sigma_proposal_evidence_from_telemetry_components`: telemetry components
+are assembled into raw telemetry, the controller selects the required sigma, and
+the proposal carries the selected value in its evidence. This keeps prototype
+fixtures aligned with the production-shaped contract while leaving the actual
+source producers as explicit remaining work.
 
 Rollback-depth telemetry has the same shape. `DynamicSigmaBestTipTransition`
 represents a best-tip change by its previous tip height, new tip height, and

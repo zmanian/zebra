@@ -110,9 +110,10 @@ using shared prototype parameters and proposal-carried evidence. The decoded
 payload carries its selected confirmation depth into voting-time stale checks,
 so a prototype dynamic proposal is checked against `head - selected_sigma`. The
 prototype proposer now runs the dynamic-sigma controller over its fixture
-telemetry before selecting that sigma; production telemetry sources are still
-the missing deployment step. Invalid telemetry-to-evidence selection prevents
-prototype proposal emission instead of falling back to the base sigma.
+telemetry components before selecting that sigma; production telemetry sources
+are still the missing deployment step. Invalid telemetry assembly or
+telemetry-to-evidence selection prevents prototype proposal emission instead of
+falling back to the base sigma.
 
 `CrosslinkDynamicSigmaForkSchedule.qnt` composes the dynamic-sigma controller
 with the derived PoW fork schedule. In this model, dynamic sigma consumes
@@ -1042,12 +1043,12 @@ This model is intentionally narrow. The next useful extensions are:
   selected-sigma BFT block constructor to production telemetry sources and live
   proposal validation, including a consensus-safe Crosslink hash-participation
   metric and a validated economic exposure model. The live prototype proposal
-  path now runs the controller over fixture telemetry, and the pure telemetry
-  assembly boundary fails closed on missing participating-work evidence or
-  inconsistent round counters. The event accumulator now gives live Tenderlink
-  hooks an exact round-counter contract, and the pure rollback-depth helper
-  derives the observed reorg-depth input from explicit best-tip transition
-  evidence. The remaining work is replacing the fixture with consensus-safe or
-  proposal-verifiable input producers
+  path now runs the controller over fixture telemetry components, and the pure
+  telemetry assembly boundary fails closed on missing participating-work
+  evidence or inconsistent round counters. The event accumulator now gives live
+  Tenderlink hooks an exact round-counter contract, and the pure rollback-depth
+  helper derives the observed reorg-depth input from explicit best-tip
+  transition evidence. The remaining work is replacing the fixture with
+  consensus-safe or proposal-verifiable input producers
 - refine the split projection checks into smaller inductive lemmas if bounds
   beyond the checked depth-10 projections still need very large JVM/Z3 heaps
