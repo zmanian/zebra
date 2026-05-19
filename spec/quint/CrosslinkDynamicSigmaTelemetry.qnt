@@ -11,8 +11,8 @@ module CrosslinkDynamicSigmaTelemetry {
      total observed PoW work
    - rate estimates conservatively upper-bound raw coverage and round-failure
      samples
-   - selected sigma meets an explicit rollback-risk target whenever the bounded
-     sigma ladder can meet it
+   - selected sigma meets explicit rollback-probability and expected-loss
+     targets whenever the bounded sigma ladder can meet them
    */
 
   type Observation_t = int
@@ -35,6 +35,8 @@ module CrosslinkDynamicSigmaTelemetry {
   const MeasuredObservedReorgDepth: Observation_t -> int
   const RollbackRiskPpmAtSigma: Observation_t -> Sigma_t -> int
   const MaxAcceptableRollbackRiskPpm: int
+  const ValueAtRiskUnits: Observation_t -> int
+  const MaxAcceptableExpectedLossUnits: Observation_t -> int
   const ExpectedTelemetrySigmaFloor: Observation_t -> Sigma_t
   const CoverageRiskWeight: int
   const RoundFailureRiskWeight: int
@@ -46,6 +48,7 @@ module CrosslinkDynamicSigmaTelemetry {
   pure val Observations = 0.to(MaxObservation)
   pure val Percentages = 0.to(100)
   pure val SigmaLadder = Set(BaseSigma, RaisedSigma, MaxSigma)
+  pure val PpmDenominator = 1000000
 
   var observation: Observation_t
 
@@ -87,6 +90,10 @@ module CrosslinkDynamicSigmaTelemetry {
     )
   assume max_acceptable_risk_is_non_negative =
     MaxAcceptableRollbackRiskPpm >= 0
+  assume economic_exposure_is_well_formed =
+    Observations.forall(o =>
+      ValueAtRiskUnits.get(o) >= 0 and MaxAcceptableExpectedLossUnits.get(o) >= 0
+    )
   assume expected_floors_are_in_ladder =
     Observations.forall(o =>
       SigmaLadder.contains(ExpectedTelemetrySigmaFloor.get(o))
@@ -138,10 +145,15 @@ module CrosslinkDynamicSigmaTelemetry {
       BaseSigma
     }
 
+  pure def EconomicTargetSatisfiedAtSigma(o: Observation_t, s: Sigma_t): bool =
+    RollbackRiskPpmAtSigma.get(o).get(s) <= MaxAcceptableRollbackRiskPpm and
+      RollbackRiskPpmAtSigma.get(o).get(s) * ValueAtRiskUnits.get(o) <=
+        MaxAcceptableExpectedLossUnits.get(o) * PpmDenominator
+
   pure def EconomicSigmaFloorForObservation(o: Observation_t): Sigma_t =
-    if (RollbackRiskPpmAtSigma.get(o).get(BaseSigma) <= MaxAcceptableRollbackRiskPpm) {
+    if (EconomicTargetSatisfiedAtSigma(o, BaseSigma)) {
       BaseSigma
-    } else if (RollbackRiskPpmAtSigma.get(o).get(RaisedSigma) <= MaxAcceptableRollbackRiskPpm) {
+    } else if (EconomicTargetSatisfiedAtSigma(o, RaisedSigma)) {
       RaisedSigma
     } else {
       MaxSigma
@@ -160,10 +172,7 @@ module CrosslinkDynamicSigmaTelemetry {
     )
 
   pure def EconomicTargetStatusForObservation(o: Observation_t): str =
-    if (
-      RollbackRiskPpmAtSigma.get(o).get(TelemetrySigmaFloorForObservation(o)) <=
-        MaxAcceptableRollbackRiskPpm
-    ) {
+    if (EconomicTargetSatisfiedAtSigma(o, TelemetrySigmaFloorForObservation(o))) {
       "target-satisfied"
     } else {
       "target-unreachable-at-max"
@@ -191,9 +200,8 @@ module CrosslinkDynamicSigmaTelemetry {
 
   val EconomicTargetIsSatisfiedWhenReachable =
     Observations.forall(o =>
-      if (RollbackRiskPpmAtSigma.get(o).get(MaxSigma) <= MaxAcceptableRollbackRiskPpm) {
-        RollbackRiskPpmAtSigma.get(o).get(TelemetrySigmaFloorForObservation(o)) <=
-          MaxAcceptableRollbackRiskPpm
+      if (EconomicTargetSatisfiedAtSigma(o, MaxSigma)) {
+        EconomicTargetSatisfiedAtSigma(o, TelemetrySigmaFloorForObservation(o))
       } else {
         TelemetrySigmaFloorForObservation(o) == MaxSigma and
           EconomicTargetStatusForObservation(o) == "target-unreachable-at-max"
@@ -307,6 +315,14 @@ module CrosslinkDynamicSigmaTelemetryTest {
     assert(TelemetrySigmaFloorForObservation(7) == MaxSigma),
   }
 
+  run expectedLossBudgetRaisesSigmaEvenWithinPpmTargetTest = all {
+    assert(RollbackRiskPpmAtSigma.get(8).get(BaseSigma) <= MaxAcceptableRollbackRiskPpm),
+    assert(not(EconomicTargetSatisfiedAtSigma(8, BaseSigma))),
+    assert(EconomicTargetSatisfiedAtSigma(8, RaisedSigma)),
+    assert(EconomicSigmaFloorForObservation(8) == RaisedSigma),
+    assert(TelemetrySigmaFloorForObservation(8) == RaisedSigma),
+  }
+
   run telemetryMatchesAllExpectedWindowsTest = {
     assert(TelemetryCalibrationSafety)
   }
@@ -314,7 +330,7 @@ module CrosslinkDynamicSigmaTelemetryTest {
 
 module CrosslinkDynamicSigmaTelemetryModel {
   import CrosslinkDynamicSigmaTelemetryTest(
-    MaxObservation = 7,
+    MaxObservation = 8,
     BaseSigma = 1,
     RaisedSigma = 3,
     MaxSigma = 6,
@@ -329,6 +345,7 @@ module CrosslinkDynamicSigmaTelemetryModel {
       5 -> 100,
       6 -> 100,
       7 -> 100,
+      8 -> 100,
     ),
     CrosslinkParticipatingHashWork = Map(
       0 -> 90,
@@ -339,6 +356,7 @@ module CrosslinkDynamicSigmaTelemetryModel {
       5 -> 90,
       6 -> 90,
       7 -> 90,
+      8 -> 90,
     ),
     TotalTenderlinkRounds = Map(
       0 -> 100,
@@ -349,6 +367,7 @@ module CrosslinkDynamicSigmaTelemetryModel {
       5 -> 100,
       6 -> 100,
       7 -> 100,
+      8 -> 100,
     ),
     FailedTenderlinkRounds = Map(
       0 -> 0,
@@ -359,6 +378,7 @@ module CrosslinkDynamicSigmaTelemetryModel {
       5 -> 0,
       6 -> 0,
       7 -> 0,
+      8 -> 0,
     ),
     EstimatedCoverageRiskPct = Map(
       0 -> 10,
@@ -369,6 +389,7 @@ module CrosslinkDynamicSigmaTelemetryModel {
       5 -> 10,
       6 -> 10,
       7 -> 10,
+      8 -> 10,
     ),
     EstimatedRoundFailureRatePct = Map(
       0 -> 0,
@@ -379,6 +400,7 @@ module CrosslinkDynamicSigmaTelemetryModel {
       5 -> 0,
       6 -> 0,
       7 -> 0,
+      8 -> 0,
     ),
     MeasuredBlockIntervalVariancePct = Map(
       0 -> 5,
@@ -389,6 +411,7 @@ module CrosslinkDynamicSigmaTelemetryModel {
       5 -> 5,
       6 -> 5,
       7 -> 5,
+      8 -> 5,
     ),
     MeasuredObservedReorgDepth = Map(
       0 -> 0,
@@ -399,6 +422,7 @@ module CrosslinkDynamicSigmaTelemetryModel {
       5 -> 0,
       6 -> 0,
       7 -> 3,
+      8 -> 0,
     ),
     RollbackRiskPpmAtSigma = Map(
       0 -> Map(1 -> 40, 3 -> 10, 6 -> 1),
@@ -409,8 +433,31 @@ module CrosslinkDynamicSigmaTelemetryModel {
       5 -> Map(1 -> 500, 3 -> 180, 6 -> 70),
       6 -> Map(1 -> 500, 3 -> 300, 6 -> 120),
       7 -> Map(1 -> 400, 3 -> 180, 6 -> 60),
+      8 -> Map(1 -> 80, 3 -> 5, 6 -> 1),
     ),
     MaxAcceptableRollbackRiskPpm = 100,
+    ValueAtRiskUnits = Map(
+      0 -> 1000,
+      1 -> 1000,
+      2 -> 1000,
+      3 -> 1000,
+      4 -> 1000,
+      5 -> 1000,
+      6 -> 1000,
+      7 -> 1000,
+      8 -> 100000,
+    ),
+    MaxAcceptableExpectedLossUnits = Map(
+      0 -> 100,
+      1 -> 100,
+      2 -> 100,
+      3 -> 100,
+      4 -> 100,
+      5 -> 100,
+      6 -> 100,
+      7 -> 100,
+      8 -> 1,
+    ),
     ExpectedTelemetrySigmaFloor = Map(
       0 -> 1,
       1 -> 3,
@@ -420,6 +467,7 @@ module CrosslinkDynamicSigmaTelemetryModel {
       5 -> 6,
       6 -> 6,
       7 -> 6,
+      8 -> 3,
     ),
     CoverageRiskWeight = 2,
     RoundFailureRiskWeight = 3,

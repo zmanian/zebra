@@ -80,8 +80,8 @@ windows into the expected sigma floors.
 production-shaped. It derives participation from Crosslink-participating PoW
 work over total observed PoW work, requires conservative coverage and
 round-failure estimates, and adds an explicit acceptable rollback-risk target
-that the selected sigma must satisfy whenever the configured ladder can satisfy
-it.
+plus expected-loss budget that the selected sigma must satisfy whenever the
+configured ladder can satisfy both.
 
 `CrosslinkDynamicSigmaForkSchedule.qnt` composes the dynamic-sigma controller
 with the derived PoW fork schedule. In this model, dynamic sigma consumes
@@ -442,16 +442,19 @@ This runs:
 - `economicTargetCanForceMaxSigmaTest`
 - `unreachableEconomicTargetFallsBackToMaxSigmaTest`
 - `deepReorgTelemetryWindowForcesMaxSigmaTest`
+- `expectedLossBudgetRaisesSigmaEvenWithinPpmTargetTest`
 - `telemetryMatchesAllExpectedWindowsTest`
 
-The telemetry fixture covers eight windows: healthy baseline, marginal
+The telemetry fixture covers nine windows: healthy baseline, marginal
 participating hash work, combined telemetry risk, an economic target that raises
 sigma above the hard-signal floor, critical participating hash work, an economic
 target that forces max sigma, an unreachable risk target that falls back to max
-sigma, and a deep reorg. It checks that conservative telemetry estimates
-upper-bound raw sampled work and round failures, rollback risk is monotone in
-sigma, and the selected sigma satisfies the configured rollback-risk target when
-the ladder can satisfy it.
+sigma, a deep reorg, and a high-value-at-risk window where the rollback
+probability is within the PPM cap but the expected-loss budget still forces a
+deeper sigma. It checks that conservative telemetry estimates upper-bound raw
+sampled work and round failures, rollback risk is monotone in sigma, and the
+selected sigma satisfies the configured rollback-risk and expected-loss targets
+when the ladder can satisfy them.
 
 Witness dynamic sigma consuming derived PoW rollback depth:
 
@@ -942,7 +945,8 @@ The production-shaped dynamic-sigma telemetry harness reports no violation for
   work and Crosslink-participating PoW work
 - conservative round-failure estimates upper-bound raw failed Tenderlink rounds
 - rollback-risk estimates are monotone across the sigma ladder
-- selected sigma satisfies the explicit rollback-risk target when reachable
+- selected sigma satisfies the explicit rollback-risk and expected-loss targets
+  when reachable
 - if the target is unreachable at max sigma, the controller falls back to max
   sigma and exposes that status
 - sampled hash-work coverage maps to the expected participation floor
@@ -1003,7 +1007,8 @@ generated-work-competition obligations and run substantially faster.
 
 This model is intentionally narrow. The next useful extensions are:
 
-- connect the telemetry contract to production data sources and a real economic
-  model for rollback loss rather than the bounded fixture values used here
+- connect the telemetry contract parameters to production data sources and a
+  validated economic exposure model rather than the bounded fixture values used
+  here
 - refine the split projection checks into smaller inductive lemmas if bounds
   beyond the checked depth-10 projections still need very large JVM/Z3 heaps
