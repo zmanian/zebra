@@ -83,6 +83,12 @@ round-failure estimates, and adds an explicit acceptable rollback-risk target
 plus expected-loss budget that the selected sigma must satisfy whenever the
 configured ladder can satisfy both.
 
+`CrosslinkDynamicSigmaHysteresis.qnt` models the stability policy that should
+sit on top of those telemetry-derived floors. Worsening evidence, including a
+drop in Crosslink-participating hash power, can raise sigma immediately.
+Improving evidence lowers sigma only after enough stable lower-risk windows,
+and then only one ladder step at a time.
+
 `dynamic-sigma-telemetry-integration.md` maps those telemetry inputs to
 production data sources and documents the consensus-safety requirements before
 a deployed controller can replace the prototype's fixed sigma parameter.
@@ -210,6 +216,7 @@ $QUINT typecheck spec/quint/CrosslinkBftHeights.qnt
 $QUINT typecheck spec/quint/CrosslinkDynamicSigma.qnt
 $QUINT typecheck spec/quint/CrosslinkDynamicSigmaCalibration.qnt
 $QUINT typecheck spec/quint/CrosslinkDynamicSigmaTelemetry.qnt
+$QUINT typecheck spec/quint/CrosslinkDynamicSigmaHysteresis.qnt
 $QUINT typecheck spec/quint/CrosslinkDynamicSigmaForkSchedule.qnt
 $QUINT typecheck spec/quint/CrosslinkDynamicSigmaBranchCompetition.qnt
 $QUINT typecheck spec/quint/CrosslinkDynamicSigmaResampling.qnt
@@ -504,6 +511,30 @@ required sigma floors across windows: it raises immediately on worse evidence
 and only lowers one ladder step after enough stable lower-risk windows. It is
 not wired into live proposal validity yet.
 
+Witness dynamic-sigma hysteresis:
+
+```sh
+$QUINT test spec/quint/CrosslinkDynamicSigmaHysteresis.qnt \
+  --main=CrosslinkDynamicSigmaHysteresisModel \
+  --max-samples=100 \
+  --backend=rust
+```
+
+This runs:
+
+- `higherRequiredSigmaAppliesImmediatelyTest`
+- `lowerRequiredSigmaWaitsForStableWindowTest`
+- `stableLowerRequiredSigmaStepsDownOneLevelTest`
+- `secondStableDecreaseReturnsToBaseTest`
+- `hysteresisSafetyHoldsAtWitnessEndTest`
+
+The hysteresis fixture treats the required sigma as the output of the telemetry
+controller. If low Crosslink-participating hash power, fork rollback depth, or
+combined risk raises that required floor, live sigma follows immediately. If a
+later window reports healthier participation or lower risk, live sigma waits for
+stable confirmation windows and then steps down one ladder level instead of
+jumping directly back to base.
+
 Witness dynamic sigma consuming derived PoW rollback depth:
 
 ```sh
@@ -725,6 +756,16 @@ $QUINT run spec/quint/CrosslinkDynamicSigmaTelemetry.qnt \
   --backend=rust \
   --verbosity=0
 
+$QUINT run spec/quint/CrosslinkDynamicSigmaHysteresis.qnt \
+  --main=CrosslinkDynamicSigmaHysteresisModel \
+  --init=Init \
+  --step=Next \
+  --max-steps=5 \
+  --max-samples=1000 \
+  --invariant=Safety \
+  --backend=rust \
+  --verbosity=0
+
 $QUINT run spec/quint/CrosslinkDynamicSigmaForkSchedule.qnt \
   --main=CrosslinkDynamicSigmaForkScheduleModel \
   --init=DerivedInit \
@@ -849,6 +890,13 @@ $QUINT verify spec/quint/CrosslinkDynamicSigmaCalibration.qnt \
 $QUINT verify spec/quint/CrosslinkDynamicSigmaTelemetry.qnt \
   --main=CrosslinkDynamicSigmaTelemetryModel \
   --max-steps=8 \
+  --init=Init \
+  --step=Next \
+  --invariant=Safety
+
+$QUINT verify spec/quint/CrosslinkDynamicSigmaHysteresis.qnt \
+  --main=CrosslinkDynamicSigmaHysteresisModel \
+  --max-steps=5 \
   --init=Init \
   --step=Next \
   --invariant=Safety
@@ -1003,6 +1051,15 @@ The production-shaped dynamic-sigma telemetry harness reports no violation for
   sigma and exposes that status
 - sampled hash-work coverage maps to the expected participation floor
 - every telemetry window maps to its expected sigma floor
+
+The dynamic-sigma hysteresis harness reports no violation for `Safety`, which
+combines:
+
+- live sigma remains within the configured ladder
+- live sigma remains at least the required floor for the current window
+- higher required sigma applies immediately
+- lower required sigma waits for stable windows and steps down one ladder level
+  at a time
 
 The dynamic-sigma/fork-schedule composition reports no violation for
 `DerivedSafety`, which combines:

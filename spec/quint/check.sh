@@ -48,6 +48,7 @@ typecheck_all() {
     spec/quint/CrosslinkDynamicSigma.qnt
     spec/quint/CrosslinkDynamicSigmaCalibration.qnt
     spec/quint/CrosslinkDynamicSigmaTelemetry.qnt
+    spec/quint/CrosslinkDynamicSigmaHysteresis.qnt
     spec/quint/CrosslinkDynamicSigmaForkSchedule.qnt
     spec/quint/CrosslinkDynamicSigmaBranchCompetition.qnt
     spec/quint/CrosslinkDynamicSigmaResampling.qnt
@@ -112,6 +113,7 @@ quick_checks() {
   test_model spec/quint/CrosslinkDynamicSigma.qnt CrosslinkDynamicSigmaHashParticipationModel
   test_model spec/quint/CrosslinkDynamicSigmaCalibration.qnt CrosslinkDynamicSigmaCalibrationModel
   test_model spec/quint/CrosslinkDynamicSigmaTelemetry.qnt CrosslinkDynamicSigmaTelemetryModel
+  test_model spec/quint/CrosslinkDynamicSigmaHysteresis.qnt CrosslinkDynamicSigmaHysteresisModel
   test_model spec/quint/CrosslinkDynamicSigmaForkSchedule.qnt CrosslinkDynamicSigmaForkScheduleModel
   test_model spec/quint/CrosslinkDynamicSigmaBranchCompetition.qnt CrosslinkDynamicSigmaBranchCompetitionModel
   test_model spec/quint/CrosslinkDynamicSigmaResampling.qnt CrosslinkDynamicSigmaResamplingModel
@@ -129,6 +131,7 @@ quick_checks() {
   run_model spec/quint/CrosslinkDynamicSigma.qnt CrosslinkDynamicSigmaHashParticipationModel Init Next 7 1000 Safety
   run_model spec/quint/CrosslinkDynamicSigmaCalibration.qnt CrosslinkDynamicSigmaCalibrationModel Init Next 8 1000 Safety
   run_model spec/quint/CrosslinkDynamicSigmaTelemetry.qnt CrosslinkDynamicSigmaTelemetryModel Init Next 8 1000 Safety
+  run_model spec/quint/CrosslinkDynamicSigmaHysteresis.qnt CrosslinkDynamicSigmaHysteresisModel Init Next 5 1000 Safety
   run_model spec/quint/CrosslinkDynamicSigmaForkSchedule.qnt CrosslinkDynamicSigmaForkScheduleModel DerivedInit DerivedNext 4 1000 DerivedSafety
   run_model spec/quint/CrosslinkDynamicSigmaBranchCompetition.qnt CrosslinkDynamicSigmaBranchCompetitionModel BranchCompetitionDynamicInit BranchCompetitionDynamicNext 4 1000 BranchCompetitionDynamicSafety
   run_model spec/quint/CrosslinkDynamicSigmaResampling.qnt CrosslinkDynamicSigmaResamplingModel DynamicResamplingInit DynamicResamplingNext 8 1000 DynamicResamplingSafety
@@ -148,6 +151,7 @@ symbolic_checks() {
   verify_model spec/quint/CrosslinkDynamicSigma.qnt CrosslinkDynamicSigmaHashParticipationModel 7 Init Next Safety
   verify_model spec/quint/CrosslinkDynamicSigmaCalibration.qnt CrosslinkDynamicSigmaCalibrationModel 8 Init Next Safety
   verify_model spec/quint/CrosslinkDynamicSigmaTelemetry.qnt CrosslinkDynamicSigmaTelemetryModel 8 Init Next Safety
+  verify_model spec/quint/CrosslinkDynamicSigmaHysteresis.qnt CrosslinkDynamicSigmaHysteresisModel 5 Init Next Safety
   verify_model spec/quint/CrosslinkDynamicSigmaForkSchedule.qnt CrosslinkDynamicSigmaForkScheduleModel 4 DerivedInit DerivedNext DerivedSafety
   verify_model spec/quint/CrosslinkDynamicSigmaBranchCompetition.qnt CrosslinkDynamicSigmaBranchCompetitionModel 4 BranchCompetitionDynamicInit BranchCompetitionDynamicNext BranchCompetitionDynamicSafety
   verify_model spec/quint/CrosslinkDynamicSigmaResampling.qnt CrosslinkDynamicSigmaResamplingModel 8 DynamicResamplingInit DynamicResamplingNext DynamicResamplingSafety

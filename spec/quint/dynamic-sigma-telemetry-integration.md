@@ -256,6 +256,11 @@ configured number of stable lower-risk windows. This is not wired into live
 proposal validity yet; it is a policy boundary for the dynamic-sigma variant to
 use once the source windows are production-backed.
 
+`CrosslinkDynamicSigmaHysteresis.qnt` mirrors that policy with bounded witnesses:
+participation-driven or reorg-driven sigma increases apply immediately, while
+recovery to a lower sigma requires stable lower-risk windows and descends one
+ladder step at a time.
+
 ## Implementation Acceptance Criteria
 
 A production implementation of the dynamic-sigma variant should provide:
