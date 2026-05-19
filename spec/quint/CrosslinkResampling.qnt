@@ -110,6 +110,9 @@ module CrosslinkResampling {
   def NilPrecommitCert(r: Round_t): bool =
     PrecommitQuorum(r, NilSnapshot)
 
+  def HasPrevoteFrom(p: Proc_t, r: Round_t): bool =
+    msgsPrevote.get(r).exists(m => m.src == p)
+
   def HasPrecommitFrom(p: Proc_t, r: Round_t): bool =
     msgsPrecommit.get(r).exists(m => m.src == p)
 
@@ -305,9 +308,33 @@ module CrosslinkResampling {
     all {
       step.get(p) == "propose",
       HasProposal(r, v),
+      not(HasPrevoteFrom(p, r)),
       BroadcastPrevote(p, r, vote),
       step' = step.set(p, "prevote"),
       firedAction' = "UponProposalPrevote",
+      round' = round,
+      decision' = decision,
+      lockedValue' = lockedValue,
+      lockedRound' = lockedRound,
+      validValue' = validValue,
+      validRound' = validRound,
+      cachedProposal' = cachedProposal,
+      cachedProposalRound' = cachedProposalRound,
+      msgsPropose' = msgsPropose,
+      msgsPrecommit' = msgsPrecommit,
+      evidencePropose' = evidencePropose,
+      evidencePrecommit' = evidencePrecommit,
+    }
+  }
+
+  action TimeoutProposePrevoteNil(p: Proc_t): bool = {
+    val r = round.get(p)
+    all {
+      step.get(p) == "propose",
+      not(HasPrevoteFrom(p, r)),
+      BroadcastPrevote(p, r, NilSnapshot),
+      step' = step.set(p, "prevote"),
+      firedAction' = "TimeoutProposePrevoteNil",
       round' = round,
       decision' = decision,
       lockedValue' = lockedValue,
@@ -343,6 +370,29 @@ module CrosslinkResampling {
       firedAction' = "UponValuePrevoteQuorum",
       round' = round,
       decision' = decision,
+      msgsPropose' = msgsPropose,
+      msgsPrevote' = msgsPrevote,
+      evidencePropose' = evidencePropose,
+      evidencePrevote' = evidencePrevote,
+    }
+  }
+
+  action TimeoutPrevotePrecommitNil(p: Proc_t): bool = {
+    val r = round.get(p)
+    all {
+      step.get(p) == "prevote",
+      not(HasPrecommitFrom(p, r)),
+      BroadcastPrecommit(p, r, NilSnapshot),
+      step' = step.set(p, "precommit"),
+      firedAction' = "TimeoutPrevotePrecommitNil",
+      round' = round,
+      decision' = decision,
+      lockedValue' = lockedValue,
+      lockedRound' = lockedRound,
+      validValue' = validValue,
+      validRound' = validRound,
+      cachedProposal' = cachedProposal,
+      cachedProposalRound' = cachedProposalRound,
       msgsPropose' = msgsPropose,
       msgsPrevote' = msgsPrevote,
       evidencePropose' = evidencePropose,
@@ -444,6 +494,62 @@ module CrosslinkResampling {
           cachedProposalRound
         },
       firedAction' = "StartNextRoundAfterPrecommitQuorum",
+      decision' = decision,
+      msgsPropose' = msgsPropose,
+      msgsPrevote' = msgsPrevote,
+      msgsPrecommit' = msgsPrecommit,
+      evidencePropose' = evidencePropose,
+      evidencePrevote' = evidencePrevote,
+      evidencePrecommit' = evidencePrecommit,
+    }
+  }
+
+  action TimeoutPrecommitStartNextRound(p: Proc_t): bool = {
+    val oldRound = round.get(p)
+    val nextRound = oldRound + 1
+    val clearSameRoundCache = ResampleOnNilPrecommit and NilPrecommitCert(oldRound)
+    all {
+      nextRound.in(Rounds),
+      step.get(p) == "precommit",
+      round' = round.set(p, nextRound),
+      step' = step.set(p, "propose"),
+      validValue' =
+        if (clearSameRoundCache and validRound.get(p) == oldRound) {
+          validValue.set(p, NilSnapshot)
+        } else {
+          validValue
+        },
+      validRound' =
+        if (clearSameRoundCache and validRound.get(p) == oldRound) {
+          validRound.set(p, NilRound)
+        } else {
+          validRound
+        },
+      lockedValue' =
+        if (clearSameRoundCache and lockedRound.get(p) == oldRound) {
+          lockedValue.set(p, NilSnapshot)
+        } else {
+          lockedValue
+        },
+      lockedRound' =
+        if (clearSameRoundCache and lockedRound.get(p) == oldRound) {
+          lockedRound.set(p, NilRound)
+        } else {
+          lockedRound
+        },
+      cachedProposal' =
+        if (clearSameRoundCache and cachedProposalRound.get(p) == oldRound) {
+          cachedProposal.set(p, NilSnapshot)
+        } else {
+          cachedProposal
+        },
+      cachedProposalRound' =
+        if (clearSameRoundCache and cachedProposalRound.get(p) == oldRound) {
+          cachedProposalRound.set(p, NilRound)
+        } else {
+          cachedProposalRound
+        },
+      firedAction' = "TimeoutPrecommitStartNextRound",
       decision' = decision,
       msgsPropose' = msgsPropose,
       msgsPrevote' = msgsPrevote,
@@ -856,11 +962,14 @@ module CrosslinkResampling {
       InsertProposal(p),
       nondet v = oneOf(Snapshots)
       UponProposalPrevote(p, v),
+      TimeoutProposePrevoteNil(p),
       nondet v = oneOf(Snapshots)
       UponValuePrevoteQuorum(p, v),
+      TimeoutPrevotePrecommitNil(p),
       UponNilPrevoteQuorum(p),
       UponStreamChangePrecommitNil(p),
       StartNextRoundAfterPrecommitQuorum(p),
+      TimeoutPrecommitStartNextRound(p),
       nondet r = oneOf(Rounds)
       nondet v = oneOf(Snapshots)
       Decide(p, r, v),
@@ -882,6 +991,13 @@ module CrosslinkResampling {
     Corr.forall(p =>
       Rounds.forall(r =>
         msgsPrecommit.get(r).filter(m => m.src == p).map(m => m.id).size() <= 1
+      )
+    )
+
+  val NoCorrectPrevoteEquivocation =
+    Corr.forall(p =>
+      Rounds.forall(r =>
+        msgsPrevote.get(r).filter(m => m.src == p).map(m => m.id).size() <= 1
       )
     )
 
@@ -1059,6 +1175,7 @@ module CrosslinkResampling {
     Validity and
     Agreement and
     Accountability and
+    NoCorrectPrevoteEquivocation and
     NoCorrectPrecommitEquivocation and
     SameRoundNilAndValueCommitExcluded and
     LockedValueHasMatchingValidValue and

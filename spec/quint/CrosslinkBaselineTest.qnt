@@ -82,6 +82,36 @@ module CrosslinkBaselineN4F1StableTest {
         unchangedAll,
       })
   }
+
+  run timeoutPrevotePathFormsNilPrecommitCertTest = {
+    Init
+      .then(TimeoutProposePrevoteNil("p1"))
+      .then(TimeoutProposePrevoteNil("p2"))
+      .then(TimeoutProposePrevoteNil("p3"))
+      .then(TimeoutPrevotePrecommitNil("p1"))
+      .then(TimeoutPrevotePrecommitNil("p2"))
+      .then(TimeoutPrevotePrecommitNil("p3"))
+      .then(all {
+        assert(PrevoteQuorum(0, NilSnapshot)),
+        assert(NilPrecommitCert(0)),
+        assert(BaselineN4F1StableSafety),
+        unchangedAll,
+      })
+  }
+
+  run timeoutPrecommitAdvancesWithoutPrecommitQuorumTest = {
+    Init
+      .then(TimeoutProposePrevoteNil("p1"))
+      .then(TimeoutPrevotePrecommitNil("p1"))
+      .then(TimeoutPrecommitStartNextRound("p1"))
+      .then(all {
+        assert(round.get("p1") == 1),
+        assert(step.get("p1") == "propose"),
+        assert(not(NilPrecommitCert(0))),
+        assert(BaselineN4F1StableSafety),
+        unchangedAll,
+      })
+  }
 }
 
 module CrosslinkBaselineN4F1ForkingTest {
