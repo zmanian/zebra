@@ -152,6 +152,47 @@ pub enum DynamicSigmaHashWorkTelemetryError {
     HashWorkOverflow,
 }
 
+/// Window policy for deriving hash-work participation from recent observations.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DynamicSigmaHashWorkObservationWindowPolicy {
+    /// Minimum observations required before deriving participation.
+    pub min_observations: usize,
+    /// Maximum recent observations included in the participation window.
+    pub max_observations: usize,
+    /// Minimum total observed work required in the selected window.
+    pub min_total_hash_work: u128,
+}
+
+/// Invalid hash-work observation window policy or input.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DynamicSigmaHashWorkObservationWindowPolicyError {
+    /// The minimum observation count must be nonzero.
+    EmptyMinimumObservationWindow,
+    /// The maximum observation count is below the minimum.
+    MaxObservationWindowBelowMinimum {
+        /// Minimum required observations.
+        min_observations: usize,
+        /// Maximum observations included in the participation window.
+        max_observations: usize,
+    },
+    /// Fewer observations were supplied than the policy requires.
+    InsufficientObservationHistory {
+        /// Supplied observations.
+        observed_observations: usize,
+        /// Minimum required observations.
+        min_observations: usize,
+    },
+    /// The selected window did not contain enough observed PoW work.
+    InsufficientTotalHashWork {
+        /// Observed total PoW work in the selected window.
+        observed_total_hash_work: u128,
+        /// Minimum required total PoW work.
+        min_total_hash_work: u128,
+    },
+    /// Hash-work observations were internally invalid.
+    InvalidHashWork(DynamicSigmaHashWorkTelemetryError),
+}
+
 /// Invalid source-side PoW header observation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DynamicSigmaHeaderObservationError {
@@ -898,6 +939,55 @@ pub fn observed_hash_work_participation(
         total_hash_work,
         crosslink_participating_hash_work,
     })
+}
+
+/// Aggregate recent observed PoW work after applying a source-window policy.
+///
+/// The policy selects at most the latest `max_observations`, requires at least
+/// `min_observations`, and rejects selected windows below `min_total_hash_work`.
+pub fn observed_hash_work_participation_with_window_policy(
+    observations: &[DynamicSigmaHashWorkObservation],
+    policy: DynamicSigmaHashWorkObservationWindowPolicy,
+) -> Result<DynamicSigmaHashWorkTelemetry, DynamicSigmaHashWorkObservationWindowPolicyError> {
+    if policy.min_observations == 0 {
+        return Err(
+            DynamicSigmaHashWorkObservationWindowPolicyError::EmptyMinimumObservationWindow,
+        );
+    }
+
+    if policy.max_observations < policy.min_observations {
+        return Err(
+            DynamicSigmaHashWorkObservationWindowPolicyError::MaxObservationWindowBelowMinimum {
+                min_observations: policy.min_observations,
+                max_observations: policy.max_observations,
+            },
+        );
+    }
+
+    if observations.len() < policy.min_observations {
+        return Err(
+            DynamicSigmaHashWorkObservationWindowPolicyError::InsufficientObservationHistory {
+                observed_observations: observations.len(),
+                min_observations: policy.min_observations,
+            },
+        );
+    }
+
+    let window_start = observations.len().saturating_sub(policy.max_observations);
+    let recent_observations = &observations[window_start..];
+    let hash_work = observed_hash_work_participation(recent_observations)
+        .map_err(DynamicSigmaHashWorkObservationWindowPolicyError::InvalidHashWork)?;
+
+    if hash_work.total_hash_work < policy.min_total_hash_work {
+        return Err(
+            DynamicSigmaHashWorkObservationWindowPolicyError::InsufficientTotalHashWork {
+                observed_total_hash_work: hash_work.total_hash_work,
+                min_total_hash_work: policy.min_total_hash_work,
+            },
+        );
+    }
+
+    Ok(hash_work)
 }
 
 /// Convert a PoW header into a dynamic-sigma hash-work observation.
@@ -2663,6 +2753,128 @@ mod tests {
         assert_eq!(
             observed_hash_work_participation(&[]),
             Err(DynamicSigmaHashWorkTelemetryError::EmptyObservationWindow),
+        );
+    }
+
+    #[test]
+    fn hash_work_window_policy_uses_most_recent_observations() {
+        let observations = [
+            DynamicSigmaHashWorkObservation {
+                hash_work: 90,
+                participation: DynamicSigmaHashParticipation::VerifiedParticipating,
+            },
+            DynamicSigmaHashWorkObservation {
+                hash_work: 10,
+                participation: DynamicSigmaHashParticipation::NotVerifiedParticipating,
+            },
+            DynamicSigmaHashWorkObservation {
+                hash_work: 10,
+                participation: DynamicSigmaHashParticipation::VerifiedParticipating,
+            },
+            DynamicSigmaHashWorkObservation {
+                hash_work: 90,
+                participation: DynamicSigmaHashParticipation::NotVerifiedParticipating,
+            },
+        ];
+
+        let hash_work = observed_hash_work_participation_with_window_policy(
+            &observations,
+            DynamicSigmaHashWorkObservationWindowPolicy {
+                min_observations: 2,
+                max_observations: 2,
+                min_total_hash_work: 100,
+            },
+        )
+        .expect("recent hash-work window should satisfy the policy");
+
+        assert_eq!(hash_work.total_hash_work, 100);
+        assert_eq!(hash_work.crosslink_participating_hash_work, 10);
+        assert_eq!(
+            sigma_from_hash_work_observations(&observations[2..]),
+            params().max_sigma
+        );
+    }
+
+    #[test]
+    fn hash_work_window_policy_rejects_invalid_bounds_or_insufficient_history() {
+        let observations = [DynamicSigmaHashWorkObservation {
+            hash_work: 100,
+            participation: DynamicSigmaHashParticipation::VerifiedParticipating,
+        }];
+
+        assert_eq!(
+            observed_hash_work_participation_with_window_policy(
+                &observations,
+                DynamicSigmaHashWorkObservationWindowPolicy {
+                    min_observations: 0,
+                    max_observations: 1,
+                    min_total_hash_work: 1,
+                },
+            ),
+            Err(DynamicSigmaHashWorkObservationWindowPolicyError::EmptyMinimumObservationWindow),
+        );
+        assert_eq!(
+            observed_hash_work_participation_with_window_policy(
+                &observations,
+                DynamicSigmaHashWorkObservationWindowPolicy {
+                    min_observations: 2,
+                    max_observations: 1,
+                    min_total_hash_work: 1,
+                },
+            ),
+            Err(
+                DynamicSigmaHashWorkObservationWindowPolicyError::MaxObservationWindowBelowMinimum {
+                    min_observations: 2,
+                    max_observations: 1,
+                },
+            ),
+        );
+        assert_eq!(
+            observed_hash_work_participation_with_window_policy(
+                &observations,
+                DynamicSigmaHashWorkObservationWindowPolicy {
+                    min_observations: 2,
+                    max_observations: 2,
+                    min_total_hash_work: 1,
+                },
+            ),
+            Err(
+                DynamicSigmaHashWorkObservationWindowPolicyError::InsufficientObservationHistory {
+                    observed_observations: 1,
+                    min_observations: 2,
+                },
+            ),
+        );
+    }
+
+    #[test]
+    fn hash_work_window_policy_rejects_insufficient_total_work() {
+        let observations = [
+            DynamicSigmaHashWorkObservation {
+                hash_work: 10,
+                participation: DynamicSigmaHashParticipation::VerifiedParticipating,
+            },
+            DynamicSigmaHashWorkObservation {
+                hash_work: 20,
+                participation: DynamicSigmaHashParticipation::NotVerifiedParticipating,
+            },
+        ];
+
+        assert_eq!(
+            observed_hash_work_participation_with_window_policy(
+                &observations,
+                DynamicSigmaHashWorkObservationWindowPolicy {
+                    min_observations: 2,
+                    max_observations: 2,
+                    min_total_hash_work: 31,
+                },
+            ),
+            Err(
+                DynamicSigmaHashWorkObservationWindowPolicyError::InsufficientTotalHashWork {
+                    observed_total_hash_work: 30,
+                    min_total_hash_work: 31,
+                },
+            ),
         );
     }
 

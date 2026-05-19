@@ -120,7 +120,10 @@ non-null Crosslink fat pointer as the objective participation marker. This keeps
 the dynamic-sigma input as a work-weighted participating hash-power percentage,
 and the `_with_verifier` helpers let a production source require stricter
 fat-pointer validation before non-null marker work enters the participating
-numerator. `DynamicSigmaHeaderObservationWindow` lets callers provide headers
+numerator. `DynamicSigmaHashWorkObservationWindowPolicy` adds source-window
+discipline for that percentage by requiring enough recent observations and
+enough total observed work before deriving the numerator/denominator pair.
+`DynamicSigmaHeaderObservationWindow` lets callers provide headers
 directly alongside Tenderlink round counters, best-tip transitions, variance
 telemetry, rollback-risk estimates, and economic exposure inputs, then builds
 the same telemetry components as the lower-level hash-work observation path.
@@ -1181,9 +1184,11 @@ This model is intentionally narrow. The next useful extensions are:
   evidence or inconsistent round counters. The event accumulator now gives live
   Tenderlink hooks an exact round-counter contract, the hash-work observation
   accumulator gives source producers an exact participation-numerator contract,
-  the header adapter derives a work-weighted participation share from the
-  current Crosslink fat-pointer marker, custom verifier hooks can replace that
-  prototype marker with stricter production validation, the header
+  the hash-work window policy bounds participation by minimum history, recent
+  window size, and total observed work, the header adapter derives a
+  work-weighted participation share from the current Crosslink fat-pointer
+  marker, custom verifier hooks can replace that prototype marker with stricter
+  production validation, the header
   observation-window assembler composes those headers with round and fork
   evidence into telemetry components, the timed header-window adapter derives
   conservative block-interval variance from adjacent header timestamps, and the

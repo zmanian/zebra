@@ -100,6 +100,11 @@ observed work into the denominator, and only sums verified-participating work
 into the numerator. Empty observation windows are rejected. This still does not
 define the production marker; it prevents the next source producer from treating
 unknown or unverified work as healthy participation.
+`observed_hash_work_participation_with_window_policy` adds the missing source
+window discipline: it selects the most recent bounded observation window,
+requires a minimum number of observations, and rejects windows whose total
+observed work is below a configured minimum before the participation percentage
+can influence sigma.
 The regression tests include a skewed window where two participating
 observations are outweighed by one larger non-participating work observation,
 forcing max sigma. That keeps the input tied to percentage of hash power, not
@@ -361,7 +366,9 @@ ladder step at a time.
 A production implementation of the dynamic-sigma variant should provide:
 
 - a consensus-safe definition of Crosslink-participating PoW work
-- a deterministic or proposal-verifiable computation of total observed work
+- a deterministic or proposal-verifiable computation of total observed work;
+  the pure hash-work source now supports minimum-history, maximum-recent-window,
+  and minimum-total-work policy checks before deriving participation
 - round-start, round-failure, nil-precommit, stale-proposal, and decision
   counters
 - best-tip rollback-depth telemetry derived from actual fork transitions
