@@ -14,6 +14,10 @@ Modes:
 
 Set QUINT to override the command, for example:
   QUINT="node /private/tmp/quint-global-patched/dist/src/cli.js" spec/quint/check.sh quick
+
+Set APALACHE_PORT_BASE to give each symbolic check a sequential local checker
+port, for example:
+  APALACHE_PORT_BASE=8830 spec/quint/check.sh symbolic-baseline
 USAGE
 }
 
@@ -119,6 +123,8 @@ run_model() {
     --verbosity=0
 }
 
+verify_count=0
+
 verify_model() {
   local spec="$1"
   local main="$2"
@@ -126,12 +132,23 @@ verify_model() {
   local init="$4"
   local step="$5"
   local invariant="$6"
-  run_quint verify "${spec}" \
+
+  local args=(
+    verify "${spec}"
     --main="${main}" \
     --max-steps="${max_steps}" \
     --init="${init}" \
     --step="${step}" \
     --invariant="${invariant}"
+  )
+
+  if [[ -n "${APALACHE_PORT_BASE:-}" ]]; then
+    local port=$((APALACHE_PORT_BASE + verify_count))
+    verify_count=$((verify_count + 1))
+    args+=(--server-endpoint="localhost:${port}")
+  fi
+
+  run_quint "${args[@]}"
 }
 
 quick_checks() {

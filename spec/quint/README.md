@@ -309,7 +309,10 @@ export JAVA_HOME=/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home
 export PATH=/opt/homebrew/opt/openjdk/bin:$PATH
 ```
 
-Apalache starts a local checker server on port `8822` during `quint verify`.
+Apalache starts a local checker server during `quint verify`. By default Quint
+uses port `8822`; the local wrapper also accepts `APALACHE_PORT_BASE` to give
+each symbolic check a sequential port when a long run would otherwise collide
+with a lingering checker process.
 
 ## Checks
 
@@ -342,6 +345,14 @@ half of that baseline sweep:
 ```sh
 QUINT="$QUINT" spec/quint/check.sh quick-baseline
 QUINT="$QUINT" JVM_ARGS=-Xmx8192m spec/quint/check.sh symbolic-baseline
+```
+
+If a local symbolic run reports an Apalache port collision, rerun with a fresh
+base port:
+
+```sh
+QUINT="$QUINT" JVM_ARGS=-Xmx8192m APALACHE_PORT_BASE=8830 \
+  spec/quint/check.sh symbolic-baseline
 ```
 
 Typecheck:

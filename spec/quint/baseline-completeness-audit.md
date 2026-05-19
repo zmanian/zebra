@@ -99,6 +99,8 @@ The current branch has these baseline-specific files:
     nil-precommit resampling variants
 - `check.sh`
   - provides `quick-baseline` and `symbolic-baseline` gates
+  - supports `APALACHE_PORT_BASE` for sequential symbolic checker ports during
+    long local runs
 - `.github/workflows/quint-crosslink.yml`
   - runs baseline quick and symbolic checks on the personal fork
 
