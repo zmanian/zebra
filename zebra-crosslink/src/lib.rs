@@ -41,6 +41,10 @@ pub mod chain;
 use chain::*;
 
 pub mod dynamic_sigma;
+use crate::dynamic_sigma::{
+    DynamicSigmaProposalEvidence, DynamicSigmaRawTelemetry, RollbackRiskCurve,
+    TelemetryEstimateMargins,
+};
 
 use std::sync::Mutex;
 use tokio::sync::Mutex as TokioMutex;
@@ -392,6 +396,17 @@ async fn push_new_bft_msg_flags(
 }
 
 async fn propose_new_bft_block(tfl_handle: &TFLServiceHandle) -> Option<BftBlock> {
+    propose_new_bft_block_with_confirmation_depth(
+        tfl_handle,
+        PROTOTYPE_PARAMETERS.bc_confirmation_depth_sigma,
+    )
+    .await
+}
+
+async fn propose_new_bft_block_with_confirmation_depth(
+    tfl_handle: &TFLServiceHandle,
+    confirmation_depth: u64,
+) -> Option<BftBlock> {
     #[cfg(feature = "viz_gui")]
     if let Some(state) = viz::VIZ_G.lock().unwrap().as_ref() {
         if state.bft_pause_button {
@@ -400,7 +415,6 @@ async fn propose_new_bft_block(tfl_handle: &TFLServiceHandle) -> Option<BftBlock
     }
 
     let call = tfl_handle.call.clone();
-    let params = &PROTOTYPE_PARAMETERS;
     let (tip_height, tip_hash) =
         if let Ok(StateResponse::Tip(val)) = (call.state)(StateRequest::Tip).await {
             if val.is_none() {
@@ -412,7 +426,7 @@ async fn propose_new_bft_block(tfl_handle: &TFLServiceHandle) -> Option<BftBlock
         };
 
     let finality_candidate_height =
-        finality_candidate_height_at_depth(tip_height, params.bc_confirmation_depth_sigma);
+        finality_candidate_height_at_depth(tip_height, confirmation_depth);
 
     let finality_candidate_height = if let Some(h) = finality_candidate_height {
         h
@@ -474,8 +488,8 @@ async fn propose_new_bft_block(tfl_handle: &TFLServiceHandle) -> Option<BftBlock
 
     let mut internal = tfl_handle.internal.lock().await;
 
-    match BftBlock::try_from(
-        params,
+    match BftBlock::try_from_with_confirmation_depth(
+        confirmation_depth,
         internal.bft_blocks.len() as u32 + 1,
         internal.fat_pointer_to_tip.clone(),
         finality_candidate_height.0,
@@ -484,6 +498,22 @@ async fn propose_new_bft_block(tfl_handle: &TFLServiceHandle) -> Option<BftBlock
         Ok(v) => Some(v),
         Err(e) => {
             warn!("Unable to create BftBlock to propose, Error={:?}", e,);
+            None
+        }
+    }
+}
+
+async fn propose_new_tenderlink_payload(
+    tfl_handle: &TFLServiceHandle,
+) -> Option<tenderlink::BlockValue> {
+    let confirmation_depth = proposal_confirmation_depth(&tfl_handle.config);
+    let block =
+        propose_new_bft_block_with_confirmation_depth(tfl_handle, confirmation_depth).await?;
+
+    match encode_proposed_tenderlink_payload(&tfl_handle.config, block) {
+        Ok(bytes) => Some(tenderlink::BlockValue(bytes)),
+        Err(err) => {
+            warn!("Unable to encode Tenderlink proposal payload: {:?}", err);
             None
         }
     }
@@ -543,12 +573,78 @@ enum TenderlinkPayloadDecodeError {
     Invalid,
 }
 
+#[derive(Debug, Eq, PartialEq)]
+enum TenderlinkPayloadEncodeError {
+    DynamicSigmaInvalid,
+    Serialization,
+}
+
 fn dynamic_sigma_params_from_config(
     config: &config::Config,
 ) -> Option<dynamic_sigma::DynamicSigmaParameters> {
     config
         .dynamic_sigma_prototype
         .then_some(PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS)
+}
+
+// Prototype-only evidence fixture for exercising the tagged dynamic-sigma wire
+// path. Production must replace this with consensus-visible or proposal-
+// verifiable telemetry before enabling the dynamic variant by default.
+fn prototype_dynamic_sigma_proposal_evidence(selected_sigma: u64) -> DynamicSigmaProposalEvidence {
+    DynamicSigmaProposalEvidence {
+        raw_telemetry: DynamicSigmaRawTelemetry {
+            total_hash_work: 100,
+            crosslink_participating_hash_work: 90,
+            total_tenderlink_rounds: 10,
+            failed_tenderlink_rounds: 0,
+            measured_block_interval_variance_pct: 0,
+            measured_observed_reorg_depth: 0,
+            rollback_risk: RollbackRiskCurve {
+                base_sigma_ppm: 20,
+                raised_sigma_ppm: 10,
+                max_sigma_ppm: 2,
+            },
+            value_at_risk_units: 1_000,
+            max_acceptable_expected_loss_units: 1,
+        },
+        margins: TelemetryEstimateMargins {
+            coverage_risk_margin_pct: 2,
+            round_failure_margin_pct: 0,
+        },
+        selected_sigma,
+    }
+}
+
+fn proposal_confirmation_depth(config: &config::Config) -> u64 {
+    dynamic_sigma_params_from_config(config)
+        .map(|params| params.base_sigma)
+        .unwrap_or(PROTOTYPE_PARAMETERS.bc_confirmation_depth_sigma)
+}
+
+fn encode_proposed_tenderlink_payload(
+    config: &config::Config,
+    block: BftBlock,
+) -> Result<Vec<u8>, TenderlinkPayloadEncodeError> {
+    let Some(params) = dynamic_sigma_params_from_config(config) else {
+        return block
+            .zcash_serialize_to_vec()
+            .map_err(|_| TenderlinkPayloadEncodeError::Serialization);
+    };
+
+    let evidence = prototype_dynamic_sigma_proposal_evidence(params.base_sigma);
+    let payload = DynamicSigmaBftBlockPayload::try_from_with_evidence(
+        params,
+        evidence,
+        block.height,
+        block.previous_block_fat_ptr,
+        block.finalization_candidate_height,
+        block.headers,
+    )
+    .map_err(|_| TenderlinkPayloadEncodeError::DynamicSigmaInvalid)?;
+
+    payload
+        .zcash_serialize_to_vec()
+        .map_err(|_| TenderlinkPayloadEncodeError::Serialization)
 }
 
 fn decode_tenderlink_payload(
@@ -1391,11 +1487,7 @@ async fn tfl_service_main_loop(internal_handle: TFLServiceHandle) -> Result<(), 
             None,
             tenderlink::ClosureToProposeNewBlock(Arc::new(move || {
                 let tfl_handle1 = tfl_handle1.clone();
-                Box::pin(async move {
-                    propose_new_bft_block(&tfl_handle1).await.map(|block| {
-                        tenderlink::BlockValue(block.zcash_serialize_to_vec().unwrap())
-                    })
-                })
+                Box::pin(async move { propose_new_tenderlink_payload(&tfl_handle1).await })
             })),
             tenderlink::ClosureToValidateProposedBlock(Arc::new(move |block| {
                 let tfl_handle2 = tfl_handle2.clone();
@@ -2492,6 +2584,79 @@ mod tests {
         assert_eq!(
             decode_tenderlink_payload(&config, encoded.as_slice()),
             Err(TenderlinkPayloadDecodeError::DynamicSigmaInvalid)
+        );
+    }
+
+    #[test]
+    fn proposal_confirmation_depth_defaults_to_fixed_sigma() {
+        assert_eq!(
+            proposal_confirmation_depth(&config::Config::default()),
+            PROTOTYPE_PARAMETERS.bc_confirmation_depth_sigma,
+        );
+    }
+
+    #[test]
+    fn proposal_confirmation_depth_uses_dynamic_base_sigma_when_prototype_enabled() {
+        let mut config = config::Config::default();
+        config.dynamic_sigma_prototype = true;
+
+        assert_eq!(
+            proposal_confirmation_depth(&config),
+            PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS.base_sigma,
+        );
+    }
+
+    #[test]
+    fn proposed_tenderlink_payload_encoder_defaults_to_legacy_block() {
+        let block = BftBlock {
+            version: 1,
+            height: 1,
+            previous_block_fat_ptr: FatPointerToBftBlock2::null(),
+            finalization_candidate_height: 10,
+            headers: vec![test_header(BlockHash([0; 32]))],
+        };
+
+        let encoded = encode_proposed_tenderlink_payload(&config::Config::default(), block.clone())
+            .expect("legacy proposal payload should encode");
+
+        assert!(!encoded.starts_with(&DYNAMIC_SIGMA_BFT_BLOCK_PAYLOAD_MAGIC));
+        let decoded = decode_tenderlink_payload(&config::Config::default(), encoded.as_slice())
+            .expect("legacy payload should decode");
+        assert_eq!(
+            decoded
+                .zcash_serialize_to_vec()
+                .expect("decoded legacy block serialization should succeed"),
+            block
+                .zcash_serialize_to_vec()
+                .expect("original legacy block serialization should succeed"),
+        );
+    }
+
+    #[test]
+    fn proposed_tenderlink_payload_encoder_emits_dynamic_envelope_when_prototype_enabled() {
+        let mut config = config::Config::default();
+        config.dynamic_sigma_prototype = true;
+        let block = BftBlock {
+            version: 1,
+            height: 1,
+            previous_block_fat_ptr: FatPointerToBftBlock2::null(),
+            finalization_candidate_height: 10,
+            headers: vec![test_header(BlockHash([0; 32]))],
+        };
+
+        let encoded = encode_proposed_tenderlink_payload(&config, block.clone())
+            .expect("prototype dynamic proposal payload should encode");
+
+        assert!(encoded.starts_with(&DYNAMIC_SIGMA_BFT_BLOCK_PAYLOAD_MAGIC));
+        let decoded = decode_tenderlink_payload(&config, encoded.as_slice())
+            .expect("dynamic payload should decode");
+        assert_eq!(
+            decoded
+                .zcash_serialize_to_vec()
+                .expect("decoded dynamic block serialization should succeed"),
+            block
+                .zcash_serialize_to_vec()
+                .expect("original dynamic block serialization should succeed"),
         );
     }
 }

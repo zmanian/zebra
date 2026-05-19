@@ -18,7 +18,8 @@ it can change finality depth.
 
 ## Current Prototype Boundary
 
-The live Rust proposal path still treats sigma as a fixed protocol parameter:
+By default, the live Rust proposal path still treats sigma as a fixed protocol
+parameter:
 
 - `zebra-crosslink/src/chain.rs` defines
   `ZcashCrosslinkParameters::bc_confirmation_depth_sigma`.
@@ -28,6 +29,12 @@ The live Rust proposal path still treats sigma as a fixed protocol parameter:
   `tip - bc_confirmation_depth_sigma` candidate.
 - `zebra-crosslink/src/viz.rs` exposes chain, BFT, and finality state to the
   visualizer, but it is not a production telemetry source.
+
+When `dynamic_sigma_prototype` is explicitly enabled, the proposer uses the
+prototype dynamic-sigma base depth and emits the tagged dynamic-sigma envelope
+with prototype evidence. This is only a live wire-path exercise. The evidence is
+a fixed fixture, not production telemetry, and must be replaced before the
+dynamic variant can be enabled by default.
 
 The branch now also includes `zebra-crosslink/src/dynamic_sigma.rs`, a pure
 Rust controller that derives conservative coverage and round-failure estimates
@@ -128,12 +135,13 @@ callbacks. The envelope also has a validation helper that replays evidence
 validation and rejects carried blocks that do not match the evidence-selected
 block.
 
-The live Tenderlink callbacks now decode proposal bytes through an explicit
-payload router. Legacy fixed-sigma `BftBlock` bytes are still accepted by the
-current prototype path. Tagged dynamic-sigma payloads are rejected by default,
-but a prototype-only config flag enables the callbacks to validate the tagged
-payload against shared prototype dynamic-sigma parameters before accepting the
-carried BFT block. This preserves backward compatibility while preventing a
+The live Tenderlink callbacks now route proposal bytes through an explicit
+payload encoder/decoder. Legacy fixed-sigma `BftBlock` bytes are still emitted
+and accepted by the default prototype path. Tagged dynamic-sigma payloads are
+rejected by default, but a prototype-only config flag enables the proposer to
+emit the tagged envelope and enables validation callbacks to check the envelope
+against shared prototype dynamic-sigma parameters before accepting the carried
+BFT block. This preserves backward compatibility while preventing a
 dynamic-sigma payload from being silently treated as a fixed-sigma block, and it
 keeps the dynamic variant behind an explicit opt-in until production telemetry
 exists.
@@ -185,7 +193,7 @@ A production implementation of the dynamic-sigma variant should provide:
   verifier and BFT block-construction helper cover identical evidence
   determinism, evidence serialization, tagged payload encoding, payload/block
   mismatch rejection, fixed-vs-dynamic payload routing, below-floor rejection,
-  and selected-sigma header depth, but live dynamic proposal acceptance still
-  needs shared parameters and telemetry-source tests
+  selected-sigma header depth, and prototype-gated proposal emission, but live
+  dynamic proposal acceptance still needs production telemetry-source tests
 - Quint coverage connecting the implemented telemetry rules back to
   `CrosslinkDynamicSigmaTelemetry.qnt`

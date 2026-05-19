@@ -91,9 +91,12 @@ prototype: it derives conservative coverage and round-failure estimates from
 raw counters, validates telemetry windows, and selects the same sigma floor as
 the Quint telemetry fixture. It also includes a proposal-carried evidence
 verifier that rejects selected sigma values below the controller-required floor,
-plus a `BftBlock::try_from_with_confirmation_depth` construction hook that can
-validate a selected sigma's header count without changing the existing
-fixed-parameter proposal path.
+plus a `BftBlock::try_from_with_confirmation_depth` construction hook and tagged
+payload envelope. The live Tenderlink proposal, validation, and decided-block
+callbacks now route through a config-aware payload path: default config still
+emits and accepts the legacy fixed-sigma `BftBlock`, while
+`dynamic_sigma_prototype` emits and validates the tagged dynamic-sigma envelope
+using shared prototype parameters and proposal-carried evidence.
 
 `CrosslinkDynamicSigmaForkSchedule.qnt` composes the dynamic-sigma controller
 with the derived PoW fork schedule. In this model, dynamic sigma consumes
