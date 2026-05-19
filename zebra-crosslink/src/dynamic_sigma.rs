@@ -8,7 +8,8 @@
 use std::io::{Read, Write};
 
 use zebra_chain::{
-    block::{FatPointerToBftBlock, Header},
+    block::{FatPointerToBftBlock, Header, Height},
+    parameters::{Network, NetworkUpgrade},
     serialization::{SerializationError, ZcashDeserialize, ZcashSerialize},
 };
 
@@ -200,6 +201,15 @@ pub enum DynamicSigmaHeaderObservationError {
     InvalidDifficultyThreshold,
     /// The header difficulty threshold converted into zero PoW work.
     ZeroHeaderWork,
+}
+
+/// Invalid target-spacing source for timed PoW telemetry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DynamicSigmaTargetBlockSpacingError {
+    /// The target spacing source produced zero or negative seconds.
+    NonPositiveTargetSpacing,
+    /// The target spacing source does not fit in telemetry seconds.
+    TargetSpacingOverflow,
 }
 
 /// Invalid source-side PoW block-interval variance telemetry.
@@ -1089,6 +1099,28 @@ where
 
 fn default_header_participation_marker_verifier(fat_pointer: &FatPointerToBftBlock) -> bool {
     *fat_pointer != FatPointerToBftBlock::null()
+}
+
+/// Derive target block spacing seconds from a Zcash network upgrade.
+pub fn target_block_spacing_seconds_from_network_upgrade(
+    network_upgrade: NetworkUpgrade,
+) -> Result<u64, DynamicSigmaTargetBlockSpacingError> {
+    let spacing_seconds = network_upgrade.target_spacing().num_seconds();
+
+    if spacing_seconds <= 0 {
+        return Err(DynamicSigmaTargetBlockSpacingError::NonPositiveTargetSpacing);
+    }
+
+    u64::try_from(spacing_seconds)
+        .map_err(|_| DynamicSigmaTargetBlockSpacingError::TargetSpacingOverflow)
+}
+
+/// Derive target block spacing seconds for the active network upgrade at a height.
+pub fn target_block_spacing_seconds_for_height(
+    network: &Network,
+    height: Height,
+) -> Result<u64, DynamicSigmaTargetBlockSpacingError> {
+    target_block_spacing_seconds_from_network_upgrade(NetworkUpgrade::current(network, height))
 }
 
 /// Derive a conservative block-interval variance percentage from header times.
@@ -3007,6 +3039,45 @@ mod tests {
         assert_eq!(
             measured_block_interval_variance_pct_from_headers(&headers, 75),
             Ok(20),
+        );
+    }
+
+    #[test]
+    fn target_block_spacing_seconds_tracks_network_upgrade_schedule() {
+        use zebra_chain::parameters::NetworkUpgrade;
+
+        assert_eq!(
+            target_block_spacing_seconds_from_network_upgrade(NetworkUpgrade::Sapling),
+            Ok(150),
+        );
+        assert_eq!(
+            target_block_spacing_seconds_from_network_upgrade(NetworkUpgrade::Blossom),
+            Ok(75),
+        );
+        assert_eq!(
+            target_block_spacing_seconds_from_network_upgrade(NetworkUpgrade::Nu6),
+            Ok(75),
+        );
+    }
+
+    #[test]
+    fn target_block_spacing_seconds_for_height_uses_current_network_upgrade() {
+        use zebra_chain::{
+            block::Height,
+            parameters::{Network, NetworkUpgrade},
+        };
+
+        let blossom_height = NetworkUpgrade::Blossom
+            .activation_height(&Network::Mainnet)
+            .expect("mainnet Blossom activation should be configured");
+
+        assert_eq!(
+            target_block_spacing_seconds_for_height(&Network::Mainnet, Height(0)),
+            Ok(150),
+        );
+        assert_eq!(
+            target_block_spacing_seconds_for_height(&Network::Mainnet, blossom_height),
+            Ok(75),
         );
     }
 

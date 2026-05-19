@@ -46,6 +46,7 @@ use crate::dynamic_sigma::{
     select_dynamic_sigma_proposal_evidence, select_dynamic_sigma_proposal_evidence_from_components,
     select_dynamic_sigma_proposal_evidence_from_components_with_hysteresis,
     select_dynamic_sigma_proposal_evidence_with_hysteresis,
+    target_block_spacing_seconds_from_network_upgrade,
     telemetry_components_from_timed_header_observation_window_with_hash_work_policy,
     DynamicSigmaHashWorkObservationWindowPolicy, DynamicSigmaHysteresisParameters,
     DynamicSigmaHysteresisState, DynamicSigmaProposalEvidence, DynamicSigmaRawTelemetry,
@@ -802,12 +803,19 @@ fn prototype_dynamic_sigma_hash_work_policy() -> DynamicSigmaHashWorkObservation
     }
 }
 
+fn prototype_dynamic_sigma_target_block_spacing_seconds(
+) -> Result<u64, TenderlinkPayloadEncodeError> {
+    target_block_spacing_seconds_from_network_upgrade(zebra_chain::parameters::NetworkUpgrade::Nu6)
+        .map_err(|_| TenderlinkPayloadEncodeError::DynamicSigmaInvalid)
+}
+
 fn prototype_dynamic_sigma_telemetry_components(
 ) -> Result<DynamicSigmaTelemetryComponents, TenderlinkPayloadEncodeError> {
     let pow_headers = prototype_dynamic_sigma_timed_headers();
+    let target_block_spacing_seconds = prototype_dynamic_sigma_target_block_spacing_seconds()?;
 
     telemetry_components_from_timed_header_observation_window_with_hash_work_policy(
-        prototype_dynamic_sigma_observation_window(&pow_headers),
+        prototype_dynamic_sigma_observation_window(&pow_headers, target_block_spacing_seconds),
         prototype_dynamic_sigma_hash_work_policy(),
     )
     .map_err(|_| TenderlinkPayloadEncodeError::DynamicSigmaInvalid)
@@ -815,10 +823,11 @@ fn prototype_dynamic_sigma_telemetry_components(
 
 fn prototype_dynamic_sigma_observation_window(
     pow_headers: &[BlockHeader],
+    target_block_spacing_seconds: u64,
 ) -> DynamicSigmaTimedHeaderObservationWindow<'_> {
     DynamicSigmaTimedHeaderObservationWindow {
         pow_headers,
-        target_block_spacing_seconds: 75,
+        target_block_spacing_seconds,
         round_counters: prototype_dynamic_sigma_round_counters(),
         best_tip_transitions: &[],
         rollback_risk: RollbackRiskCurve {

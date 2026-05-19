@@ -136,6 +136,9 @@ same header window by comparing adjacent header timestamps against an expected
 target spacing, rejecting too-short or non-increasing windows and capping the
 conservative deviation percentage at 100. Its hash-work-policy helper composes
 that timestamp-derived variance with the same guarded header participation path.
+`target_block_spacing_seconds_from_network_upgrade` and
+`target_block_spacing_seconds_for_height` derive the expected spacing from
+Zebra's network-upgrade schedule for production-shaped timed windows.
 `DynamicSigmaEconomicExposurePolicy` makes the economic-risk boundary explicit:
 consensus-critical exposure carries value-at-risk and loss-budget units into
 proposal evidence, while service-local exposure maps to zero consensus exposure
@@ -1197,7 +1200,8 @@ This model is intentionally narrow. The next useful extensions are:
   observation-window assembler composes those headers with round and fork
   evidence into telemetry components, the timed header-window adapter derives
   conservative block-interval variance from adjacent header timestamps and can
-  apply the same hash-work window policy in that timed path, and
+  apply the same hash-work window policy in that timed path, the target-spacing
+  helper derives expected spacing from the active network upgrade, and
   pure rollback-depth helpers record best-tip transitions, derive the current
   observed reorg-depth input, and produce one rollback-depth history sample per
   transition window from explicit best-tip transition evidence. The
