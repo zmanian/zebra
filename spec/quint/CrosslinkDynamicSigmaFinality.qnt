@@ -12,16 +12,34 @@ module CrosslinkDynamicSigmaFinality {
   export CrosslinkDynamicSigmaResampling.*
 
   type Height_t = int
+  type Work_t = int
   type Block_t = str
 
   const MaxHeight: Height_t
+  const MaxWork: Work_t
   const InitialFinalized: Snapshot_t
+  const PublishedAt: Round_t -> Snapshot_t -> bool
+  const HonestWorkAt: Round_t -> Snapshot_t -> Work_t
+  const AdversarialWorkAt: Round_t -> Snapshot_t -> Work_t
+  const TieBreakRank: Snapshot_t -> int
   const AncestorAt: Snapshot_t -> Height_t -> Block_t
 
   pure val Heights = 0.to(MaxHeight)
 
   assume initial_finalized_is_snapshot =
     Snapshots.contains(InitialFinalized)
+  assume max_work_non_negative =
+    MaxWork >= 0
+  assume published_work_is_bounded =
+    Rounds.forall(r =>
+      Snapshots.forall(v =>
+        0 <= HonestWorkAt.get(r).get(v) and
+        0 <= AdversarialWorkAt.get(r).get(v) and
+        TotalWorkAt(r, v) <= MaxWork
+      )
+    )
+  assume generated_best_tips_match_work_competition =
+    Rounds.forall(r => IsBestTipAt(r, BestTip.get(r)))
 
   var latestFinal: Snapshot_t
   var finalized: Set[Snapshot_t]
@@ -35,6 +53,25 @@ module CrosslinkDynamicSigmaFinality {
 
   pure def BlockAt(v: Snapshot_t, h: Height_t): Block_t =
     AncestorAt.get(v).get(h)
+
+  pure def TotalWorkAt(r: Round_t, v: Snapshot_t): Work_t =
+    HonestWorkAt.get(r).get(v) + AdversarialWorkAt.get(r).get(v)
+
+  pure def CandidateAt(r: Round_t, v: Snapshot_t): bool =
+    Snapshots.contains(v) and PublishedAt.get(r).get(v)
+
+  pure def BetterOrEqualAt(r: Round_t, a: Snapshot_t, b: Snapshot_t): bool =
+    TotalWorkAt(r, a) > TotalWorkAt(r, b) or
+      (
+        TotalWorkAt(r, a) == TotalWorkAt(r, b) and
+        TieBreakRank.get(a) >= TieBreakRank.get(b)
+      )
+
+  pure def IsBestTipAt(r: Round_t, v: Snapshot_t): bool =
+    CandidateAt(r, v) and
+      Snapshots.forall(w =>
+        not(CandidateAt(r, w)) or BetterOrEqualAt(r, v, w)
+      )
 
   def Extends(newer: Snapshot_t, older: Snapshot_t): bool =
     IsSnapshot(newer) and
@@ -146,13 +183,18 @@ module CrosslinkDynamicSigmaFinality {
   val InitialFinalizedRemainsFinalized =
     finalized.contains(InitialFinalized)
 
+  val CurrentDynamicBestTipMatchesGeneratedCompetition =
+    IsBestTipAt(dynRound, BestTip.get(dynRound))
+
   val FinalitySafety =
     FinalizedPrefixLinear and
     LatestFinalExtendsAllFinalized and
     InitialFinalizedRemainsFinalized
 
   val FullComposedSafety =
-    DynamicResamplingSafety and FinalitySafety
+    DynamicResamplingSafety and
+    FinalitySafety and
+    CurrentDynamicBestTipMatchesGeneratedCompetition
 }
 
 module CrosslinkDynamicSigmaFinalityTest {
@@ -214,6 +256,13 @@ module CrosslinkDynamicSigmaFinalityTest {
       .then(FullFinalizeDecision("p1", "b2", "b4"))
       .fail()
   }
+
+  run generatedCompetitionBacksFullCompositionForkSignalTest = all {
+    assert(IsBestTipAt(0, "a3")),
+    assert(not(CandidateAt(0, "b4"))),
+    assert(IsBestTipAt(1, "b4")),
+    assert(DerivedReorgDepth(1) == 2),
+  }
 }
 
 module CrosslinkDynamicSigmaFinalityModel {
@@ -230,6 +279,7 @@ module CrosslinkDynamicSigmaFinalityModel {
     BaseSigma = 1,
     RaisedSigma = 3,
     MaxSigma = 6,
+    MaxWork = 6,
     TargetHashParticipationPct = 67,
     CriticalHashParticipationPct = 50,
     HashParticipationPct = Map(
@@ -241,6 +291,58 @@ module CrosslinkDynamicSigmaFinalityModel {
       0 -> "a3",
       1 -> "b4",
       2 -> "b5",
+    ),
+    PublishedAt = Map(
+      0 -> Map(
+        "g" -> true,
+        "a1" -> true,
+        "a2" -> true,
+        "a3" -> true,
+        "b2" -> false,
+        "b3" -> false,
+        "b4" -> false,
+        "b5" -> false,
+      ),
+      1 -> Map(
+        "g" -> true,
+        "a1" -> true,
+        "a2" -> true,
+        "a3" -> true,
+        "b2" -> true,
+        "b3" -> true,
+        "b4" -> true,
+        "b5" -> false,
+      ),
+      2 -> Map(
+        "g" -> true,
+        "a1" -> true,
+        "a2" -> true,
+        "a3" -> true,
+        "b2" -> true,
+        "b3" -> true,
+        "b4" -> true,
+        "b5" -> true,
+      ),
+    ),
+    HonestWorkAt = Map(
+      0 -> Map("g" -> 0, "a1" -> 1, "a2" -> 2, "a3" -> 3, "b2" -> 0, "b3" -> 0, "b4" -> 0, "b5" -> 0),
+      1 -> Map("g" -> 0, "a1" -> 1, "a2" -> 2, "a3" -> 3, "b2" -> 0, "b3" -> 0, "b4" -> 0, "b5" -> 0),
+      2 -> Map("g" -> 0, "a1" -> 1, "a2" -> 2, "a3" -> 3, "b2" -> 0, "b3" -> 0, "b4" -> 0, "b5" -> 0),
+    ),
+    AdversarialWorkAt = Map(
+      0 -> Map("g" -> 0, "a1" -> 0, "a2" -> 0, "a3" -> 0, "b2" -> 2, "b3" -> 3, "b4" -> 5, "b5" -> 0),
+      1 -> Map("g" -> 0, "a1" -> 0, "a2" -> 0, "a3" -> 0, "b2" -> 2, "b3" -> 3, "b4" -> 5, "b5" -> 0),
+      2 -> Map("g" -> 0, "a1" -> 0, "a2" -> 0, "a3" -> 0, "b2" -> 2, "b3" -> 3, "b4" -> 5, "b5" -> 6),
+    ),
+    TieBreakRank = Map(
+      "g" -> 0,
+      "a1" -> 1,
+      "a2" -> 2,
+      "a3" -> 3,
+      "b2" -> 4,
+      "b3" -> 5,
+      "b4" -> 6,
+      "b5" -> 7,
     ),
     MaxHeight = 5,
     InitialFinalized = "g",

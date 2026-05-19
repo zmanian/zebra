@@ -87,7 +87,8 @@ does not add a new fork-switch signal.
 `CrosslinkDynamicSigmaFinality.qnt` composes dynamic sigma, nil-precommit
 resampling, and Crosslink finality. It uses the live `dynSigma` value as the
 tail-confirmation depth for finality, so a fork-derived sigma increase delays
-finalization until the fresh decision is confirmed deeply enough.
+finalization until the fresh decision is confirmed deeply enough. Its fork
+signal is now backed by generated published-tip work competition.
 
 ## Upstream Base
 
@@ -435,13 +436,16 @@ This runs:
 
 - `dynamicSigmaResamplingFinalizesTailConfirmedFreshCandidateTest`
 - `dynamicSigmaRejectsUnderconfirmedFreshCandidateTest`
+- `generatedCompetitionBacksFullCompositionForkSignalTest`
 
 The witness forms a nil-precommit recovery scenario, derives a rollback-depth
 signal from an `a3 -> b4` fork switch, raises dynamic sigma from 1 to 3,
 resamples and decides fresh `b2`, then finalizes `b2` only with tail-confirming
 tip `b5`. The under-confirmed test rejects finalizing the same `b2` decision
 against tip `b4`, showing that finality uses the raised dynamic sigma rather
-than the base confirmation depth.
+than the base confirmation depth. The generated-competition witness checks that
+the fork signal is backed by published work: hidden `b4` does not win at round
+0, but published `b4` becomes the generated best tip at round 1.
 
 Randomized Rust-backend safety simulation:
 
@@ -787,6 +791,8 @@ The full dynamic-sigma/resampling/finality composition reports no violation for
 `FullComposedSafety`, which combines:
 
 - the dynamic-sigma/resampling safety invariants
+- the generated best-tip work-competition invariant for the current dynamic
+  round
 - finalized snapshots remain prefix-linear
 - the latest finalized snapshot extends all prior finalized snapshots
 - the initial finalized snapshot remains finalized
