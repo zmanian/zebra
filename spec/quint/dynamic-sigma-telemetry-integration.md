@@ -68,8 +68,8 @@ consensus-visible or proposal-verifiable telemetry.
 | `MeasuredBlockIntervalVariancePct` | PoW timing instability over the same window. | Header times are available from validated blocks. | Define a robust estimator that handles timestamp manipulation and difficulty-adjustment lag. |
 | `MeasuredObservedReorgDepth` | Maximum rollback depth observed across best-tip changes in the window. | `DynamicSigmaBestTipTransition` can derive rollback depth from old-tip, new-tip, and common-ancestor heights, but live state hooks are not wired yet. | Add a metric that records replaced prefix depth for best-tip changes and side-branch releases. |
 | `RollbackRiskPpmAtSigma` | Modelled rollback probability for each candidate sigma. | Not a direct node metric. | Build an offline or deterministic estimator from participation, observed work competition, variance, and historical reorg data. |
-| `ValueAtRiskUnits` | Economic value exposed to rollback if a finalized point is wrong or delayed. | Not available in the protocol implementation. | Define a policy input or service-facing exposure model. |
-| `MaxAcceptableExpectedLossUnits` | Governance or operator budget for expected loss. | Not available in the protocol implementation. | Decide whether this is protocol policy, finalizer policy, or service-local policy. |
+| `ValueAtRiskUnits` | Economic value exposed to rollback if a finalized point is wrong or delayed. | The pure Rust controller now has an explicit `DynamicSigmaEconomicExposurePolicy` that distinguishes consensus-critical exposure from service-local exposure. | Wire a production source if exposure is consensus-critical, or keep service-local exposure outside proposal validity. |
+| `MaxAcceptableExpectedLossUnits` | Governance or operator budget for expected loss. | Consensus-critical policy carries this budget into proposal evidence; service-local policy maps to zero consensus exposure. | Decide the governance/operator source for consensus-critical budgets, if any. |
 
 ## Hash-Participation Rule
 
@@ -121,6 +121,22 @@ The controller rule should match the Quint model shape:
   degraded floor
 - if participation is below the critical threshold, force max sigma and expose a
   critical status
+
+## Economic Exposure Policy
+
+The controller now makes the expected-loss boundary explicit:
+`DynamicSigmaEconomicExposurePolicy::ConsensusCritical` carries value-at-risk and
+loss-budget units into the same evidence that validators check, while
+`DynamicSigmaEconomicExposurePolicy::ServiceLocal` maps to zero consensus
+exposure. That means service-local risk can drive a local product policy, but it
+does not silently change the BFT validity rule or make honest validators
+disagree about a proposal.
+
+If a deployment wants expected loss to affect consensus sigma, the value-at-risk
+and loss budget must be deterministic or proposal-verifiable. Proposal evidence
+validation rejects a selected sigma below the economic floor for
+consensus-critical exposure, while accepting base sigma when the exposure is
+explicitly service-local and all other floors are healthy.
 
 ## Consensus-Safety Requirement
 
@@ -309,7 +325,10 @@ A production implementation of the dynamic-sigma variant should provide:
 - best-tip rollback-depth telemetry derived from actual fork transitions
 - an explicit rollback-risk estimator for each allowed sigma
 - an economic exposure model or a clear decision that expected loss is
-  service-local rather than consensus-critical
+  service-local rather than consensus-critical; the pure controller now has an
+  explicit policy split and tests for both paths, while production still needs a
+  deterministic or proposal-verifiable source if consensus-critical exposure is
+  enabled
 - a durable hysteresis state source if the dynamic variant should smooth sigma
   decreases across windows rather than selecting the raw required floor each
   time

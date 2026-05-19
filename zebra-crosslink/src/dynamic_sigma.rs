@@ -343,6 +343,48 @@ pub enum EconomicTargetStatus {
     TargetUnreachableAtMax,
 }
 
+/// Economic exposure policy for a dynamic-sigma telemetry window.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DynamicSigmaEconomicExposurePolicy {
+    /// Expected loss is part of consensus-critical proposal validity.
+    ConsensusCritical {
+        /// Economic value exposed to rollback in the window.
+        value_at_risk_units: u128,
+        /// Maximum acceptable expected loss for this window.
+        max_acceptable_expected_loss_units: u128,
+    },
+    /// Expected loss is handled by services and does not affect consensus sigma.
+    ServiceLocal,
+}
+
+/// Unit values carried into dynamic-sigma telemetry for economic checks.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DynamicSigmaEconomicExposureUnits {
+    /// Economic value exposed to rollback in the window.
+    pub value_at_risk_units: u128,
+    /// Maximum acceptable expected loss for this window.
+    pub max_acceptable_expected_loss_units: u128,
+}
+
+impl DynamicSigmaEconomicExposurePolicy {
+    /// Convert an exposure policy into the unit fields carried by telemetry.
+    pub fn to_units(self) -> DynamicSigmaEconomicExposureUnits {
+        match self {
+            DynamicSigmaEconomicExposurePolicy::ConsensusCritical {
+                value_at_risk_units,
+                max_acceptable_expected_loss_units,
+            } => DynamicSigmaEconomicExposureUnits {
+                value_at_risk_units,
+                max_acceptable_expected_loss_units,
+            },
+            DynamicSigmaEconomicExposurePolicy::ServiceLocal => DynamicSigmaEconomicExposureUnits {
+                value_at_risk_units: 0,
+                max_acceptable_expected_loss_units: 0,
+            },
+        }
+    }
+}
+
 /// Dynamic sigma decision and its component floors.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DynamicSigmaDecision {
@@ -1399,6 +1441,28 @@ mod tests {
         }
     }
 
+    fn economic_exposure_evidence(
+        policy: DynamicSigmaEconomicExposurePolicy,
+        selected_sigma: u64,
+    ) -> DynamicSigmaProposalEvidence {
+        let exposure = policy.to_units();
+        let mut raw_telemetry = raw_telemetry(90, 0);
+        raw_telemetry.rollback_risk = RollbackRiskCurve {
+            base_sigma_ppm: 80,
+            raised_sigma_ppm: 5,
+            max_sigma_ppm: 1,
+        };
+        raw_telemetry.value_at_risk_units = exposure.value_at_risk_units;
+        raw_telemetry.max_acceptable_expected_loss_units =
+            exposure.max_acceptable_expected_loss_units;
+
+        DynamicSigmaProposalEvidence {
+            raw_telemetry,
+            margins: TelemetryEstimateMargins::default(),
+            selected_sigma,
+        }
+    }
+
     fn raw_telemetry(
         participating_hash_work: u128,
         failed_rounds: u64,
@@ -2254,6 +2318,56 @@ mod tests {
     }
 
     #[test]
+    fn proposal_evidence_accepts_service_local_economic_exposure_at_base_sigma() {
+        let decision = validate_dynamic_sigma_evidence(
+            params(),
+            economic_exposure_evidence(DynamicSigmaEconomicExposurePolicy::ServiceLocal, 1),
+        )
+        .expect("service-local exposure should not raise consensus sigma");
+
+        assert_eq!(decision.economic_floor, 1);
+        assert_eq!(decision.sigma, 1);
+    }
+
+    #[test]
+    fn proposal_evidence_rejects_sigma_below_consensus_critical_economic_floor() {
+        assert_eq!(
+            validate_dynamic_sigma_evidence(
+                params(),
+                economic_exposure_evidence(
+                    DynamicSigmaEconomicExposurePolicy::ConsensusCritical {
+                        value_at_risk_units: 100_000,
+                        max_acceptable_expected_loss_units: 1,
+                    },
+                    1,
+                ),
+            ),
+            Err(DynamicSigmaEvidenceError::SelectedSigmaBelowRequired {
+                selected: 1,
+                required: 3,
+            })
+        );
+    }
+
+    #[test]
+    fn proposal_evidence_accepts_consensus_critical_economic_floor() {
+        let decision = validate_dynamic_sigma_evidence(
+            params(),
+            economic_exposure_evidence(
+                DynamicSigmaEconomicExposurePolicy::ConsensusCritical {
+                    value_at_risk_units: 100_000,
+                    max_acceptable_expected_loss_units: 1,
+                },
+                3,
+            ),
+        )
+        .expect("selected sigma should satisfy the consensus-critical economic floor");
+
+        assert_eq!(decision.economic_floor, 3);
+        assert_eq!(decision.sigma, 3);
+    }
+
+    #[test]
     fn proposal_evidence_rejects_sigma_outside_ladder() {
         assert_eq!(
             validate_dynamic_sigma_evidence(params(), evidence(63, 4)),
@@ -2566,6 +2680,64 @@ mod tests {
             },
             100000,
             1,
+        ));
+
+        assert_eq!(decision.economic_floor, 3);
+        assert_eq!(decision.sigma, 3);
+        assert_eq!(
+            decision.economic_target_status,
+            EconomicTargetStatus::TargetSatisfied
+        );
+    }
+
+    #[test]
+    fn service_local_economic_exposure_does_not_raise_consensus_sigma() {
+        let exposure = DynamicSigmaEconomicExposurePolicy::ServiceLocal.to_units();
+        let decision = decide(window(
+            90,
+            0,
+            10,
+            0,
+            5,
+            0,
+            RollbackRiskCurve {
+                base_sigma_ppm: 80,
+                raised_sigma_ppm: 5,
+                max_sigma_ppm: 1,
+            },
+            exposure.value_at_risk_units,
+            exposure.max_acceptable_expected_loss_units,
+        ));
+
+        assert_eq!(decision.economic_floor, 1);
+        assert_eq!(decision.sigma, 1);
+        assert_eq!(
+            decision.economic_target_status,
+            EconomicTargetStatus::TargetSatisfied
+        );
+    }
+
+    #[test]
+    fn consensus_critical_economic_exposure_can_raise_consensus_sigma() {
+        let exposure = DynamicSigmaEconomicExposurePolicy::ConsensusCritical {
+            value_at_risk_units: 100_000,
+            max_acceptable_expected_loss_units: 1,
+        }
+        .to_units();
+        let decision = decide(window(
+            90,
+            0,
+            10,
+            0,
+            5,
+            0,
+            RollbackRiskCurve {
+                base_sigma_ppm: 80,
+                raised_sigma_ppm: 5,
+                max_sigma_ppm: 1,
+            },
+            exposure.value_at_risk_units,
+            exposure.max_acceptable_expected_loss_units,
         ));
 
         assert_eq!(decision.economic_floor, 3);

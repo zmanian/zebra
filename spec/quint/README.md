@@ -117,6 +117,10 @@ numerator. `DynamicSigmaHeaderObservationWindow` lets callers provide headers
 directly alongside Tenderlink round counters, best-tip transitions, variance
 telemetry, rollback-risk estimates, and economic exposure inputs, then builds
 the same telemetry components as the lower-level hash-work observation path.
+`DynamicSigmaEconomicExposurePolicy` makes the economic-risk boundary explicit:
+consensus-critical exposure carries value-at-risk and loss-budget units into
+proposal evidence, while service-local exposure maps to zero consensus exposure
+and cannot silently change validator validity.
 `DynamicSigmaBestTipTransition` derives the observed reorg-depth input from
 explicit old-tip, new-tip, and common-ancestor heights, with a helper for taking
 the maximum rollback depth over a transition window.
@@ -1152,6 +1156,9 @@ This model is intentionally narrow. The next useful extensions are:
   observation-window assembler composes those headers with round and fork
   evidence into telemetry components, and the pure rollback-depth helper derives
   the observed reorg-depth input from explicit best-tip transition evidence. The
+  economic exposure policy now explicitly separates consensus-critical exposure
+  from service-local risk, with proposal-evidence tests rejecting selected sigma
+  below a consensus-critical economic floor. The
   observation-window assembler now composes source-shaped inputs into telemetry
   components, and the
   prototype proposal path uses it. The pure hysteresis helper covers bounded
