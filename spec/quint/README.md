@@ -64,7 +64,10 @@ prevotes, and nil/value precommit conflicts are carried into the same
 equivocation predicates used by the accountability model. Its tiny faulty-init
 model adapts the upstream Tendermint pattern of nondeterministically injecting
 faulty proposal, prevote, and precommit powersets in the initial state, while
-keeping the instance small enough for the baseline proof gate.
+keeping the instance small enough for the baseline proof gate. A second
+faulty-init model lifts the same idea into the fixed-sigma/forking `n4_f1`
+parameter surface with a bounded faulty-evidence domain so symbolic checking
+remains tractable.
 
 `CrosslinkBaselineBftHeights.qnt` gives the baseline variant a named
 heighted-finality model. It checks that fixed-sigma finality advances through
@@ -414,6 +417,11 @@ $QUINT test spec/quint/CrosslinkBaselineAccountability.qnt \
   --main=CrosslinkBaselineFaultyInitTinyModel \
   --max-samples=100 \
   --backend=rust
+
+$QUINT test spec/quint/CrosslinkBaselineAccountability.qnt \
+  --main=CrosslinkBaselineFaultyInitForkingModel \
+  --max-samples=100 \
+  --backend=rust
 ```
 
 This model checks that baseline nil precommit preserves same-round value-lock
@@ -421,10 +429,12 @@ state and that conflicting value commits without nil-unlock evidence are
 accountable through the existing amnesia predicates. It also checks that
 faulty proposal, prevote, and nil/value precommit evidence feeds the
 equivocation detector. The tiny faulty-init model checks the upstream-style
-`InitWithFaultyEvidence` path with nondeterministic faulty message powersets;
-the remaining upstream-quality step is to lift that path into the larger
-parameterized baseline instances without making the symbolic gate unusably
-large.
+`InitWithFaultyEvidence` path with nondeterministic faulty message powersets.
+The forking faulty-init model checks a larger fixed-sigma/forking baseline
+instance with bounded faulty proposal, prevote, and precommit powersets; the
+remaining upstream-quality step is to lift the unbounded faulty-init path into
+the larger parameterized baseline instances without making the symbolic gate
+unusably large.
 
 Witness baseline BFT-heighted finality:
 
@@ -1257,6 +1267,8 @@ faulty proposal, prevote, and nil/value precommit evidence witnesses that prove
 observed faulty evidence reaches the equivocation predicates.
 `BaselineFaultyInitSafety` additionally checks a tiny instance initialized with
 nondeterministic faulty proposal, prevote, and precommit powersets.
+`BaselineForkingFaultyInitSafety` checks the fixed-sigma/forking baseline
+parameter surface with a bounded nondeterministic faulty-init domain.
 
 The bounded upstream-shaped baseline checks report no violation for
 `BaselineN4F1StableSafety` or `BaselineN4F1ForkingSafety`. The stable instance

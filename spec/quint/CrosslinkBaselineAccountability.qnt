@@ -146,3 +146,144 @@ module CrosslinkBaselineFaultyInitTinyModel {
     })
   }
 }
+
+module CrosslinkBaselineFaultyInitForkingModel {
+  /*
+   A larger fixed-sigma/forking baseline faulty-init harness. The baseline
+   protocol parameters match the upstream-shaped N4/F1 forking shell, while the
+   injected faulty evidence is bounded to a small domain so the symbolic proof
+   gate remains tractable.
+   */
+
+  import CrosslinkBaselineModels.* from "./CrosslinkBaselineModels"
+
+  pure val TestRounds = 0.to(4)
+
+  pure def TestHeadMinusSigma(r: int): str =
+    AncestorByHeight
+      .get(ForkingBestTip.get(r))
+      .get(HeightBySnapshot.get(ForkingBestTip.get(r)) - 1)
+
+  pure val TestStream: int -> str =
+    TestRounds.mapBy(r => TestHeadMinusSigma(r))
+
+  pure val TestStreamMatchesFixedSigma =
+    TestRounds.forall(r => TestStream.get(r) == TestHeadMinusSigma(r))
+
+  import CrosslinkResamplingTest(
+    Corr = Set("p1", "p2", "p3"),
+    Faulty = Set("p4"),
+    N = 4,
+    T = 1,
+    MaxRound = 4,
+    Proposer = ProposerSchedule,
+    Stream = TestStream,
+    Snapshots = ValidSnapshots,
+    ResampleOnNilPrecommit = false,
+    ExpectedRound1Proposal = TestStream.get(0),
+  ).* from "./CrosslinkResampling"
+
+  pure val FaultyInitRounds =
+    Set(0)
+
+  pure val FaultyInitSnapshots =
+    Set(TestHeadMinusSigma(0), TestHeadMinusSigma(1))
+
+  pure val FaultyInitSnapshotsOrNil =
+    Set(NilSnapshot).union(FaultyInitSnapshots)
+
+  pure val FaultyInitValidRounds =
+    Set(NilRound, 0)
+
+  pure val FaultyInitDomainWellFormed =
+    FaultyInitRounds.subseteq(Rounds) and
+    FaultyInitSnapshots.subseteq(Snapshots) and
+    FaultyInitValidRounds.subseteq(RoundsOrNil)
+
+  def BoundedFaultyInitProposals(r: Round_t): Set[Propose_t] =
+    tuples(Faulty, FaultyInitSnapshots, FaultyInitValidRounds)
+      .map(((p, v, vr)) => {
+        src: p,
+        round: r,
+        proposal: v,
+        validRound: vr,
+      })
+
+  val AllBoundedFaultyInitProposals =
+    FaultyInitRounds.map(r => BoundedFaultyInitProposals(r)).flatten()
+
+  def BoundedFaultyInitPrevotes(r: Round_t): Set[Vote_t] =
+    tuples(Faulty, FaultyInitSnapshotsOrNil)
+      .map(((p, v)) => {
+        src: p,
+        round: r,
+        id: v,
+      })
+
+  val AllBoundedFaultyInitPrevotes =
+    FaultyInitRounds.map(r => BoundedFaultyInitPrevotes(r)).flatten()
+
+  def BoundedFaultyInitPrecommits(r: Round_t): Set[Vote_t] =
+    tuples(Faulty, FaultyInitSnapshotsOrNil)
+      .map(((p, v)) => {
+        src: p,
+        round: r,
+        id: v,
+      })
+
+  val AllBoundedFaultyInitPrecommits =
+    FaultyInitRounds.map(r => BoundedFaultyInitPrecommits(r)).flatten()
+
+  action InitWithBoundedForkingFaultyEvidence =
+    nondet faultyProposals = AllBoundedFaultyInitProposals.powerset().oneOf()
+    nondet faultyPrevotes = AllBoundedFaultyInitPrevotes.powerset().oneOf()
+    nondet faultyPrecommits = AllBoundedFaultyInitPrecommits.powerset().oneOf()
+    all {
+      round' = Corr.mapBy(_ => 0),
+      step' = Corr.mapBy(_ => "propose"),
+      decision' = Corr.mapBy(_ => NilSnapshot),
+      lockedValue' = Corr.mapBy(_ => NilSnapshot),
+      lockedRound' = Corr.mapBy(_ => NilRound),
+      validValue' = Corr.mapBy(_ => NilSnapshot),
+      validRound' = Corr.mapBy(_ => NilRound),
+      cachedProposal' = Corr.mapBy(_ => NilSnapshot),
+      cachedProposalRound' = Corr.mapBy(_ => NilRound),
+      msgsPropose' = Rounds.mapBy(r =>
+        faultyProposals.filter(m => m.round == r)
+      ),
+      msgsPrevote' = Rounds.mapBy(r =>
+        faultyPrevotes.filter(m => m.round == r)
+      ),
+      msgsPrecommit' = Rounds.mapBy(r =>
+        faultyPrecommits.filter(m => m.round == r)
+      ),
+      evidencePropose' = faultyProposals,
+      evidencePrevote' = faultyPrevotes,
+      evidencePrecommit' = faultyPrecommits,
+      firedAction' = "InitWithBoundedForkingFaultyEvidence",
+    }
+
+  val BaselineForkingFaultyInitSafety =
+    Safety and TestStreamMatchesFixedSigma and FaultyInitDomainWellFormed
+
+  run baselineForkingFaultyInitCoversEvidenceTest = {
+    InitWithBoundedForkingFaultyEvidence.then(all {
+      assert(TestHeadMinusSigma(0) == "a1"),
+      assert(TestHeadMinusSigma(1) == "b1"),
+      assert(EvidenceCoversObservedMessages),
+      assert(BaselineForkingFaultyInitSafety),
+      unchangedAll,
+    })
+  }
+
+  run baselineForkingFaultyInitAllowsCorrectProposalTest = {
+    InitWithBoundedForkingFaultyEvidence
+      .then(InsertProposal("p1"))
+      .then(all {
+        assert(HasProposal(0, "a1")),
+        assert(EvidenceCoversObservedMessages),
+        assert(BaselineForkingFaultyInitSafety),
+        unchangedAll,
+      })
+  }
+}
