@@ -284,6 +284,25 @@ pub struct DynamicSigmaTelemetryObservationWindow<'a> {
     pub max_acceptable_expected_loss_units: u128,
 }
 
+/// Source-side observation window whose PoW work evidence is provided as headers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DynamicSigmaHeaderObservationWindow<'a> {
+    /// Validated PoW headers used to derive hash-work participation.
+    pub pow_headers: &'a [Header],
+    /// Tenderlink round counters for this window.
+    pub round_counters: DynamicSigmaRoundCounters,
+    /// Best-tip transitions used to derive observed rollback depth.
+    pub best_tip_transitions: &'a [DynamicSigmaBestTipTransition],
+    /// Measured PoW timing variance percentage.
+    pub measured_block_interval_variance_pct: u8,
+    /// Rollback risk estimates across the sigma ladder.
+    pub rollback_risk: RollbackRiskCurve,
+    /// Economic value exposed to rollback in the window.
+    pub value_at_risk_units: u128,
+    /// Maximum acceptable expected loss for this window.
+    pub max_acceptable_expected_loss_units: u128,
+}
+
 /// Invalid source-side observation window.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DynamicSigmaTelemetryObservationError {
@@ -293,6 +312,15 @@ pub enum DynamicSigmaTelemetryObservationError {
     InvalidRoundCounters(DynamicSigmaTelemetryAssemblyError),
     /// Rollback-depth observations were invalid.
     InvalidRollbackTelemetry(DynamicSigmaRollbackTelemetryError),
+}
+
+/// Invalid source-side header observation window.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DynamicSigmaHeaderObservationWindowError {
+    /// A PoW header could not be converted into hash-work telemetry.
+    InvalidHeader(DynamicSigmaHeaderObservationError),
+    /// The derived source telemetry window was invalid.
+    InvalidTelemetry(DynamicSigmaTelemetryObservationError),
 }
 
 /// Hash-participation health status.
@@ -863,6 +891,25 @@ pub fn telemetry_components_from_observation_window(
         value_at_risk_units: window.value_at_risk_units,
         max_acceptable_expected_loss_units: window.max_acceptable_expected_loss_units,
     })
+}
+
+/// Assemble header-derived source observations into telemetry components.
+pub fn telemetry_components_from_header_observation_window(
+    window: DynamicSigmaHeaderObservationWindow<'_>,
+) -> Result<DynamicSigmaTelemetryComponents, DynamicSigmaHeaderObservationWindowError> {
+    let hash_work_observations = hash_work_observations_from_headers(window.pow_headers)
+        .map_err(DynamicSigmaHeaderObservationWindowError::InvalidHeader)?;
+
+    telemetry_components_from_observation_window(DynamicSigmaTelemetryObservationWindow {
+        hash_work_observations: &hash_work_observations,
+        round_counters: window.round_counters,
+        best_tip_transitions: window.best_tip_transitions,
+        measured_block_interval_variance_pct: window.measured_block_interval_variance_pct,
+        rollback_risk: window.rollback_risk,
+        value_at_risk_units: window.value_at_risk_units,
+        max_acceptable_expected_loss_units: window.max_acceptable_expected_loss_units,
+    })
+    .map_err(DynamicSigmaHeaderObservationWindowError::InvalidTelemetry)
 }
 
 /// Validate proposal-carried dynamic-sigma evidence.
@@ -1848,6 +1895,70 @@ mod tests {
                     DynamicSigmaRollbackTelemetryError::CommonAncestorAbovePreviousTip,
                 )
             ),
+        );
+    }
+
+    #[test]
+    fn header_observation_window_assembles_controller_components() {
+        let headers = [
+            header_with_fat_pointer(participating_fat_pointer()),
+            header_with_fat_pointer(FatPointerToBftBlock::null()),
+            header_with_fat_pointer(FatPointerToBftBlock::null()),
+        ];
+        let best_tip_transitions = [DynamicSigmaBestTipTransition {
+            previous_tip_height: 10,
+            new_tip_height: 12,
+            common_ancestor_height: 9,
+        }];
+
+        let components = telemetry_components_from_header_observation_window(
+            DynamicSigmaHeaderObservationWindow {
+                pow_headers: &headers,
+                round_counters: decided_round_counters(10),
+                best_tip_transitions: &best_tip_transitions,
+                measured_block_interval_variance_pct: 0,
+                rollback_risk: low_risk_curve(),
+                value_at_risk_units: 1000,
+                max_acceptable_expected_loss_units: 100,
+            },
+        )
+        .expect("valid header window should assemble telemetry components");
+        let raw = components
+            .try_into_raw_telemetry()
+            .expect("header-derived components should build raw telemetry");
+        let decision = select_dynamic_sigma(
+            params(),
+            raw.into_window(TelemetryEstimateMargins::default())
+                .expect("header-derived raw telemetry should build a window"),
+        )
+        .expect("header-derived telemetry should feed the controller");
+
+        assert_eq!(decision.hash_participation_floor, params().max_sigma);
+        assert_eq!(decision.reorg_floor, params().raised_sigma);
+        assert_eq!(decision.sigma, params().max_sigma);
+    }
+
+    #[test]
+    fn header_observation_window_rejects_invalid_header_difficulty() {
+        let mut invalid_header = header_with_fat_pointer(participating_fat_pointer());
+        invalid_header.difficulty_threshold = INVALID_COMPACT_DIFFICULTY;
+        let headers = [invalid_header];
+
+        assert_eq!(
+            telemetry_components_from_header_observation_window(
+                DynamicSigmaHeaderObservationWindow {
+                    pow_headers: &headers,
+                    round_counters: decided_round_counters(10),
+                    best_tip_transitions: &[],
+                    measured_block_interval_variance_pct: 0,
+                    rollback_risk: low_risk_curve(),
+                    value_at_risk_units: 1000,
+                    max_acceptable_expected_loss_units: 100,
+                },
+            ),
+            Err(DynamicSigmaHeaderObservationWindowError::InvalidHeader(
+                DynamicSigmaHeaderObservationError::InvalidDifficultyThreshold,
+            )),
         );
     }
 

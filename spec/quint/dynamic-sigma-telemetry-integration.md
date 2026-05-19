@@ -201,6 +201,14 @@ as the participation marker, and keeps all valid header work in the denominator.
 That makes the "percentage of hash power participating in Crosslink" input
 work-weighted rather than block-count-weighted.
 
+`telemetry_components_from_header_observation_window` composes this with the
+rest of the source contract. A caller can supply PoW headers, Tenderlink round
+counters, best-tip transitions, variance telemetry, rollback-risk estimates,
+and economic exposure inputs in one window. The helper derives header work,
+derives the participation numerator and denominator, validates round counters,
+derives rollback depth, and returns the same `DynamicSigmaTelemetryComponents`
+used by proposal evidence selection.
+
 The source contracts are now composed by
 `telemetry_components_from_observation_window`. It accepts hash-work
 observations, already accumulated Tenderlink round counters, best-tip
@@ -307,11 +315,12 @@ A production implementation of the dynamic-sigma variant should provide:
   rejects dynamic payload evidence whose Crosslink-participating hash-power
   share requires a higher sigma than the proposer selected. The hash-work
   observation tests now derive the participation numerator from explicit
-  verified-participating observations and cover healthy, degraded, and critical
-  shares through telemetry assembly. The observation-window tests now compose
-  hash-work observations, round counters, and best-tip transitions into
-  telemetry components and reject invalid source counters or rollback evidence.
-  The new pure telemetry assembly tests also reject missing participating-work
+  verified-participating observations and from PoW headers, then cover healthy,
+  degraded, and critical shares through telemetry assembly. The
+  observation-window tests now compose hash-work observations or headers, round
+  counters, and best-tip transitions into telemetry components and reject
+  invalid source counters, invalid header difficulty, or rollback evidence. The
+  new pure telemetry assembly tests also reject missing participating-work
   evidence and inconsistent round counters, the event-counter tests reject
   failure-reason overcounts, and rollback-depth tests derive the observed
   reorg-depth input from explicit best-tip transition evidence, but live
