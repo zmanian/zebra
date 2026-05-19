@@ -93,8 +93,8 @@ The current branch has these baseline-specific files:
   - adds a fixed-sigma/forking `n4_f1` faulty-init harness with a bounded
     nondeterministic faulty-evidence domain
   - adds quick-check-only fixed-sigma/forking faulty-init harnesses for `n4_f1`,
-    `n5_f1`, `n5_f2`, and `n7_f2` using the full faulty proposal, prevote, and
-    precommit powerset domains
+    `n4_f2`, `n5_f1`, `n5_f2`, and `n7_f2` using the full faulty proposal,
+    prevote, and precommit powerset domains
   - adds false-invariant counterexample tests for conflicting commits,
     amnesia, equivocation, agreement, agreement-or-amnesia,
     amnesia-implies-equivocation, amnesia-without-equivocation, and undecided
@@ -146,7 +146,7 @@ The current branch has these baseline-specific files:
 | Upstream-style stream-change/sticky-sample test | `CrosslinkBaselineTest.qnt`; `streamChangeDerivesFreshHeadMinusSigmaTest`; `stickyBaselineCarriesStaleFixedSigmaSampleTest` | Covered for `n4_f1_forking` |
 | Fault-boundary behavior for `f = 2` | `CrosslinkBaselineTest.qnt`; `n4F2DocumentsAboveLiveFaultBoundaryTest`; `n5F2CatchupEvidenceButNoCorrectValueQuorumTest`; `n7F2DecisionPathTest`; `symbolic-baseline` depth-2 checks for `BaselineN4F2ForkingSafety`, `BaselineN5F2ForkingSafety`, and `BaselineN7F2ForkingSafety` | Covered by Rust-backed witnesses and shallow symbolic gates |
 | Faulty proposal/prevote/precommit evidence reaches equivocation predicates | `CrosslinkBaselineAccountability.qnt`; `baselineFaultyProposalEvidenceFeedsEquivocationTest`; `baselineFaultyPrevoteEvidenceFeedsEquivocationTest`; `baselineFaultyNilValuePrecommitEvidenceFeedsEquivocationTest` | Covered as witnesses |
-| Nondeterministic faulty message injection in `Init` | `InitWithFaultyEvidence`; `CrosslinkBaselineFaultyInitTinyModel`; `CrosslinkBaselineFaultyInitForkingModel`; `CrosslinkBaselineFullFaultyInitForkingModel`; `CrosslinkBaselineFullFaultyInitN5F1ForkingModel`; `CrosslinkBaselineFullFaultyInitN5F2ForkingModel`; `CrosslinkBaselineFullFaultyInitN7F2ForkingModel`; `BaselineFaultyInitSafety`; `BaselineForkingFaultyInitSafety`; `BaselineFullForkingFaultyInitSafety`; `BaselineFullN5F1ForkingFaultyInitSafety`; `BaselineFullN5F2ForkingFaultyInitSafety`; `BaselineFullN7F2ForkingFaultyInitSafety` | Partial; covered by a tiny full-powerset instance, a bounded symbolic fixed-sigma/forking instance, and quick-check full-powerset fixed-sigma/forking `n4_f1`, `n5_f1`, `n5_f2`, and `n7_f2` instances; not yet lifted into every larger parameterized instance or symbolic gate |
+| Nondeterministic faulty message injection in `Init` | `InitWithFaultyEvidence`; `CrosslinkBaselineFaultyInitTinyModel`; `CrosslinkBaselineFaultyInitForkingModel`; `CrosslinkBaselineFullFaultyInitForkingModel`; `CrosslinkBaselineFullFaultyInitN4F2ForkingModel`; `CrosslinkBaselineFullFaultyInitN5F1ForkingModel`; `CrosslinkBaselineFullFaultyInitN5F2ForkingModel`; `CrosslinkBaselineFullFaultyInitN7F2ForkingModel`; `BaselineFaultyInitSafety`; `BaselineForkingFaultyInitSafety`; `BaselineFullForkingFaultyInitSafety`; `BaselineFullN4F2ForkingFaultyInitSafety`; `BaselineFullN5F1ForkingFaultyInitSafety`; `BaselineFullN5F2ForkingFaultyInitSafety`; `BaselineFullN7F2ForkingFaultyInitSafety` | Partial; covered by a tiny full-powerset instance, a bounded symbolic fixed-sigma/forking instance, and quick-check full-powerset fixed-sigma/forking `n4_f1`, `n4_f2`, `n5_f1`, `n5_f2`, and `n7_f2` instances; not yet lifted into symbolic gates for the full-powerset larger instances |
 | Full Tendermint transition surface | Current model covers value prevote quorum, nil prevote quorum, validRound proposal justification, propose/prevote/precommit timeout paths, stream-change nil precommit, round advance after precommit quorum, timeout round advance, future-round catchup, and decision | Covered for the focused baseline shell; still not a full upstream port |
 | Full agreement/validity/accountability invariant suite over arbitrary evidence | Current suite has bounded safety plus focused accountability witnesses | Partial |
 | False-invariant/counterexample harnesses for amnesia/equivocation/agreement | `CrosslinkBaselineCounterexampleModel`; `falseNoConflictingCommitsInvariantFailsTest`; `falseNoAmnesiaEvidenceInvariantFailsTest`; `falseNoEquivocationEvidenceInvariantFailsTest`; `falseAgreementInvariantFailsTest`; `falseAgreementOrAmnesiaInvariantFailsTest`; `falseAmnesiaImpliesEquivocationInvariantFailsTest`; `falseShowMeAmnesiaWithoutEquivocationInvariantFailsTest`; `falseNeverUndecidedInMaxRoundInvariantFailsTest` | Covered as seeded Rust witnesses; not yet an arbitrary-evidence symbolic suite |
@@ -194,8 +194,8 @@ remaining upstream-quality gaps.
    - Ensure proposal, prevote, and precommit evidence is carried into
      Crosslink accountability predicates.
    - The full faulty-init powerset is now exercised for the fixed-sigma/forking
-     `n4_f1`, `n5_f1`, `n5_f2`, and `n7_f2` instances in `quick-baseline`;
-     remaining work is broader instances and symbolic coverage that stays
+     `n4_f1`, `n4_f2`, `n5_f1`, `n5_f2`, and `n7_f2` instances in
+     `quick-baseline`; remaining work is broader symbolic coverage that stays
      tractable.
 4. Port the full transition surface.
    - Include proposer selection, proposal insertion, proposal handling,
@@ -244,11 +244,10 @@ remaining upstream-quality gaps.
      nondeterministic faulty proposal, prevote, and precommit powersets.
    - A fixed-sigma/forking `n4_f1` harness now covers the same init shape with
      a bounded faulty-evidence domain.
-   - Quick-check-only fixed-sigma/forking `n4_f1`, `n5_f1`, `n5_f2`, and
-     `n7_f2` harnesses now cover the full faulty-evidence domain. The missing
-     piece is extending that coverage to the remaining parameterized instances
-     and finding a tractable symbolic abstraction for more than the bounded
-     domain.
+   - Quick-check-only fixed-sigma/forking `n4_f1`, `n4_f2`, `n5_f1`, `n5_f2`,
+     and `n7_f2` harnesses now cover the full faulty-evidence domain. The
+     missing piece is finding a tractable symbolic abstraction for more than the
+     bounded domain.
 2. Port the full Tendermint transition surface into the parameterized shell
    while preserving the baseline sticky nil-precommit rule.
 3. Add the full agreement/validity/accountability checks to

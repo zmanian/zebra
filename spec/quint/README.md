@@ -73,10 +73,10 @@ keeping the instance small enough for the baseline proof gate. A second
 faulty-init model lifts the same idea into the fixed-sigma/forking `n4_f1`
 parameter surface with a bounded faulty-evidence domain so symbolic checking
 remains tractable. Additional quick-check harnesses run the full
-faulty-evidence domain over the fixed-sigma/forking `n4_f1`, `n5_f1`, `n5_f2`,
-and proper `n7_f2` BFT-boundary surfaces so larger parameterized instances are
-exercised without adding those full powersets to the symbolic gate. The same
-file also includes counterexample tests for false
+faulty-evidence domain over the fixed-sigma/forking `n4_f1`, `n4_f2`, `n5_f1`,
+`n5_f2`, and proper `n7_f2` BFT-boundary surfaces so larger parameterized
+instances are exercised without adding those full powersets to the symbolic
+gate. The same file also includes counterexample tests for false
 agreement, amnesia, equivocation, no-conflicting-commit,
 agreement-or-amnesia, amnesia-implies-equivocation,
 amnesia-without-equivocation, and undecided max-round claims, so the
@@ -513,8 +513,11 @@ The forking faulty-init model checks a larger fixed-sigma/forking baseline
 instance with bounded faulty proposal, prevote, and precommit powersets. The
 full forking faulty-init model keeps the complete faulty proposal, prevote, and
 precommit powerset domain alive as a Rust-backed quick check for the same
-`n4_f1` parameter surface. The n5/f1 full forking faulty-init model extends the
-same full-domain quick check to the intermediate one-fault validator surface.
+`n4_f1` parameter surface. The n4/f2 full forking faulty-init model applies the
+same full-domain quick check to the above-live-boundary f=2 surface where
+correct validators cannot form f+1 catchup evidence or a 2f+1 value quorum. The
+n5/f1 full forking faulty-init model extends the same full-domain quick check to
+the intermediate one-fault validator surface.
 The n5/f2 full forking faulty-init model applies the same full-domain quick
 check to the above-live-boundary f=2 surface where correct validators can form
 f+1 catchup evidence but not a 2f+1 value quorum.
@@ -1396,6 +1399,9 @@ parameter surface with a bounded nondeterministic faulty-init domain.
 `BaselineFullForkingFaultyInitSafety` checks the same fixed-sigma/forking
 baseline parameter surface against the full faulty-init domain in the quick
 Rust-backed gate.
+`BaselineFullN4F2ForkingFaultyInitSafety` checks the above-live-boundary
+`n4_f2` fixed-sigma/forking surface against the full faulty-init domain in the
+quick Rust-backed gate.
 `BaselineFullN5F1ForkingFaultyInitSafety` checks the intermediate `n5_f1`
 fixed-sigma/forking surface against the full faulty-init domain in the quick
 Rust-backed gate.
