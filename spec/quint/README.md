@@ -100,7 +100,8 @@ fixed `head - sigma` PoW sample. It derives `Stream(round)` from a best-tip
 schedule and ancestor map, then shows that a fork switch can roll back the
 previous fixed-sigma sample while the sticky baseline still carries that sample
 into the next round. It also includes a long-reorg fixture where rollback depth
-exceeds sigma and the stale fixed-sigma sample is still carried.
+exceeds sigma and a generated work-competition fixture where an adversarially
+released branch becomes the selected best tip.
 
 `baseline-completeness-audit.md` maps the current baseline artifacts against
 the upstream Tendermint Quint example and tracks the remaining work before the
@@ -558,6 +559,11 @@ $QUINT test spec/quint/CrosslinkBaselinePowSampling.qnt \
   --main=CrosslinkBaselinePowLongReorgModel \
   --max-samples=100 \
   --backend=rust
+
+$QUINT test spec/quint/CrosslinkBaselinePowSampling.qnt \
+  --main=CrosslinkBaselinePowGeneratedScheduleModel \
+  --max-samples=100 \
+  --backend=rust
 ```
 
 This model makes `Stream(round)` equal to the explicit fixed `head - sigma`
@@ -566,7 +572,11 @@ round samples `a3` and `b3`, and checks that the sticky baseline still proposes
 the rolled-back `a3` sample in round 1. The long-reorg fixture raises sigma to
 2, moves the best tip from `a5` to `c5` with common ancestor `a2`, derives
 rollback depth 3, and checks the same sticky stale-sample behavior for `a3`
-versus the fresh `c3` sample.
+versus the fresh `c3` sample. The generated-schedule fixture derives best tips
+from published honest and adversarial work: `a3`, then `a4`, then an
+adversarially released `b4`. It derives the baseline stream from those tips and
+checks that the sticky protocol carries round-1 sample `a3` into round 2
+instead of the fresh fork sample `b3`.
 
 Witness the current sticky behavior:
 
@@ -1391,13 +1401,16 @@ that the sticky baseline can carry `a1` into round 1 and leave finality at `g`
 instead of finalizing the fresh stream value.
 
 The bounded baseline PoW-sampling checks report no violation for
-`BaselinePowSamplingSafety` and `BaselinePowLongReorgSafety`, which combine the
-current fixed-sigma/sticky Tenderlink safety invariant with an explicit
+`BaselinePowSamplingSafety`, `BaselinePowLongReorgSafety`, and
+`BaselinePowGeneratedScheduleSafety`, which combine the current
+fixed-sigma/sticky Tenderlink safety invariant with an explicit
 `Stream(round) = head - sigma` condition. The fork-switch witness records a
 rollback from `a4` to `b4` where the round-0 fixed-sigma sample `a3` no longer
-survives, while the long-reorg witness records a deeper rollback from `a5` to
-`c5` where rollback depth 3 exceeds sigma 2. In both cases, the sticky baseline
-still carries the old sample into round 1 instead of sampling the fresh fork.
+survives. The long-reorg witness records a deeper rollback from `a5` to `c5`
+where rollback depth 3 exceeds sigma 2. The generated-schedule witness derives
+the fork switch from published work competition where `b4` outworks `a4`. In all
+cases, the sticky baseline still carries the old sample into the next round
+instead of sampling the fresh fork.
 
 The bounded fork-finality check reports no violation for its `Safety`, which
 combines:
