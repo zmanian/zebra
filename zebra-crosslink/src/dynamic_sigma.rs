@@ -161,6 +161,29 @@ pub enum DynamicSigmaHeaderObservationError {
     ZeroHeaderWork,
 }
 
+/// Invalid source-side PoW block-interval variance telemetry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DynamicSigmaBlockIntervalVarianceError {
+    /// The expected block spacing must be nonzero.
+    InvalidTargetBlockSpacing,
+    /// At least two headers are required to derive an interval.
+    TooFewHeaders,
+    /// Adjacent header timestamps did not produce a positive interval.
+    NonIncreasingTimestamp {
+        /// Earlier header timestamp in Unix seconds.
+        previous_timestamp: i64,
+        /// Later header timestamp in Unix seconds.
+        current_timestamp: i64,
+    },
+    /// Adjacent header timestamp subtraction overflowed.
+    TimestampDeltaOverflow {
+        /// Earlier header timestamp in Unix seconds.
+        previous_timestamp: i64,
+        /// Later header timestamp in Unix seconds.
+        current_timestamp: i64,
+    },
+}
+
 /// Tenderlink round counters collected over a dynamic-sigma telemetry window.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct DynamicSigmaRoundCounters {
@@ -365,6 +388,25 @@ pub struct DynamicSigmaHeaderObservationWindow<'a> {
     pub max_acceptable_expected_loss_units: u128,
 }
 
+/// Source-side observation window whose PoW work and timing come from headers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DynamicSigmaTimedHeaderObservationWindow<'a> {
+    /// Validated PoW headers used to derive hash-work participation and timing.
+    pub pow_headers: &'a [Header],
+    /// Expected target spacing between adjacent PoW blocks, in seconds.
+    pub target_block_spacing_seconds: u64,
+    /// Tenderlink round counters for this window.
+    pub round_counters: DynamicSigmaRoundCounters,
+    /// Best-tip transitions used to derive observed rollback depth.
+    pub best_tip_transitions: &'a [DynamicSigmaBestTipTransition],
+    /// Rollback risk estimates across the sigma ladder.
+    pub rollback_risk: RollbackRiskCurve,
+    /// Economic value exposed to rollback in the window.
+    pub value_at_risk_units: u128,
+    /// Maximum acceptable expected loss for this window.
+    pub max_acceptable_expected_loss_units: u128,
+}
+
 /// Invalid source-side observation window.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DynamicSigmaTelemetryObservationError {
@@ -383,6 +425,15 @@ pub enum DynamicSigmaHeaderObservationWindowError {
     InvalidHeader(DynamicSigmaHeaderObservationError),
     /// The derived source telemetry window was invalid.
     InvalidTelemetry(DynamicSigmaTelemetryObservationError),
+}
+
+/// Invalid source-side timed header observation window.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DynamicSigmaTimedHeaderObservationWindowError {
+    /// Header timestamp intervals could not derive conservative variance.
+    InvalidBlockIntervalVariance(DynamicSigmaBlockIntervalVarianceError),
+    /// Header work, participation, rounds, or rollback evidence was invalid.
+    InvalidHeaderObservationWindow(DynamicSigmaHeaderObservationWindowError),
 }
 
 /// Hash-participation health status.
@@ -928,6 +979,54 @@ fn default_header_participation_marker_verifier(fat_pointer: &FatPointerToBftBlo
     *fat_pointer != FatPointerToBftBlock::null()
 }
 
+/// Derive a conservative block-interval variance percentage from header times.
+///
+/// This uses the maximum absolute adjacent-interval deviation from target
+/// spacing, rounded up and capped at 100 percent.
+pub fn measured_block_interval_variance_pct_from_headers(
+    headers: &[Header],
+    target_block_spacing_seconds: u64,
+) -> Result<u8, DynamicSigmaBlockIntervalVarianceError> {
+    if target_block_spacing_seconds == 0 {
+        return Err(DynamicSigmaBlockIntervalVarianceError::InvalidTargetBlockSpacing);
+    }
+
+    if headers.len() < 2 {
+        return Err(DynamicSigmaBlockIntervalVarianceError::TooFewHeaders);
+    }
+
+    let target_block_spacing_seconds = u128::from(target_block_spacing_seconds);
+    let mut max_deviation_pct = 0u128;
+
+    for adjacent_headers in headers.windows(2) {
+        let previous_timestamp = adjacent_headers[0].time.timestamp();
+        let current_timestamp = adjacent_headers[1].time.timestamp();
+        let interval_seconds = current_timestamp.checked_sub(previous_timestamp).ok_or(
+            DynamicSigmaBlockIntervalVarianceError::TimestampDeltaOverflow {
+                previous_timestamp,
+                current_timestamp,
+            },
+        )?;
+
+        if interval_seconds <= 0 {
+            return Err(
+                DynamicSigmaBlockIntervalVarianceError::NonIncreasingTimestamp {
+                    previous_timestamp,
+                    current_timestamp,
+                },
+            );
+        }
+
+        let interval_seconds = interval_seconds as u128;
+        let deviation_seconds = interval_seconds.abs_diff(target_block_spacing_seconds);
+        let deviation_pct = ceil_mul_div(deviation_seconds, 100, target_block_spacing_seconds);
+
+        max_deviation_pct = max_deviation_pct.max(deviation_pct.min(100));
+    }
+
+    Ok(max_deviation_pct as u8)
+}
+
 impl DynamicSigmaTelemetryComponents {
     /// Assemble production-shaped telemetry into raw controller telemetry.
     ///
@@ -1285,6 +1384,45 @@ where
         max_acceptable_expected_loss_units: window.max_acceptable_expected_loss_units,
     })
     .map_err(DynamicSigmaHeaderObservationWindowError::InvalidTelemetry)
+}
+
+/// Assemble timed header-derived source observations into telemetry components.
+pub fn telemetry_components_from_timed_header_observation_window(
+    window: DynamicSigmaTimedHeaderObservationWindow<'_>,
+) -> Result<DynamicSigmaTelemetryComponents, DynamicSigmaTimedHeaderObservationWindowError> {
+    telemetry_components_from_timed_header_observation_window_with_verifier(
+        window,
+        default_header_participation_marker_verifier,
+    )
+}
+
+/// Assemble timed header-derived source observations with custom marker validation.
+pub fn telemetry_components_from_timed_header_observation_window_with_verifier<F>(
+    window: DynamicSigmaTimedHeaderObservationWindow<'_>,
+    marker_verifier: F,
+) -> Result<DynamicSigmaTelemetryComponents, DynamicSigmaTimedHeaderObservationWindowError>
+where
+    F: Fn(&FatPointerToBftBlock) -> bool,
+{
+    let measured_block_interval_variance_pct = measured_block_interval_variance_pct_from_headers(
+        window.pow_headers,
+        window.target_block_spacing_seconds,
+    )
+    .map_err(DynamicSigmaTimedHeaderObservationWindowError::InvalidBlockIntervalVariance)?;
+
+    telemetry_components_from_header_observation_window_with_verifier(
+        DynamicSigmaHeaderObservationWindow {
+            pow_headers: window.pow_headers,
+            round_counters: window.round_counters,
+            best_tip_transitions: window.best_tip_transitions,
+            measured_block_interval_variance_pct,
+            rollback_risk: window.rollback_risk,
+            value_at_risk_units: window.value_at_risk_units,
+            max_acceptable_expected_loss_units: window.max_acceptable_expected_loss_units,
+        },
+        marker_verifier,
+    )
+    .map_err(DynamicSigmaTimedHeaderObservationWindowError::InvalidHeaderObservationWindow)
 }
 
 /// Select proposal-carried dynamic-sigma evidence from raw telemetry.
@@ -1785,7 +1923,7 @@ fn saturating_pct_add(raw_pct: u8, margin_pct: u8) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
+    use chrono::{TimeZone, Utc};
     use zebra_chain::serialization::{ZcashDeserialize, ZcashSerialize};
     use zebra_chain::{
         block::{merkle::Root, FatPointerToBftBlock, Header},
@@ -2037,6 +2175,15 @@ mod tests {
             solution: Solution::for_proposal(),
             fat_pointer_to_bft_block,
         }
+    }
+
+    fn header_at_time(timestamp: i64, fat_pointer_to_bft_block: FatPointerToBftBlock) -> Header {
+        let mut header = header_with_fat_pointer(fat_pointer_to_bft_block);
+        header.time = Utc
+            .timestamp_opt(timestamp, 0)
+            .single()
+            .expect("fixture timestamp should be valid");
+        header
     }
 
     #[test]
@@ -2520,6 +2667,70 @@ mod tests {
     }
 
     #[test]
+    fn block_interval_variance_from_headers_reports_max_deviation() {
+        let headers = [
+            header_at_time(0, participating_fat_pointer()),
+            header_at_time(75, participating_fat_pointer()),
+            header_at_time(150, participating_fat_pointer()),
+            header_at_time(240, participating_fat_pointer()),
+        ];
+
+        assert_eq!(
+            measured_block_interval_variance_pct_from_headers(&headers, 75),
+            Ok(20),
+        );
+    }
+
+    #[test]
+    fn block_interval_variance_from_headers_saturates_at_one_hundred_percent() {
+        let headers = [
+            header_at_time(0, participating_fat_pointer()),
+            header_at_time(200, participating_fat_pointer()),
+        ];
+
+        assert_eq!(
+            measured_block_interval_variance_pct_from_headers(&headers, 75),
+            Ok(100),
+        );
+    }
+
+    #[test]
+    fn block_interval_variance_rejects_short_or_malformed_windows() {
+        assert_eq!(
+            measured_block_interval_variance_pct_from_headers(
+                &[header_at_time(0, participating_fat_pointer())],
+                75,
+            ),
+            Err(DynamicSigmaBlockIntervalVarianceError::TooFewHeaders),
+        );
+        assert_eq!(
+            measured_block_interval_variance_pct_from_headers(
+                &[
+                    header_at_time(0, participating_fat_pointer()),
+                    header_at_time(75, participating_fat_pointer()),
+                ],
+                0,
+            ),
+            Err(DynamicSigmaBlockIntervalVarianceError::InvalidTargetBlockSpacing),
+        );
+        assert_eq!(
+            measured_block_interval_variance_pct_from_headers(
+                &[
+                    header_at_time(100, participating_fat_pointer()),
+                    header_at_time(100, participating_fat_pointer()),
+                ],
+                75,
+            ),
+            Err(
+                DynamicSigmaBlockIntervalVarianceError::NonIncreasingTimestamp {
+                    previous_timestamp: 100,
+                    current_timestamp: 100,
+                }
+            ),
+        );
+    }
+
+    #[test]
     fn telemetry_observation_window_assembles_components_from_source_inputs() {
         let hash_work_observations = [
             DynamicSigmaHashWorkObservation {
@@ -2697,6 +2908,72 @@ mod tests {
             Err(DynamicSigmaHeaderObservationWindowError::InvalidHeader(
                 DynamicSigmaHeaderObservationError::InvalidDifficultyThreshold,
             )),
+        );
+    }
+
+    #[test]
+    fn timed_header_observation_window_derives_variance_and_feeds_controller() {
+        let headers = [
+            header_at_time(0, participating_fat_pointer()),
+            header_at_time(160, participating_fat_pointer()),
+        ];
+
+        let components = telemetry_components_from_timed_header_observation_window(
+            DynamicSigmaTimedHeaderObservationWindow {
+                pow_headers: &headers,
+                target_block_spacing_seconds: 100,
+                round_counters: decided_round_counters(10),
+                best_tip_transitions: &[],
+                rollback_risk: low_risk_curve(),
+                value_at_risk_units: 1000,
+                max_acceptable_expected_loss_units: 100,
+            },
+        )
+        .expect("timed header window should assemble telemetry components");
+
+        assert_eq!(components.measured_block_interval_variance_pct, 60);
+
+        let raw = components
+            .try_into_raw_telemetry()
+            .expect("timed header components should build raw telemetry");
+        let decision = select_dynamic_sigma(
+            params(),
+            raw.into_window(TelemetryEstimateMargins::default())
+                .expect("timed header telemetry should build a window"),
+        )
+        .expect("timed header telemetry should feed the controller");
+
+        assert_eq!(decision.risk_score_floor, params().raised_sigma);
+        assert_eq!(decision.sigma, params().raised_sigma);
+    }
+
+    #[test]
+    fn timed_header_observation_window_rejects_malformed_timestamps() {
+        let headers = [
+            header_at_time(100, participating_fat_pointer()),
+            header_at_time(90, participating_fat_pointer()),
+        ];
+
+        assert_eq!(
+            telemetry_components_from_timed_header_observation_window(
+                DynamicSigmaTimedHeaderObservationWindow {
+                    pow_headers: &headers,
+                    target_block_spacing_seconds: 75,
+                    round_counters: decided_round_counters(10),
+                    best_tip_transitions: &[],
+                    rollback_risk: low_risk_curve(),
+                    value_at_risk_units: 1000,
+                    max_acceptable_expected_loss_units: 100,
+                },
+            ),
+            Err(
+                DynamicSigmaTimedHeaderObservationWindowError::InvalidBlockIntervalVariance(
+                    DynamicSigmaBlockIntervalVarianceError::NonIncreasingTimestamp {
+                        previous_timestamp: 100,
+                        current_timestamp: 90,
+                    },
+                ),
+            ),
         );
     }
 

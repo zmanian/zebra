@@ -124,6 +124,10 @@ numerator. `DynamicSigmaHeaderObservationWindow` lets callers provide headers
 directly alongside Tenderlink round counters, best-tip transitions, variance
 telemetry, rollback-risk estimates, and economic exposure inputs, then builds
 the same telemetry components as the lower-level hash-work observation path.
+`DynamicSigmaTimedHeaderObservationWindow` derives the variance input from the
+same header window by comparing adjacent header timestamps against an expected
+target spacing, rejecting too-short or non-increasing windows and capping the
+conservative deviation percentage at 100.
 `DynamicSigmaEconomicExposurePolicy` makes the economic-risk boundary explicit:
 consensus-critical exposure carries value-at-risk and loss-budget units into
 proposal evidence, while service-local exposure maps to zero consensus exposure
@@ -1178,10 +1182,11 @@ This model is intentionally narrow. The next useful extensions are:
   current Crosslink fat-pointer marker, custom verifier hooks can replace that
   prototype marker with stricter production validation, the header
   observation-window assembler composes those headers with round and fork
-  evidence into telemetry components, and the pure rollback-depth helpers record
-  best-tip transitions, derive the current observed reorg-depth input, and
-  produce one rollback-depth history sample per transition window from explicit
-  best-tip transition evidence. The
+  evidence into telemetry components, the timed header-window adapter derives
+  conservative block-interval variance from adjacent header timestamps, and the
+  pure rollback-depth helpers record best-tip transitions, derive the current
+  observed reorg-depth input, and produce one rollback-depth history sample per
+  transition window from explicit best-tip transition evidence. The
   pure rollback-risk estimator derives a monotone ppm curve from observed
   rollback-depth windows plus a bounded margin, and the explicit window policy
   requires enough history while truncating to the most recent bounded sample
