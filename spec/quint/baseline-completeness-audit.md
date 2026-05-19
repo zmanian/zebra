@@ -82,6 +82,8 @@ The current branch has these baseline-specific files:
     injected faulty proposal, prevote, and precommit powersets
   - adds a fixed-sigma/forking `n4_f1` faulty-init harness with a bounded
     nondeterministic faulty-evidence domain
+  - adds false-invariant counterexample tests for conflicting commits,
+    amnesia, equivocation, and agreement
 - `CrosslinkBaselineBftHeights.qnt`
   - gives baseline finality explicit BFT consensus heights
   - rejects skipped consensus heights and fork finality after a finalized prefix
@@ -123,7 +125,7 @@ The current branch has these baseline-specific files:
 | Nondeterministic faulty message injection in `Init` | `InitWithFaultyEvidence`; `CrosslinkBaselineFaultyInitTinyModel`; `CrosslinkBaselineFaultyInitForkingModel`; `BaselineFaultyInitSafety`; `BaselineForkingFaultyInitSafety` | Partial; covered by a tiny full-powerset instance and a larger fixed-sigma/forking instance with bounded faulty evidence, but not yet by the unbounded larger parameterized instances |
 | Full Tendermint transition surface | Current model isolates the Crosslink fork-recovery question | Missing |
 | Full agreement/validity/accountability invariant suite over arbitrary evidence | Current suite has bounded safety plus focused accountability witnesses | Partial |
-| False-invariant/counterexample harnesses for amnesia/equivocation/agreement | No baseline equivalent yet | Missing |
+| False-invariant/counterexample harnesses for amnesia/equivocation/agreement | `CrosslinkBaselineCounterexampleModel`; `falseNoConflictingCommitsInvariantFailsTest`; `falseNoAmnesiaEvidenceInvariantFailsTest`; `falseNoEquivocationEvidenceInvariantFailsTest`; `falseAgreementInvariantFailsTest` | Partial; core negative witnesses covered in Rust tests, not yet an exhaustive counterexample suite |
 | Generated/adversarial PoW schedule for baseline long reorgs | Baseline uses a bounded fork-switch fixture | Partial |
 | Stochastic PoW block-production model | Not modeled in baseline | Missing |
 | Inductive or deeper multi-height finality argument | Current BFT-height model is bounded | Partial |
@@ -201,11 +203,12 @@ To finish an upstream-quality baseline spec, the remaining work is larger:
      unusably large.
 2. Port the full Tendermint transition surface into the parameterized shell
    while preserving the baseline sticky nil-precommit rule.
-3. Add remaining model instances, including above-threshold or
+3. Expand the counterexample suite beyond the current false agreement,
+   amnesia, equivocation, and no-conflicting-commit witnesses.
+4. Add remaining model instances, including above-threshold or
    accountability-focused analogues of upstream `n4_f2` and `n5_f2`.
-4. Add the full agreement/validity/accountability checks to
+5. Add the full agreement/validity/accountability checks to
    `symbolic-baseline`.
-5. Add the false-invariant/counterexample harnesses.
 6. Generalize baseline PoW schedules for long reorgs and repeated stream
    changes.
 7. Revisit CI timeout and split symbolic jobs if the parameterized model makes

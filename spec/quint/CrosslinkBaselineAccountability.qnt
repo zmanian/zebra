@@ -287,3 +287,106 @@ module CrosslinkBaselineFaultyInitForkingModel {
       })
   }
 }
+
+module CrosslinkBaselineCounterexampleModel {
+  /*
+   False-invariant harnesses. These are intentionally bad claims that should
+   fail under seeded evidence, proving the accountability predicates are not
+   vacuous in the bounded baseline model.
+   */
+
+  import CrosslinkResamplingTest(
+    Corr = Set("p1", "p2", "p3"),
+    Faulty = Set("p4"),
+    N = 4,
+    T = 1,
+    MaxRound = 2,
+    Proposer = Map(0 -> "p1", 1 -> "p2", 2 -> "p3"),
+    Stream = Map(0 -> "s0", 1 -> "s1", 2 -> "s2"),
+    Snapshots = Set("s0", "s1", "s2"),
+    ResampleOnNilPrecommit = false,
+    ExpectedRound1Proposal = "s0",
+  ).* from "./CrosslinkResampling"
+
+  val NoConflictingValueCommits =
+    Rounds.forall(r1 =>
+      Rounds.forall(r2 =>
+        Snapshots.forall(v1 =>
+          Snapshots.forall(v2 =>
+            not(ConflictingValueCommits(r1, v1, r2, v2))
+          )
+        )
+      )
+    )
+
+  action SeedConflictingDecisions: bool =
+    all {
+      decision' = decision.set("p1", "s0").set("p2", "s1"),
+      firedAction' = "SeedConflictingDecisions",
+      round' = round,
+      step' = step,
+      lockedValue' = lockedValue,
+      lockedRound' = lockedRound,
+      validValue' = validValue,
+      validRound' = validRound,
+      cachedProposal' = cachedProposal,
+      cachedProposalRound' = cachedProposalRound,
+      msgsPropose' = msgsPropose,
+      msgsPrevote' = msgsPrevote,
+      msgsPrecommit' = msgsPrecommit,
+      evidencePropose' = evidencePropose,
+      evidencePrevote' = evidencePrevote,
+      evidencePrecommit' = evidencePrecommit,
+    }
+
+  run falseNoConflictingCommitsInvariantFailsTest = {
+    Init
+      .then(SeedCorrectPrecommitEvidence("p1", 0, "s0"))
+      .then(SeedCorrectPrecommitEvidence("p2", 0, "s0"))
+      .then(SeedFaultyPrecommitEvidence("p4", 0, "s0"))
+      .then(SeedCorrectPrecommitEvidence("p2", 1, "s1"))
+      .then(SeedCorrectPrecommitEvidence("p3", 1, "s1"))
+      .then(SeedFaultyPrecommitEvidence("p4", 1, "s1"))
+      .then(all {
+        NoConflictingValueCommits,
+        unchangedAll,
+      })
+      .fail()
+  }
+
+  run falseNoAmnesiaEvidenceInvariantFailsTest = {
+    Init
+      .then(SeedCorrectPrecommitEvidence("p1", 0, "s0"))
+      .then(SeedCorrectPrecommitEvidence("p2", 0, "s0"))
+      .then(SeedFaultyPrecommitEvidence("p4", 0, "s0"))
+      .then(SeedCorrectPrecommitEvidence("p2", 1, "s1"))
+      .then(SeedCorrectPrecommitEvidence("p3", 1, "s1"))
+      .then(SeedFaultyPrecommitEvidence("p4", 1, "s1"))
+      .then(all {
+        not(AmnesiaBy("p2")),
+        unchangedAll,
+      })
+      .fail()
+  }
+
+  run falseNoEquivocationEvidenceInvariantFailsTest = {
+    Init
+      .then(SeedFaultyPrevoteEvidence("p4", 0, "s0"))
+      .then(SeedFaultyPrevoteEvidence("p4", 0, "s1"))
+      .then(all {
+        not(EquivocationBy("p4")),
+        unchangedAll,
+      })
+      .fail()
+  }
+
+  run falseAgreementInvariantFailsTest = {
+    Init
+      .then(SeedConflictingDecisions)
+      .then(all {
+        Agreement,
+        unchangedAll,
+      })
+      .fail()
+  }
+}

@@ -67,7 +67,9 @@ faulty proposal, prevote, and precommit powersets in the initial state, while
 keeping the instance small enough for the baseline proof gate. A second
 faulty-init model lifts the same idea into the fixed-sigma/forking `n4_f1`
 parameter surface with a bounded faulty-evidence domain so symbolic checking
-remains tractable.
+remains tractable. The same file also includes counterexample tests for false
+agreement, amnesia, equivocation, and no-conflicting-commit claims, so the
+accountability predicates are checked against known-bad assertions.
 
 `CrosslinkBaselineBftHeights.qnt` gives the baseline variant a named
 heighted-finality model. It checks that fixed-sigma finality advances through
@@ -422,6 +424,11 @@ $QUINT test spec/quint/CrosslinkBaselineAccountability.qnt \
   --main=CrosslinkBaselineFaultyInitForkingModel \
   --max-samples=100 \
   --backend=rust
+
+$QUINT test spec/quint/CrosslinkBaselineAccountability.qnt \
+  --main=CrosslinkBaselineCounterexampleModel \
+  --max-samples=100 \
+  --backend=rust
 ```
 
 This model checks that baseline nil precommit preserves same-round value-lock
@@ -434,7 +441,8 @@ The forking faulty-init model checks a larger fixed-sigma/forking baseline
 instance with bounded faulty proposal, prevote, and precommit powersets; the
 remaining upstream-quality step is to lift the unbounded faulty-init path into
 the larger parameterized baseline instances without making the symbolic gate
-unusably large.
+unusably large. The counterexample model uses `.fail()` witnesses for false
+no-conflicting-commit, no-amnesia, no-equivocation, and agreement claims.
 
 Witness baseline BFT-heighted finality:
 
@@ -1269,6 +1277,9 @@ observed faulty evidence reaches the equivocation predicates.
 nondeterministic faulty proposal, prevote, and precommit powersets.
 `BaselineForkingFaultyInitSafety` checks the fixed-sigma/forking baseline
 parameter surface with a bounded nondeterministic faulty-init domain.
+`CrosslinkBaselineCounterexampleModel` adds negative tests showing that false
+claims about conflicting commits, amnesia, equivocation, and agreement are
+rejected by the harness.
 
 The bounded upstream-shaped baseline checks report no violation for
 `BaselineN4F1StableSafety` or `BaselineN4F1ForkingSafety`. The stable instance
