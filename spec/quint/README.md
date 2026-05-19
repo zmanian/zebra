@@ -1019,8 +1019,9 @@ generated-work-competition obligations and run substantially faster.
 
 This model is intentionally narrow. The next useful extensions are:
 
-- wire the pure Rust dynamic-sigma controller to production telemetry sources in
-  `dynamic-sigma-telemetry-integration.md`, including a consensus-safe
-  Crosslink hash-participation metric and a validated economic exposure model
+- wire the pure Rust dynamic-sigma controller, proposal-evidence verifier, and
+  selected-sigma BFT block constructor to production telemetry sources and live
+  proposal validation, including a consensus-safe Crosslink hash-participation
+  metric and a validated economic exposure model
 - refine the split projection checks into smaller inductive lemmas if bounds
   beyond the checked depth-10 projections still need very large JVM/Z3 heaps

@@ -17,12 +17,12 @@ it can change finality depth.
 
 ## Current Prototype Boundary
 
-The Rust prototype still treats sigma as a fixed protocol parameter:
+The live Rust proposal path still treats sigma as a fixed protocol parameter:
 
 - `zebra-crosslink/src/chain.rs` defines
   `ZcashCrosslinkParameters::bc_confirmation_depth_sigma`.
-- `zebra-crosslink/src/chain.rs` checks that a BFT block carries exactly that
-  many PoW headers.
+- `BftBlock::try_from(params, ...)` checks that a fixed-sigma BFT block carries
+  exactly that many PoW headers.
 - `zebra-crosslink/src/lib.rs` proposes and validates the current
   `tip - bc_confirmation_depth_sigma` candidate.
 - `zebra-crosslink/src/viz.rs` exposes chain, BFT, and finality state to the
@@ -33,19 +33,19 @@ Rust controller that derives conservative coverage and round-failure estimates
 from raw counters, validates a telemetry window, and selects the same sigma
 floor as the Quint telemetry fixture. It also has a proposal-carried evidence
 verifier that rejects a selected sigma outside the configured ladder or below
-the controller-required floor. That controller is executable scaffolding for
-the third Crosslink variant, but it is not wired into production proposal or
-validation logic yet.
+the controller-required floor.
 
-`BftBlock::try_from_with_confirmation_depth` is now available as the matching
-block-construction hook. The existing `BftBlock::try_from(params, ...)` still
-uses the fixed `bc_confirmation_depth_sigma`, but a future dynamic-sigma
-proposal path can validate proposal-carried evidence first and then validate
-the header count against the selected sigma.
+`BftBlock::try_from_with_confirmation_depth` is available as the selected-sigma
+block-construction hook, and `BftBlock::try_from_with_dynamic_sigma_evidence`
+now composes the evidence verifier with block construction. It validates
+proposal-carried evidence first, then checks the header count against the
+selected sigma. The existing `BftBlock::try_from(params, ...)` path still uses
+the fixed `bc_confirmation_depth_sigma`.
 
 A production implementation must replace the fixed parameter at proposal and
-validation time with a consensus-safe controller output, and it must populate
-the controller input from consensus-visible or proposal-verifiable telemetry.
+validation time with this consensus-safe controller output, serialize or commit
+the evidence in proposals, and populate the controller input from
+consensus-visible or proposal-verifiable telemetry.
 
 ## Production Inputs
 
@@ -114,9 +114,11 @@ This suggests two viable production shapes:
   least the required floor.
 
 The Rust controller now prototypes the second shape for raw telemetry counters:
-the verifier reconstructs the conservative telemetry window and rejects
-selected sigma values below the required floor. A production deployment still
-needs precise validity rules for the source of each raw measurement.
+the verifier reconstructs the conservative telemetry window, rejects selected
+sigma values below the required floor, and can be composed with `BftBlock`
+construction so the selected sigma controls header depth. A production
+deployment still needs precise validity rules for the source of each raw
+measurement and a wire format for carrying or committing the evidence.
 
 ## Failure Modes
 
@@ -153,7 +155,8 @@ A production implementation of the dynamic-sigma variant should provide:
   estimate construction, but production source integration still needs tests
 - tests showing that dynamic sigma changes do not make honest validators reject
   each other's otherwise valid proposals; the pure Rust proposal-evidence
-  verifier covers identical evidence determinism and below-floor rejection, but
-  BFT proposal integration still needs tests
+  verifier and BFT block-construction helper cover identical evidence
+  determinism, below-floor rejection, and selected-sigma header depth, but live
+  consensus proposal integration still needs tests
 - Quint coverage connecting the implemented telemetry rules back to
   `CrosslinkDynamicSigmaTelemetry.qnt`

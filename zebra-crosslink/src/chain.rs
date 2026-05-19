@@ -16,6 +16,10 @@ use zebra_chain::serialization::{
     ReadZcashExt, SerializationError, ZcashDeserialize, ZcashSerialize,
 };
 
+use crate::dynamic_sigma::{
+    validate_dynamic_sigma_evidence, DynamicSigmaEvidenceError, DynamicSigmaParameters,
+    DynamicSigmaProposalEvidence,
+};
 use crate::FatPointerToBftBlock2;
 
 /// The BFT block content for Crosslink
@@ -147,7 +151,9 @@ impl BftBlock {
     /// This is the dynamic-sigma construction hook: the existing
     /// [BftBlock::try_from] path still reads the fixed protocol sigma from
     /// [ZcashCrosslinkParameters], while future proposal-carried controller
-    /// evidence can validate the selected sigma first and then call this method.
+    /// evidence can validate the selected sigma first through
+    /// [BftBlock::try_from_with_dynamic_sigma_evidence] and then call this
+    /// method.
     pub fn try_from_with_confirmation_depth(
         expected_confirmation_depth: u64,
         height: u32,
@@ -170,6 +176,34 @@ impl BftBlock {
             finalization_candidate_height,
             headers,
         })
+    }
+
+    /// Attempt to construct a [BftBlock] from proposal-carried dynamic-sigma
+    /// evidence.
+    ///
+    /// The evidence is validated against the shared controller parameters first.
+    /// If the proposer selected a valid ladder sigma that is equal to or more
+    /// conservative than the controller floor, the selected sigma becomes the
+    /// required header depth for this proposal.
+    pub fn try_from_with_dynamic_sigma_evidence(
+        dynamic_sigma_params: DynamicSigmaParameters,
+        dynamic_sigma_evidence: DynamicSigmaProposalEvidence,
+        height: u32,
+        previous_block_fat_ptr: FatPointerToBftBlock2,
+        finalization_candidate_height: u32,
+        headers: Vec<BcBlockHeader>,
+    ) -> Result<Self, InvalidDynamicSigmaBftBlock> {
+        validate_dynamic_sigma_evidence(dynamic_sigma_params, dynamic_sigma_evidence)
+            .map_err(InvalidDynamicSigmaBftBlock::DynamicSigmaEvidence)?;
+
+        Self::try_from_with_confirmation_depth(
+            dynamic_sigma_evidence.selected_sigma,
+            height,
+            previous_block_fat_ptr,
+            finalization_candidate_height,
+            headers,
+        )
+        .map_err(InvalidDynamicSigmaBftBlock::BftBlock)
     }
 
     /// Hash for the block
@@ -213,6 +247,17 @@ pub enum InvalidBftBlock {
         /// The number of headers present
         actual: u64,
     },
+}
+
+/// Validation error for a dynamic-sigma [BftBlock] proposal.
+#[derive(Debug, Error)]
+pub enum InvalidDynamicSigmaBftBlock {
+    /// The proposal-carried dynamic-sigma evidence is invalid.
+    #[error("invalid dynamic sigma evidence: {0:?}")]
+    DynamicSigmaEvidence(DynamicSigmaEvidenceError),
+    /// The BFT block content does not satisfy the selected sigma.
+    #[error("invalid dynamic sigma BFT block: {0}")]
+    BftBlock(InvalidBftBlock),
 }
 
 /// Zcash Crosslink protocol parameters
@@ -308,6 +353,10 @@ impl ZcashSerialize for BftBlockAndFatPointerToIt {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dynamic_sigma::{
+        DynamicSigmaEvidenceError, DynamicSigmaParameters, DynamicSigmaProposalEvidence,
+        DynamicSigmaRawTelemetry, RollbackRiskCurve, TelemetryEstimateMargins,
+    };
     use chrono::Utc;
     use zebra_chain::{
         block::{merkle::Root, FatPointerToBftBlock, Hash as BlockHash, Header},
@@ -326,6 +375,51 @@ mod tests {
             nonce: HexDebug([0; 32]),
             solution: Solution::for_proposal(),
             fat_pointer_to_bft_block: FatPointerToBftBlock::null(),
+        }
+    }
+
+    fn dynamic_sigma_params() -> DynamicSigmaParameters {
+        DynamicSigmaParameters {
+            base_sigma: 1,
+            raised_sigma: 3,
+            max_sigma: 6,
+            target_hash_participation_pct: 67,
+            critical_hash_participation_pct: 50,
+            max_acceptable_rollback_risk_ppm: 25,
+            coverage_risk_weight: 2,
+            round_failure_risk_weight: 3,
+            block_interval_variance_risk_weight: 1,
+            reorg_depth_risk_weight: 5,
+            risk_score_raised_threshold: 60,
+            risk_score_max_threshold: 100,
+        }
+    }
+
+    fn dynamic_sigma_evidence(
+        participating_hash_work: u128,
+        selected_sigma: u64,
+    ) -> DynamicSigmaProposalEvidence {
+        DynamicSigmaProposalEvidence {
+            raw_telemetry: DynamicSigmaRawTelemetry {
+                total_hash_work: 100,
+                crosslink_participating_hash_work: participating_hash_work,
+                total_tenderlink_rounds: 10,
+                failed_tenderlink_rounds: 0,
+                measured_block_interval_variance_pct: 0,
+                measured_observed_reorg_depth: 0,
+                rollback_risk: RollbackRiskCurve {
+                    base_sigma_ppm: 80,
+                    raised_sigma_ppm: 20,
+                    max_sigma_ppm: 2,
+                },
+                value_at_risk_units: 1_000,
+                max_acceptable_expected_loss_units: 1,
+            },
+            margins: TelemetryEstimateMargins {
+                coverage_risk_margin_pct: 2,
+                round_failure_margin_pct: 0,
+            },
+            selected_sigma,
         }
     }
 
@@ -384,5 +478,76 @@ mod tests {
         .expect("matching selected sigma should be accepted");
 
         assert_eq!(block.headers, headers);
+    }
+
+    #[test]
+    fn try_from_with_dynamic_sigma_evidence_uses_selected_sigma() {
+        let headers = vec![
+            test_header(BlockHash([0; 32])),
+            test_header(BlockHash([1; 32])),
+            test_header(BlockHash([2; 32])),
+        ];
+
+        let block = BftBlock::try_from_with_dynamic_sigma_evidence(
+            dynamic_sigma_params(),
+            dynamic_sigma_evidence(63, 3),
+            1,
+            FatPointerToBftBlock2::null(),
+            10,
+            headers.clone(),
+        )
+        .expect("valid evidence and matching selected sigma depth should be accepted");
+
+        assert_eq!(block.headers, headers);
+    }
+
+    #[test]
+    fn try_from_with_dynamic_sigma_evidence_rejects_below_required_sigma() {
+        let err = BftBlock::try_from_with_dynamic_sigma_evidence(
+            dynamic_sigma_params(),
+            dynamic_sigma_evidence(63, 1),
+            1,
+            FatPointerToBftBlock2::null(),
+            10,
+            vec![test_header(BlockHash([0; 32]))],
+        )
+        .expect_err("selected sigma below controller floor should be rejected");
+
+        assert!(matches!(
+            err,
+            InvalidDynamicSigmaBftBlock::DynamicSigmaEvidence(
+                DynamicSigmaEvidenceError::SelectedSigmaBelowRequired {
+                    selected: 1,
+                    required: 3,
+                }
+            )
+        ));
+    }
+
+    #[test]
+    fn try_from_with_dynamic_sigma_evidence_requires_selected_header_depth() {
+        let headers = vec![
+            test_header(BlockHash([0; 32])),
+            test_header(BlockHash([1; 32])),
+            test_header(BlockHash([2; 32])),
+        ];
+
+        let err = BftBlock::try_from_with_dynamic_sigma_evidence(
+            dynamic_sigma_params(),
+            dynamic_sigma_evidence(63, 6),
+            1,
+            FatPointerToBftBlock2::null(),
+            10,
+            headers,
+        )
+        .expect_err("selected sigma 6 should require six headers");
+
+        assert!(matches!(
+            err,
+            InvalidDynamicSigmaBftBlock::BftBlock(InvalidBftBlock::IncorrectConfirmationDepth {
+                expected: 6,
+                actual: 3,
+            })
+        ));
     }
 }
