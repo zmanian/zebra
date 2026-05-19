@@ -319,12 +319,46 @@ module CrosslinkBaselineCounterexampleModel {
       )
     )
 
+  val AgreementOrAmnesia =
+    Agreement or Faulty.forall(p => AmnesiaBy(p))
+
+  val ShowMeAmnesiaWithoutEquivocation =
+    (not(Agreement) and Faulty.exists(p => not(EquivocationBy(p)))) implies
+      Faulty.forall(p => not(AmnesiaBy(p)))
+
+  val AmnesiaImpliesEquivocation =
+    Faulty.exists(p => AmnesiaBy(p)) implies Faulty.exists(q => EquivocationBy(q))
+
+  val NeverUndecidedInMaxRound =
+    Corr.forall(p => round.get(p) == MaxRound) implies
+      Corr.forall(p => decision.get(p) != NilSnapshot)
+
   action SeedConflictingDecisions: bool =
     all {
       decision' = decision.set("p1", "s0").set("p2", "s1"),
       firedAction' = "SeedConflictingDecisions",
       round' = round,
       step' = step,
+      lockedValue' = lockedValue,
+      lockedRound' = lockedRound,
+      validValue' = validValue,
+      validRound' = validRound,
+      cachedProposal' = cachedProposal,
+      cachedProposalRound' = cachedProposalRound,
+      msgsPropose' = msgsPropose,
+      msgsPrevote' = msgsPrevote,
+      msgsPrecommit' = msgsPrecommit,
+      evidencePropose' = evidencePropose,
+      evidencePrevote' = evidencePrevote,
+      evidencePrecommit' = evidencePrecommit,
+    }
+
+  action SeedAllCorrectAtMaxRoundWithoutDecision: bool =
+    all {
+      round' = Corr.mapBy(_ => MaxRound),
+      step' = Corr.mapBy(_ => "propose"),
+      decision' = Corr.mapBy(_ => NilSnapshot),
+      firedAction' = "SeedAllCorrectAtMaxRoundWithoutDecision",
       lockedValue' = lockedValue,
       lockedRound' = lockedRound,
       validValue' = validValue,
@@ -385,6 +419,51 @@ module CrosslinkBaselineCounterexampleModel {
       .then(SeedConflictingDecisions)
       .then(all {
         Agreement,
+        unchangedAll,
+      })
+      .fail()
+  }
+
+  run falseAgreementOrAmnesiaInvariantFailsTest = {
+    Init
+      .then(SeedConflictingDecisions)
+      .then(SeedFaultyProposalEvidence("p4", 0, "s0", -1))
+      .then(SeedFaultyProposalEvidence("p4", 0, "s1", -1))
+      .then(all {
+        AgreementOrAmnesia,
+        unchangedAll,
+      })
+      .fail()
+  }
+
+  run falseAmnesiaImpliesEquivocationInvariantFailsTest = {
+    Init
+      .then(SeedFaultyPrecommitEvidence("p4", 0, "s0"))
+      .then(SeedFaultyPrecommitEvidence("p4", 1, "s1"))
+      .then(all {
+        AmnesiaImpliesEquivocation,
+        unchangedAll,
+      })
+      .fail()
+  }
+
+  run falseShowMeAmnesiaWithoutEquivocationInvariantFailsTest = {
+    Init
+      .then(SeedConflictingDecisions)
+      .then(SeedFaultyPrecommitEvidence("p4", 0, "s0"))
+      .then(SeedFaultyPrecommitEvidence("p4", 1, "s1"))
+      .then(all {
+        ShowMeAmnesiaWithoutEquivocation,
+        unchangedAll,
+      })
+      .fail()
+  }
+
+  run falseNeverUndecidedInMaxRoundInvariantFailsTest = {
+    Init
+      .then(SeedAllCorrectAtMaxRoundWithoutDecision)
+      .then(all {
+        NeverUndecidedInMaxRound,
         unchangedAll,
       })
       .fail()

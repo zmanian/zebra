@@ -67,7 +67,7 @@ without clearing same-round value or proposal-cache state.
 | Agreement | `Agreement`, `BaselineAgreement`, symbolic `BaselineSafety`/`ComposedSafety` gates | Covered, bounded | Agreement is checked directly in the focused and composed baseline gates. |
 | Validity | `Validity`, `BaselineValidity`, `Safety` | Covered, bounded | Valid decisions must be modeled snapshots. |
 | Accountability | `EquivocationBy`, `AmnesiaBy`, `DetectableFaults`, `Accountability`, `ConflictingCommitsAccountable` | Partial | Baseline adapts accountability to Crosslink nil certificates; broader arbitrary-evidence checking remains incomplete. |
-| False invariant examples | `CrosslinkBaselineCounterexampleModel` | Partial | Covers false no-conflicting-commit, no-amnesia, no-equivocation, and agreement witnesses; does not yet port every upstream negative predicate. |
+| False invariant examples | `CrosslinkBaselineCounterexampleModel` | Covered as seeded witnesses | Covers false no-conflicting-commit, no-amnesia, no-equivocation, agreement, agreement-or-amnesia, amnesia-implies-equivocation, amnesia-without-equivocation, and undecided max-round witnesses. |
 | Small `n4_f1`, `n4_f2`, `n5_f2` model handles | `CrosslinkBaselineModels.qnt` has `n4_f1_stable`, `n4_f1_forking`, `n5_f1_forking`, `n4_f2_forking`, `n5_f2_forking`, `n7_f2_forking` | Covered with Crosslink variants | `n4_f2` and `n5_f2` are above the live BFT boundary for correct-only value commits under `T = 2`; `n7_f2` records the corresponding decision path. |
 | Normal decision test | `decisionTest`, `baselineStableStreamDecidesSampledSnapshotTest`, `n7F2DecisionPathTest` | Covered | Baseline decision values are stream snapshots. |
 | No double proposal test | `noProposeTwiceTest` | Covered | Checks a correct proposer cannot insert two proposals for the same round. |
@@ -82,7 +82,7 @@ without clearing same-round value or proposal-cache state.
 | Bounded agreement/validity/accountability checks | `check.sh symbolic-baseline` verifies focused baseline safety invariants | Covered, bounded |
 | Faulty init symbolic checking | Tiny full-powerset faulty init plus bounded forking faulty init | Partial |
 | `f = 2` symbolic checking | `f = 2` witnesses are Rust-backed quick tests only | Partial |
-| Full arbitrary-evidence accountability checking | Focused witnesses and bounded faulty-init gates | Partial |
+| Full arbitrary-evidence accountability checking | Focused witnesses, upstream-shaped negative witnesses, and bounded faulty-init gates | Partial |
 | Full PoW environment checking | Fixed fork switch and fixed-sigma sampling fixtures | Partial |
 | Stochastic or adversarial block production | Not in baseline | Missing |
 | Inductive multi-height finality proof | Bounded BFT-height and composed-finality fixtures | Partial |
@@ -118,10 +118,8 @@ The crosswalk leaves these concrete gaps:
    those larger instances.
 5. Decide whether the `n4_f2`, `n5_f2`, and `n7_f2` witnesses should become
    symbolic gates or remain quick witnesses with explicit scope.
-6. Port the remaining upstream negative examples, especially
-   `AgreementOrAmnesia`, `ShowMeAmnesiaWithoutEquivocation`,
-   `AmnesiaImpliesEquivocation`, and `NeverUndecidedInMaxRound`, if they are
-   still meaningful under Crosslink values.
+6. Add Crosslink-specific false-invariant witnesses for stale fixed-sigma
+   samples and fork finality attempts.
 7. Replace the single hand-authored fork-switch fixture with generated bounded
    PoW schedules, long-reorg fixtures, and a simple stochastic or adversarial
    block-production abstraction.

@@ -71,7 +71,9 @@ keeping the instance small enough for the baseline proof gate. A second
 faulty-init model lifts the same idea into the fixed-sigma/forking `n4_f1`
 parameter surface with a bounded faulty-evidence domain so symbolic checking
 remains tractable. The same file also includes counterexample tests for false
-agreement, amnesia, equivocation, and no-conflicting-commit claims, so the
+agreement, amnesia, equivocation, no-conflicting-commit,
+agreement-or-amnesia, amnesia-implies-equivocation,
+amnesia-without-equivocation, and undecided max-round claims, so the
 accountability predicates are checked against known-bad assertions.
 
 `CrosslinkBaselineBftHeights.qnt` gives the baseline variant a named
@@ -481,7 +483,9 @@ instance with bounded faulty proposal, prevote, and precommit powersets; the
 remaining upstream-quality step is to lift the unbounded faulty-init path into
 the larger parameterized baseline instances without making the symbolic gate
 unusably large. The counterexample model uses `.fail()` witnesses for false
-no-conflicting-commit, no-amnesia, no-equivocation, and agreement claims.
+no-conflicting-commit, no-amnesia, no-equivocation, agreement,
+agreement-or-amnesia, amnesia-implies-equivocation,
+amnesia-without-equivocation, and undecided max-round claims.
 
 Witness baseline BFT-heighted finality:
 

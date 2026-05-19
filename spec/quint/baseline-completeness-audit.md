@@ -91,7 +91,9 @@ The current branch has these baseline-specific files:
   - adds a fixed-sigma/forking `n4_f1` faulty-init harness with a bounded
     nondeterministic faulty-evidence domain
   - adds false-invariant counterexample tests for conflicting commits,
-    amnesia, equivocation, and agreement
+    amnesia, equivocation, agreement, agreement-or-amnesia,
+    amnesia-implies-equivocation, amnesia-without-equivocation, and undecided
+    max-round behavior
 - `CrosslinkBaselineBftHeights.qnt`
   - gives baseline finality explicit BFT consensus heights
   - rejects skipped consensus heights and fork finality after a finalized prefix
@@ -140,7 +142,7 @@ The current branch has these baseline-specific files:
 | Nondeterministic faulty message injection in `Init` | `InitWithFaultyEvidence`; `CrosslinkBaselineFaultyInitTinyModel`; `CrosslinkBaselineFaultyInitForkingModel`; `BaselineFaultyInitSafety`; `BaselineForkingFaultyInitSafety` | Partial; covered by a tiny full-powerset instance and a larger fixed-sigma/forking instance with bounded faulty evidence, but not yet by the unbounded larger parameterized instances |
 | Full Tendermint transition surface | Current model covers value prevote quorum, nil prevote quorum, propose/prevote/precommit timeout paths, stream-change nil precommit, round advance after precommit quorum, timeout round advance, future-round catchup, and decision | Covered for the focused baseline shell; still not a full upstream port |
 | Full agreement/validity/accountability invariant suite over arbitrary evidence | Current suite has bounded safety plus focused accountability witnesses | Partial |
-| False-invariant/counterexample harnesses for amnesia/equivocation/agreement | `CrosslinkBaselineCounterexampleModel`; `falseNoConflictingCommitsInvariantFailsTest`; `falseNoAmnesiaEvidenceInvariantFailsTest`; `falseNoEquivocationEvidenceInvariantFailsTest`; `falseAgreementInvariantFailsTest` | Partial; core negative witnesses covered in Rust tests, not yet an exhaustive counterexample suite |
+| False-invariant/counterexample harnesses for amnesia/equivocation/agreement | `CrosslinkBaselineCounterexampleModel`; `falseNoConflictingCommitsInvariantFailsTest`; `falseNoAmnesiaEvidenceInvariantFailsTest`; `falseNoEquivocationEvidenceInvariantFailsTest`; `falseAgreementInvariantFailsTest`; `falseAgreementOrAmnesiaInvariantFailsTest`; `falseAmnesiaImpliesEquivocationInvariantFailsTest`; `falseShowMeAmnesiaWithoutEquivocationInvariantFailsTest`; `falseNeverUndecidedInMaxRoundInvariantFailsTest` | Covered as seeded Rust witnesses; not yet an arbitrary-evidence symbolic suite |
 | Generated/adversarial PoW schedule for baseline long reorgs | Baseline uses a bounded fork-switch fixture | Partial |
 | Stochastic PoW block-production model | Not modeled in baseline | Missing |
 | Inductive or deeper multi-height finality argument | Current BFT-height model is bounded | Partial |
@@ -194,11 +196,13 @@ remaining upstream-quality gaps.
    - Check agreement, validity, and accountability over the parameterized model.
    - Keep Crosslink finalized-prefix safety separate from Tenderlink agreement
      so failures are easier to diagnose.
-6. Add false-invariant/counterexample modules.
-   - Port the upstream negative checks for amnesia, equivocation, agreement, and
-     undecided max-round behavior.
-   - Add Crosslink-specific negative checks for stale fixed-sigma samples and
-     fork finality attempts.
+6. Add remaining Crosslink-specific false-invariant/counterexample modules.
+   - The upstream-shaped negative checks for amnesia, equivocation, agreement,
+     agreement-or-amnesia, amnesia-implies-equivocation,
+     amnesia-without-equivocation, and undecided max-round behavior now have
+     seeded witnesses.
+   - Remaining work is Crosslink-specific negative checks for stale fixed-sigma
+     samples and fork finality attempts.
 7. Expand the PoW environment.
    - Replace the baseline single fork-switch fixture with generated bounded PoW
      schedules.
@@ -225,8 +229,8 @@ remaining upstream-quality gaps.
      unusably large.
 2. Port the full Tendermint transition surface into the parameterized shell
    while preserving the baseline sticky nil-precommit rule.
-3. Expand the counterexample suite beyond the current false agreement,
-   amnesia, equivocation, and no-conflicting-commit witnesses.
+3. Add Crosslink-specific stale-sample and fork-finality false-invariant
+   witnesses.
 4. Decide whether the new `f = 2` boundary witnesses should be promoted into
    symbolic gates, or kept as quick Rust witnesses with documented scope.
 5. Add the full agreement/validity/accountability checks to
