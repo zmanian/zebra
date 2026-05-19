@@ -82,7 +82,8 @@ before validators advance the abandoned Tenderlink round, and that the
 resampling path can still decide the fresh stream value. It also carries the
 hash-power participation floor into the composed model, so low participation by
 Crosslink-aware miners can raise sigma even when the latest best-tip transition
-does not add a new fork-switch signal.
+does not add a new fork-switch signal. Its best-tip fixture is backed by
+generated published-tip work competition.
 
 `CrosslinkDynamicSigmaFinality.qnt` composes dynamic sigma, nil-precommit
 resampling, and Crosslink finality. It uses the live `dynSigma` value as the
@@ -416,6 +417,7 @@ This runs:
 - `derivedForkSignalRaisesSigmaBeforeResamplingDecisionTest`
 - `derivedForkSignalThenNilResamplingDecidesFreshValueTest`
 - `criticalHashParticipationRaisesSigmaWithoutNewForkSwitchTest`
+- `generatedCompetitionBacksResamplingForkSignalTest`
 
 The witness forms the same-round nil-precommit recovery scenario, derives a
 rollback-depth signal from the PoW fork fixture, raises sigma from 1 to 3, then
@@ -423,6 +425,9 @@ advances the validators to round 1 and decides fresh stream value `s1`.
 The hash-participation witness then advances over a same-branch transition with
 rollback depth 0 and still raises sigma to the maximum when participating hash
 power falls below the configured critical threshold.
+The generated-competition witness checks that hidden `s1` work does not become
+the best tip until `s1` is published, then derives the same rollback-depth
+signal from that work-backed best-tip switch.
 
 Witness the full dynamic-sigma/resampling/finality composition:
 
@@ -790,6 +795,7 @@ The dynamic-sigma/resampling composition reports no violation for
 - the participation floor is monotone, so lower participation never requires a
   lower sigma than higher participation
 - the controller status matches current hash-power participation
+- the current dynamic best tip matches generated published-tip work competition
 
 The full dynamic-sigma/resampling/finality composition reports no violation for
 `FullComposedSafety`, which combines:
@@ -810,8 +816,6 @@ This model is intentionally narrow. The next useful extensions are:
 - calibrate the dynamic-sigma risk weights and thresholds against measured
   hash-power participation, round-failure rate, block interval variance, and
   observed reorg distributions
-- feed generated PoW branch competition into the standalone dynamic-sigma
-  resampling composition, replacing the remaining fixed best-tip fixture there
 - port the full upstream Tendermint accountability evidence model into the
   composed model; the current resampling model only adds the conflict/evidence
   witnesses needed for nil-precommit unlocks

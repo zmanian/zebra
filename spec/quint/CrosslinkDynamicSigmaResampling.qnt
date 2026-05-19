@@ -14,10 +14,15 @@ module CrosslinkDynamicSigmaResampling {
   const BaseSigma: int
   const RaisedSigma: int
   const MaxSigma: int
+  const MaxWork: int
   const TargetHashParticipationPct: int
   const CriticalHashParticipationPct: int
   const HashParticipationPct: Round_t -> int
   const BestTip: Round_t -> Snapshot_t
+  const PublishedAt: Round_t -> Snapshot_t -> bool
+  const HonestWorkAt: Round_t -> Snapshot_t -> int
+  const AdversarialWorkAt: Round_t -> Snapshot_t -> int
+  const TieBreakRank: Snapshot_t -> int
   const HeightOf: Snapshot_t -> int
   const LcaHeight: Snapshot_t -> Snapshot_t -> int
 
@@ -25,6 +30,8 @@ module CrosslinkDynamicSigmaResampling {
 
   assume sigma_ladder_is_ordered =
     1 <= BaseSigma and BaseSigma < RaisedSigma and RaisedSigma < MaxSigma
+  assume max_work_non_negative =
+    MaxWork >= 0
   assume participation_thresholds_are_ordered =
     0 <= CriticalHashParticipationPct and
     CriticalHashParticipationPct < TargetHashParticipationPct and
@@ -35,6 +42,16 @@ module CrosslinkDynamicSigmaResampling {
     )
   assume best_tips_are_snapshots =
     Rounds.forall(r => Snapshots.contains(BestTip.get(r)))
+  assume published_work_is_bounded =
+    Rounds.forall(r =>
+      Snapshots.forall(v =>
+        0 <= HonestWorkAt.get(r).get(v) and
+        0 <= AdversarialWorkAt.get(r).get(v) and
+        TotalWorkAt(r, v) <= MaxWork
+      )
+    )
+  assume generated_best_tips_match_work_competition =
+    Rounds.forall(r => IsBestTipAt(r, BestTip.get(r)))
 
   var dynRound: Round_t
   var dynSigma: int
@@ -43,6 +60,25 @@ module CrosslinkDynamicSigmaResampling {
 
   pure def MaxInt(a: int, b: int): int =
     if (a >= b) { a } else { b }
+
+  pure def TotalWorkAt(r: Round_t, v: Snapshot_t): int =
+    HonestWorkAt.get(r).get(v) + AdversarialWorkAt.get(r).get(v)
+
+  pure def CandidateAt(r: Round_t, v: Snapshot_t): bool =
+    Snapshots.contains(v) and PublishedAt.get(r).get(v)
+
+  pure def BetterOrEqualAt(r: Round_t, a: Snapshot_t, b: Snapshot_t): bool =
+    TotalWorkAt(r, a) > TotalWorkAt(r, b) or
+      (
+        TotalWorkAt(r, a) == TotalWorkAt(r, b) and
+        TieBreakRank.get(a) >= TieBreakRank.get(b)
+      )
+
+  pure def IsBestTipAt(r: Round_t, v: Snapshot_t): bool =
+    CandidateAt(r, v) and
+      Snapshots.forall(w =>
+        not(CandidateAt(r, w)) or BetterOrEqualAt(r, v, w)
+      )
 
   pure def CommonAncestorHeight(previousTip: Snapshot_t, nextTip: Snapshot_t): int =
     LcaHeight.get(previousTip).get(nextTip)
@@ -246,13 +282,17 @@ module CrosslinkDynamicSigmaResampling {
   val DynamicControllerStatusMatchesHashParticipation =
     controllerStatus == ControllerStatusFor(HashParticipationPct.get(dynRound))
 
+  val CurrentDynamicBestTipMatchesGeneratedCompetition =
+    IsBestTipAt(dynRound, BestTip.get(dynRound))
+
   val DynamicResamplingSafety =
     Safety and
     DynamicSigmaWithinBounds and
     DynamicSigmaRespectsDerivedReorgFloor and
     DynamicSigmaRespectsHashParticipationFloor and
     HashParticipationFloorIsMonotone and
-    DynamicControllerStatusMatchesHashParticipation
+    DynamicControllerStatusMatchesHashParticipation and
+    CurrentDynamicBestTipMatchesGeneratedCompetition
 }
 
 module CrosslinkDynamicSigmaResamplingTest {
@@ -318,6 +358,13 @@ module CrosslinkDynamicSigmaResamplingTest {
         DynamicResamplingStutter,
       })
   }
+
+  run generatedCompetitionBacksResamplingForkSignalTest = all {
+    assert(IsBestTipAt(0, "s0")),
+    assert(not(CandidateAt(0, "s1"))),
+    assert(IsBestTipAt(1, "s1")),
+    assert(DerivedReorgDepth(1) == 1),
+  }
 }
 
 module CrosslinkDynamicSigmaResamplingModel {
@@ -334,6 +381,7 @@ module CrosslinkDynamicSigmaResamplingModel {
     BaseSigma = 1,
     RaisedSigma = 3,
     MaxSigma = 6,
+    MaxWork = 4,
     TargetHashParticipationPct = 67,
     CriticalHashParticipationPct = 50,
     HashParticipationPct = Map(
@@ -345,6 +393,26 @@ module CrosslinkDynamicSigmaResamplingModel {
       0 -> "s0",
       1 -> "s1",
       2 -> "s2",
+    ),
+    PublishedAt = Map(
+      0 -> Map("s0" -> true, "s1" -> false, "s2" -> false),
+      1 -> Map("s0" -> true, "s1" -> true, "s2" -> false),
+      2 -> Map("s0" -> true, "s1" -> true, "s2" -> true),
+    ),
+    HonestWorkAt = Map(
+      0 -> Map("s0" -> 1, "s1" -> 0, "s2" -> 0),
+      1 -> Map("s0" -> 1, "s1" -> 0, "s2" -> 0),
+      2 -> Map("s0" -> 1, "s1" -> 0, "s2" -> 0),
+    ),
+    AdversarialWorkAt = Map(
+      0 -> Map("s0" -> 0, "s1" -> 3, "s2" -> 0),
+      1 -> Map("s0" -> 0, "s1" -> 3, "s2" -> 0),
+      2 -> Map("s0" -> 0, "s1" -> 3, "s2" -> 4),
+    ),
+    TieBreakRank = Map(
+      "s0" -> 0,
+      "s1" -> 1,
+      "s2" -> 2,
     ),
     HeightOf = Map(
       "s0" -> 1,
