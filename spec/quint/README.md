@@ -28,6 +28,11 @@ PoW snapshots as a finite fork tree, then checks that Crosslink finality can ski
 heights on one branch while rejecting finalization of a fork after a block is
 final.
 
+`CrosslinkPowForkSchedule.qnt` is the first step from fixed PoW fixtures toward
+generated reorg schedules. It derives rollback depth from a bounded sequence of
+best-tip changes, then checks whether a selected sigma is deep enough to survive
+that fork switch.
+
 `CrosslinkComposed.qnt` connects those two pieces: a Tenderlink decision over a
 resampled PoW snapshot becomes the input to Crosslink finality, which can then
 advance to a tail-confirmed snapshot while preserving the finalized prefix.
@@ -90,6 +95,7 @@ Typecheck:
 ```sh
 $QUINT typecheck spec/quint/CrosslinkResampling.qnt
 $QUINT typecheck spec/quint/CrosslinkForkFinality.qnt
+$QUINT typecheck spec/quint/CrosslinkPowForkSchedule.qnt
 $QUINT typecheck spec/quint/CrosslinkComposed.qnt
 $QUINT typecheck spec/quint/CrosslinkDynamicSigma.qnt
 ```
@@ -188,6 +194,27 @@ This runs:
 - `rejectsFinalizingForkAfterFinalBlockTest`
 - `rejectsUnconfirmedTailTest`
 
+Witness derived PoW fork rollback depth:
+
+```sh
+$QUINT test spec/quint/CrosslinkPowForkSchedule.qnt \
+  --main=CrosslinkPowForkScheduleModel \
+  --max-samples=100 \
+  --backend=rust
+```
+
+This runs:
+
+- `forkSwitchDerivesRollbackDepthTest`
+- `sameBranchExtensionHasZeroRollbackDepthTest`
+- `raisedSigmaSurvivesForkSwitchThatBaseSigmaDoesNotTest`
+- `scheduleDerivesRollbackDepthAcrossRoundsTest`
+
+The model has a same-branch extension from `a3` to `a4`, then a fork switch from
+`a4` to `b4` whose last common ancestor is at height 2. It derives rollback
+depth 2 from that best-tip transition and checks that sigma 1 does not survive
+the switch while sigma 3 does.
+
 Witness the composed nil-precommit-to-finality flow:
 
 ```sh
@@ -275,6 +302,16 @@ $QUINT run spec/quint/CrosslinkForkFinality.qnt \
   --backend=rust \
   --verbosity=0
 
+$QUINT run spec/quint/CrosslinkPowForkSchedule.qnt \
+  --main=CrosslinkPowForkScheduleModel \
+  --init=Init \
+  --step=Next \
+  --max-steps=4 \
+  --max-samples=1000 \
+  --invariant=Safety \
+  --backend=rust \
+  --verbosity=0
+
 $QUINT run spec/quint/CrosslinkResampling.qnt \
   --main=CrosslinkNilResamplingLivenessModel \
   --init=LivenessInit \
@@ -340,6 +377,13 @@ $QUINT verify spec/quint/CrosslinkForkFinality.qnt \
   --step=Next \
   --invariant=Safety
 
+$QUINT verify spec/quint/CrosslinkPowForkSchedule.qnt \
+  --main=CrosslinkPowForkScheduleModel \
+  --max-steps=4 \
+  --init=Init \
+  --step=Next \
+  --invariant=Safety
+
 $QUINT verify spec/quint/CrosslinkResampling.qnt \
   --main=CrosslinkNilResamplingLivenessModel \
   --max-steps=15 \
@@ -392,6 +436,13 @@ combines:
 - the latest final snapshot extends every previously finalized snapshot
 - the initial final snapshot remains finalized
 
+The bounded PoW fork-schedule check reports no violation for its `Safety`, which
+combines:
+
+- the live best tip matches the configured best-tip schedule
+- the live rollback depth is derived from the previous and current best tips
+- the rollback depth stays within the configured PoW height bound
+
 The bounded liveness harness checks the proposed nil-precommit flow under a
 post-GST schedule: a same-round nil certificate is formed for `s0`, one correct
 validator may hold a minority same-round value lock, all correct validators
@@ -417,8 +468,9 @@ coverage, block interval variance, or reorg distributions.
 
 This model is intentionally narrow. The next useful extensions are:
 
-- replace the concrete fork and `head - sigma` fixtures with parameterized PoW
-  chains and adversarial reorg schedules
+- compose `CrosslinkPowForkSchedule.qnt` with `CrosslinkDynamicSigma.qnt`, so
+  dynamic sigma consumes derived rollback depth instead of the current supplied
+  `ObservedReorgDepth` map
 - refine `CrosslinkDynamicSigma.qnt` with a calibrated stochastic controller
   that uses measured hash-power participation, round-failure rate, block
   interval variance, and observed reorg depth rather than the current three-step
