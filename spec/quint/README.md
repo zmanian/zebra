@@ -35,6 +35,26 @@ normal propose/prevote/precommit path, while a changed stream carries the stale
 sample and can block a fresh decision because same-round Tendermint state is not
 cleared.
 
+`CrosslinkBaselineTenderlink.qnt` gives that baseline an upstream-shaped
+parameter shell: `BaselineCorr`, `BaselineFaulty`, `BaselineN`, `BaselineT`,
+valid and invalid snapshot sets, round/proposer parameters, and the
+Crosslink-specific fixed-sigma rule
+`BaselineStream(round) = ancestor(bestTip(round), height(bestTip(round)) -
+sigma)`. It still delegates to the focused sticky model, so full upstream
+faulty-message injection and the full Tendermint transition surface remain
+future work.
+
+`CrosslinkBaselineModels.qnt` adds small baseline instances over that shell,
+including stable and forking `n4_f1` fixtures plus a forking `n5_f1` fixture.
+Above-threshold faulty instances such as upstream-style `n4_f2` or `n5_f2` are
+still not modeled because the current focused shell assumes
+`size(Faulty) <= T`.
+
+`CrosslinkBaselineTest.qnt` adds upstream-style smoke tests for the baseline
+shell: fixed-sigma sampling, normal decision, no double proposal, deriving a
+fresh `head - sigma` value after a fork switch, and the sticky baseline witness
+that still carries the stale fixed-sigma sample.
+
 `CrosslinkBaselineAccountability.qnt` makes the baseline accountability
 projection explicit. It checks that a nil-precommit certificate does not clear
 same-round value locks in the sticky baseline, and that conflicting value
@@ -314,6 +334,9 @@ Typecheck:
 
 ```sh
 $QUINT typecheck spec/quint/CrosslinkBaseline.qnt
+$QUINT typecheck spec/quint/CrosslinkBaselineTenderlink.qnt
+$QUINT typecheck spec/quint/CrosslinkBaselineModels.qnt
+$QUINT typecheck spec/quint/CrosslinkBaselineTest.qnt
 $QUINT typecheck spec/quint/CrosslinkBaselineAccountability.qnt
 $QUINT typecheck spec/quint/CrosslinkBaselineBftHeights.qnt
 $QUINT typecheck spec/quint/CrosslinkBaselineFinality.qnt
@@ -353,6 +376,25 @@ snapshot when the PoW stream does not move. The stream-change model records the
 baseline limitation: after a nil-precommit quorum, the current protocol carries
 the stale sample into the next round and same-round Tendermint state can block a
 fresh decision.
+
+Witness the upstream-shaped baseline shell:
+
+```sh
+$QUINT test spec/quint/CrosslinkBaselineTest.qnt \
+  --main=CrosslinkBaselineN4F1StableTest \
+  --max-samples=100 \
+  --backend=rust
+
+$QUINT test spec/quint/CrosslinkBaselineTest.qnt \
+  --main=CrosslinkBaselineN4F1ForkingTest \
+  --max-samples=100 \
+  --backend=rust
+```
+
+The stable `n4_f1` test checks fixed-sigma sampling, normal decision, and
+no-double-proposal behavior. The forking `n4_f1` test checks that the shell
+derives the fresh `head - sigma` sample after a fork switch while the sticky
+baseline still carries the old sample into the next round.
 
 Witness the named baseline accountability behavior:
 
@@ -1194,6 +1236,13 @@ Tenderlink safety invariant. The named witnesses show that a nil-precommit
 certificate advances the round without clearing same-round `validValue` or
 `lockedValue`, and that conflicting value commits without nil-unlock evidence
 are attributable through amnesia evidence.
+
+The bounded upstream-shaped baseline checks report no violation for
+`BaselineN4F1StableSafety` or `BaselineN4F1ForkingSafety`. The stable instance
+keeps the normal fixed-sigma decision path and no-double-proposal witness alive
+through the parameter shell; the forking instance records that the shell derives
+the fresh round-1 `head - sigma` sample while the sticky baseline can still
+carry the stale round-0 sample.
 
 The bounded baseline BFT-height checks report no violation for
 `BaselineBftHeightSafety`, which combines bounded consensus-height progression

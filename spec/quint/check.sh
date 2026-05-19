@@ -48,6 +48,9 @@ run_quint() {
 typecheck_all() {
   local specs=(
     spec/quint/CrosslinkBaseline.qnt
+    spec/quint/CrosslinkBaselineTenderlink.qnt
+    spec/quint/CrosslinkBaselineModels.qnt
+    spec/quint/CrosslinkBaselineTest.qnt
     spec/quint/CrosslinkBaselineAccountability.qnt
     spec/quint/CrosslinkBaselineBftHeights.qnt
     spec/quint/CrosslinkBaselineFinality.qnt
@@ -77,6 +80,9 @@ typecheck_baseline() {
   local specs=(
     spec/quint/CrosslinkResampling.qnt
     spec/quint/CrosslinkBaseline.qnt
+    spec/quint/CrosslinkBaselineTenderlink.qnt
+    spec/quint/CrosslinkBaselineModels.qnt
+    spec/quint/CrosslinkBaselineTest.qnt
     spec/quint/CrosslinkBaselineAccountability.qnt
     spec/quint/CrosslinkBaselineBftHeights.qnt
     spec/quint/CrosslinkBaselineFinality.qnt
@@ -134,6 +140,8 @@ quick_checks() {
   test_model spec/quint/CrosslinkResampling.qnt CrosslinkStickyModel
   test_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStableModel
   test_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStreamChangeModel
+  test_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN4F1StableTest
+  test_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN4F1ForkingTest
   test_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineAccountabilityModel
   test_model spec/quint/CrosslinkBaselineBftHeights.qnt CrosslinkBaselineBftHeightsModel
   test_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStableModel
@@ -157,6 +165,8 @@ quick_checks() {
   run_model spec/quint/CrosslinkResampling.qnt CrosslinkStickyModel Init Next 10 1000 Safety
   run_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStableModel Init Next 10 1000 BaselineSafety
   run_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStreamChangeModel Init Next 10 1000 BaselineSafety
+  run_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN4F1StableTest Init Next 10 1000 BaselineN4F1StableSafety
+  run_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN4F1ForkingTest Init Next 10 1000 BaselineN4F1ForkingSafety
   run_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineAccountabilityModel Init Next 10 1000 BaselineAccountabilitySafety
   run_model spec/quint/CrosslinkBaselineBftHeights.qnt CrosslinkBaselineBftHeightsModel Init Next 5 1000 BaselineBftHeightSafety
   run_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStableModel ComposedInit ComposedNext 10 1000 ComposedSafety
@@ -187,6 +197,8 @@ baseline_quick_checks() {
   test_model spec/quint/CrosslinkResampling.qnt CrosslinkStickyModel
   test_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStableModel
   test_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStreamChangeModel
+  test_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN4F1StableTest
+  test_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN4F1ForkingTest
   test_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineAccountabilityModel
   test_model spec/quint/CrosslinkBaselineBftHeights.qnt CrosslinkBaselineBftHeightsModel
   test_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStableModel
@@ -196,6 +208,8 @@ baseline_quick_checks() {
   run_model spec/quint/CrosslinkResampling.qnt CrosslinkStickyModel Init Next 10 1000 Safety
   run_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStableModel Init Next 10 1000 BaselineSafety
   run_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStreamChangeModel Init Next 10 1000 BaselineSafety
+  run_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN4F1StableTest Init Next 10 1000 BaselineN4F1StableSafety
+  run_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN4F1ForkingTest Init Next 10 1000 BaselineN4F1ForkingSafety
   run_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineAccountabilityModel Init Next 10 1000 BaselineAccountabilitySafety
   run_model spec/quint/CrosslinkBaselineBftHeights.qnt CrosslinkBaselineBftHeightsModel Init Next 5 1000 BaselineBftHeightSafety
   run_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStableModel ComposedInit ComposedNext 10 1000 ComposedSafety
@@ -208,6 +222,8 @@ symbolic_checks() {
   verify_model spec/quint/CrosslinkResampling.qnt CrosslinkStickyModel 3 Init Next Safety
   verify_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStableModel 3 Init Next BaselineSafety
   verify_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStreamChangeModel 3 Init Next BaselineSafety
+  verify_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN4F1StableTest 3 Init Next BaselineN4F1StableSafety
+  verify_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN4F1ForkingTest 3 Init Next BaselineN4F1ForkingSafety
   verify_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineAccountabilityModel 3 Init Next BaselineAccountabilitySafety
   verify_model spec/quint/CrosslinkBaselineBftHeights.qnt CrosslinkBaselineBftHeightsModel 5 Init Next BaselineBftHeightSafety
   verify_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStableModel 5 ComposedInit ComposedNext ComposedSafety
@@ -239,6 +255,8 @@ baseline_symbolic_checks() {
   verify_model spec/quint/CrosslinkResampling.qnt CrosslinkStickyModel 3 Init Next Safety
   verify_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStableModel 3 Init Next BaselineSafety
   verify_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStreamChangeModel 3 Init Next BaselineSafety
+  verify_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN4F1StableTest 3 Init Next BaselineN4F1StableSafety
+  verify_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN4F1ForkingTest 3 Init Next BaselineN4F1ForkingSafety
   verify_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineAccountabilityModel 3 Init Next BaselineAccountabilitySafety
   verify_model spec/quint/CrosslinkBaselineBftHeights.qnt CrosslinkBaselineBftHeightsModel 5 Init Next BaselineBftHeightSafety
   verify_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStableModel 5 ComposedInit ComposedNext ComposedSafety

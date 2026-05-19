@@ -57,6 +57,19 @@ The current branch has these baseline-specific files:
   - packages the fixed-sigma/sticky variant with
     `ResampleOnNilPrecommit = false`
   - includes stable-stream and stream-change witnesses
+- `CrosslinkBaselineTenderlink.qnt`
+  - adds an upstream-shaped parameter shell for `Corr`, `Faulty`, `N`, `T`,
+    value sets, rounds, proposers, sigma, best tips, heights, and ancestors
+  - derives `BaselineStream(round)` from the Crosslink fixed-sigma
+    `head - sigma` rule while keeping sticky nil-precommit semantics
+- `CrosslinkBaselineModels.qnt`
+  - defines small stable and forking baseline model instances over the
+    parameter shell
+  - currently covers `n4_f1_stable`, `n4_f1_forking`, and `n5_f1_forking`
+- `CrosslinkBaselineTest.qnt`
+  - adds upstream-style smoke tests for fixed-sigma sampling, normal decision,
+    no double proposal, fork-derived stream change, and sticky stale-sample
+    carryover
 - `CrosslinkBaselinePowSampling.qnt`
   - derives `Stream(round)` from an explicit `head - sigma` ancestor
   - records the fork-switch stale-sample behavior
@@ -96,8 +109,10 @@ The current branch has these baseline-specific files:
 | Automated local baseline quick gate | `check.sh quick-baseline` | Covered |
 | Automated local baseline symbolic gate | `check.sh symbolic-baseline` | Covered |
 | Automated CI baseline gates | `.github/workflows/quint-crosslink.yml` | Covered structurally; requires green run evidence per commit |
-| Parameterized `Corr/Faulty/N/T` validator model | Current specs use fixed focused fixtures | Missing |
-| Upstream-style model instances (`n4_f1`, `n4_f2`, `n5_f2`) | No baseline equivalent yet | Missing |
+| Parameterized `Corr/Faulty/N/T` validator model | `CrosslinkBaselineTenderlink.qnt` | Partial; parameter shell exists, full transition/faulty injection is still focused |
+| Upstream-style model instances (`n4_f1`, `n4_f2`, `n5_f2`) | `CrosslinkBaselineModels.qnt`; `n4_f1_stable`, `n4_f1_forking`, `n5_f1_forking` | Partial; above-threshold faulty instances are still missing |
+| Upstream-style normal decision/no-double-proposal tests | `CrosslinkBaselineTest.qnt`; `decisionTest`; `noProposeTwiceTest` | Covered for `n4_f1_stable` |
+| Upstream-style stream-change/sticky-sample test | `CrosslinkBaselineTest.qnt`; `streamChangeDerivesFreshHeadMinusSigmaTest`; `stickyBaselineCarriesStaleFixedSigmaSampleTest` | Covered for `n4_f1_forking` |
 | Nondeterministic faulty message injection in `Init` | Current accountability tests are fixture/witness based | Missing |
 | Full Tendermint transition surface | Current model isolates the Crosslink fork-recovery question | Missing |
 | Full agreement/validity/accountability invariant suite over arbitrary evidence | Current suite has bounded safety plus focused accountability witnesses | Partial |
@@ -115,17 +130,23 @@ To finish a focused baseline artifact, the remaining work is:
 2. Keep the baseline limitation explicit: stream changes between prevote and
    precommit can leave the sticky baseline carrying a stale fixed-sigma sample
    and can halt fresh finality.
+3. Keep the upstream-shaped shell documented as a shell, not as a complete port
+   of the upstream Tendermint transition system.
 
 To finish an upstream-quality baseline spec, the remaining work is larger:
 
-1. Add a parameterized baseline Tenderlink module.
-   - Mirror the upstream constants and assumptions: `Corr`, `Faulty`, `N`, `T`,
-     `ValidValues`, `InvalidValues`, `MaxRound`, and `Proposer`.
-   - Keep Crosslink value selection as `Stream(round) = ancestor(bestTip,
-     sigma)` rather than an arbitrary Tendermint value.
-2. Add baseline model instances.
-   - Create Crosslink equivalents of `n4_f1`, `n4_f2`, and `n5_f2`.
-   - Include at least one model where the PoW stream changes across a round
+1. Extend the parameterized baseline shell into a full transition model.
+   - Keep the current upstream-shaped constants and assumptions:
+     `Corr`, `Faulty`, `N`, `T`, value sets, `MaxRound`, `Proposer`, `sigma`,
+     best tips, heights, and ancestors.
+   - Continue to keep Crosslink value selection as `Stream(round) =
+     ancestor(bestTip(round), height(bestTip(round)) - sigma)` rather than an
+     arbitrary Tendermint value.
+2. Add the remaining baseline model instances.
+   - Add above-threshold or accountability-focused analogues for upstream
+     `n4_f2` and `n5_f2` without violating the focused shell's current
+     `size(Faulty) <= T` assumption silently.
+   - Keep at least one model where the PoW stream changes across a round
      boundary.
 3. Add upstream-style faulty message injection.
    - Nondeterministically seed faulty proposals, prevotes, and precommits in
@@ -161,11 +182,11 @@ To finish an upstream-quality baseline spec, the remaining work is larger:
 
 ## Recommended Order
 
-1. Build `CrosslinkBaselineTenderlink.qnt` as the parameterized upstream-shaped
-   module.
-2. Build `CrosslinkBaselineModels.qnt` with the small validator instances.
-3. Build `CrosslinkBaselineTest.qnt` with normal decision, timeout/stale-stream,
-   and no-double-proposal witnesses.
+1. Add upstream-style faulty message injection to the parameterized shell.
+2. Port the full Tendermint transition surface into the parameterized shell
+   while preserving the baseline sticky nil-precommit rule.
+3. Add remaining model instances, including above-threshold or
+   accountability-focused analogues of upstream `n4_f2` and `n5_f2`.
 4. Add the full agreement/validity/accountability checks to
    `symbolic-baseline`.
 5. Add the false-invariant/counterexample harnesses.
