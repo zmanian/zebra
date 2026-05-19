@@ -52,6 +52,11 @@ if an adversarial or accidental reorg reaches the current depth, sigma moves to
 the next configured floor even when hash participation is healthy and the
 previous BFT round did not fail.
 
+`CrosslinkDynamicSigmaForkSchedule.qnt` composes the dynamic-sigma controller
+with the derived PoW fork schedule. In this model, dynamic sigma consumes
+rollback depth computed from best-tip transitions instead of a supplied
+`ObservedReorgDepth` map.
+
 ## Upstream Base
 
 The best current Tendermint Quint base is the Quint repository's Cosmos example:
@@ -98,6 +103,7 @@ $QUINT typecheck spec/quint/CrosslinkForkFinality.qnt
 $QUINT typecheck spec/quint/CrosslinkPowForkSchedule.qnt
 $QUINT typecheck spec/quint/CrosslinkComposed.qnt
 $QUINT typecheck spec/quint/CrosslinkDynamicSigma.qnt
+$QUINT typecheck spec/quint/CrosslinkDynamicSigmaForkSchedule.qnt
 ```
 
 Witness the current sticky behavior:
@@ -269,6 +275,26 @@ controller to move one rung deeper, so an execution that is still healthy by
 participation can nevertheless raise sigma after a reorg reaches the current
 floor.
 
+Witness dynamic sigma consuming derived PoW rollback depth:
+
+```sh
+$QUINT test spec/quint/CrosslinkDynamicSigmaForkSchedule.qnt \
+  --main=CrosslinkDynamicSigmaForkScheduleModel \
+  --max-samples=100 \
+  --backend=rust
+```
+
+This runs:
+
+- `derivedReorgDepthFeedsDynamicSigmaTest`
+- `forkScheduleDerivedReorgRaisesDynamicSigmaTest`
+- `derivedRaisedSigmaSurvivesForkSwitchTest`
+
+The composed fixture advances from `a3` to `a4` with rollback depth 0 and keeps
+base sigma. It then switches from `a4` to `b4`, derives rollback depth 2 from
+the fork schedule, and raises dynamic sigma from 1 to 3 without relying on a
+separately supplied observed-reorg map.
+
 Randomized Rust-backend safety simulation:
 
 ```sh
@@ -351,6 +377,16 @@ $QUINT run spec/quint/CrosslinkDynamicSigma.qnt \
   --invariant=Safety \
   --backend=rust \
   --verbosity=0
+
+$QUINT run spec/quint/CrosslinkDynamicSigmaForkSchedule.qnt \
+  --main=CrosslinkDynamicSigmaForkScheduleModel \
+  --init=DerivedInit \
+  --step=DerivedNext \
+  --max-steps=4 \
+  --max-samples=1000 \
+  --invariant=DerivedSafety \
+  --backend=rust \
+  --verbosity=0
 ```
 
 Bounded Apalache verification:
@@ -411,6 +447,13 @@ $QUINT verify spec/quint/CrosslinkDynamicSigma.qnt \
   --init=Init \
   --step=Next \
   --invariant=Safety
+
+$QUINT verify spec/quint/CrosslinkDynamicSigmaForkSchedule.qnt \
+  --main=CrosslinkDynamicSigmaForkScheduleModel \
+  --max-steps=4 \
+  --init=DerivedInit \
+  --step=DerivedNext \
+  --invariant=DerivedSafety
 ```
 
 The bounded resampling checks currently report no violation for `Safety`, which
@@ -464,20 +507,28 @@ higher participation. This is still a controller sketch, not a calibrated
 stochastic model; it does not yet derive the thresholds from measured hashrate
 coverage, block interval variance, or reorg distributions.
 
+The dynamic-sigma/fork-schedule composition reports no violation for
+`DerivedSafety`, which combines:
+
+- the PoW fork-schedule safety invariants
+- dynamic sigma stays within the configured ladder
+- dynamic sigma respects the hash-participation floor
+- dynamic sigma respects the rollback-depth floor derived from the fork schedule
+- the controller status matches current hash participation
+
 ## Next Extensions
 
 This model is intentionally narrow. The next useful extensions are:
 
-- compose `CrosslinkPowForkSchedule.qnt` with `CrosslinkDynamicSigma.qnt`, so
-  dynamic sigma consumes derived rollback depth instead of the current supplied
-  `ObservedReorgDepth` map
+- compose dynamic-sigma fork recovery with the resampling/Tenderlink liveness
+  harness, so a fork switch can derive rollback depth, raise sigma, and then
+  resample into a fresh Tenderlink decision
 - refine `CrosslinkDynamicSigma.qnt` with a calibrated stochastic controller
   that uses measured hash-power participation, round-failure rate, block
   interval variance, and observed reorg depth rather than the current three-step
   sigma ladder
-- turn the observed reorg-depth schedule into generated PoW fork transitions,
-  so rollback depth is derived from branch competition rather than supplied as
-  a controller input
+- replace the fixed fork schedule with generated PoW branch competition and
+  adversarial mining schedules
 - add BFT heights so successive Tenderlink decisions update Crosslink finality
   directly
 - port the full upstream Tendermint accountability evidence model into the
