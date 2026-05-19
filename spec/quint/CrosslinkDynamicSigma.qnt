@@ -15,6 +15,12 @@ module CrosslinkDynamicSigma {
    must have a higher floor. Below a critical participation floor, increasing
    sigma improves conservatism but does not by itself recover the same assurance
    as broad PoW participation.
+
+   The calibrated controller sketch adds a bounded risk score over the signals
+   a deployed controller would estimate: hash-power coverage, recent round
+   failure rate, block-interval variance, and observed rollback depth. The
+   thresholds here are fixtures, not production economics, but the model makes
+   the intended monotone shape explicit.
    */
 
   type Round_t = int
@@ -30,7 +36,15 @@ module CrosslinkDynamicSigma {
   const CriticalHashParticipationPct: Pct_t
   const HashParticipationPct: Round_t -> Pct_t
   const RoundFailed: Round_t -> bool
+  const RoundFailureRatePct: Round_t -> Pct_t
+  const BlockIntervalVariancePct: Round_t -> Pct_t
   const ObservedReorgDepth: Round_t -> int
+  const CoverageRiskWeight: int
+  const RoundFailureRiskWeight: int
+  const BlockVarianceRiskWeight: int
+  const ReorgDepthRiskWeight: int
+  const RiskScoreRaisedThreshold: int
+  const RiskScoreMaxThreshold: int
   const Snapshots: Set[Snapshot_t]
   const SnapshotAtSigma: Round_t -> Sigma_t -> Snapshot_t
 
@@ -50,10 +64,25 @@ module CrosslinkDynamicSigma {
     Rounds.forall(r =>
       0 <= HashParticipationPct.get(r) and HashParticipationPct.get(r) <= 100
     )
+  assume observed_round_failure_rate_is_percentage =
+    Rounds.forall(r =>
+      0 <= RoundFailureRatePct.get(r) and RoundFailureRatePct.get(r) <= 100
+    )
+  assume observed_block_variance_is_percentage =
+    Rounds.forall(r =>
+      0 <= BlockIntervalVariancePct.get(r) and BlockIntervalVariancePct.get(r) <= 100
+    )
   assume observed_reorg_depth_is_bounded =
     Rounds.forall(r =>
       0 <= ObservedReorgDepth.get(r) and ObservedReorgDepth.get(r) <= MaxSigma
     )
+  assume risk_weights_are_non_negative =
+    CoverageRiskWeight >= 0 and
+    RoundFailureRiskWeight >= 0 and
+    BlockVarianceRiskWeight >= 0 and
+    ReorgDepthRiskWeight >= 0
+  assume risk_score_thresholds_are_ordered =
+    0 <= RiskScoreRaisedThreshold and RiskScoreRaisedThreshold < RiskScoreMaxThreshold
   assume sampled_snapshots_are_valid =
     Rounds.forall(r =>
       SigmaLadder.forall(s =>
@@ -66,6 +95,8 @@ module CrosslinkDynamicSigma {
   var sampledSnapshot: Snapshot_t
   var sampleStability: str
   var controllerStatus: str
+  var riskScore: int
+  var riskStatus: str
   var firedAction: str
 
   pure def MaxInt(a: int, b: int): int =
@@ -88,6 +119,46 @@ module CrosslinkDynamicSigma {
     } else {
       BaseSigma
     }
+
+  pure def CoverageRiskPct(hashParticipationPct: Pct_t): int =
+    100 - hashParticipationPct
+
+  pure def CalibratedRiskScore(
+    hashParticipationPct: Pct_t,
+    roundFailureRatePct: Pct_t,
+    blockIntervalVariancePct: Pct_t,
+    observedReorgDepth: int
+  ): int =
+    CoverageRiskWeight * CoverageRiskPct(hashParticipationPct) +
+      RoundFailureRiskWeight * roundFailureRatePct +
+      BlockVarianceRiskWeight * blockIntervalVariancePct +
+      ReorgDepthRiskWeight * observedReorgDepth
+
+  pure def RiskScoreSigmaFloor(score: int): Sigma_t =
+    if (score >= RiskScoreMaxThreshold) {
+      MaxSigma
+    } else if (score >= RiskScoreRaisedThreshold) {
+      RaisedSigma
+    } else {
+      BaseSigma
+    }
+
+  pure def CalibratedRiskScoreForRound(r: Round_t): int =
+    CalibratedRiskScore(
+      HashParticipationPct.get(r),
+      RoundFailureRatePct.get(r),
+      BlockIntervalVariancePct.get(r),
+      ObservedReorgDepth.get(r)
+    )
+
+  pure def CalibratedSigmaFloorForRound(r: Round_t): Sigma_t =
+    MaxInt(
+      RiskScoreSigmaFloor(CalibratedRiskScoreForRound(r)),
+      MaxInt(
+        HashParticipationSigmaFloor(HashParticipationPct.get(r)),
+        ReorgSigmaFloor(ObservedReorgDepth.get(r))
+      )
+    )
 
   pure def EscalatedSigma(current: Sigma_t): Sigma_t =
     if (current < RaisedSigma) {
@@ -117,6 +188,16 @@ module CrosslinkDynamicSigma {
   ): Sigma_t =
     ControllerSigmaWithReorg(previousSigma, nextHashParticipationPct, previousRoundFailed, 0)
 
+  pure def CalibratedControllerSigma(
+    previousSigma: Sigma_t,
+    nextRound: Round_t,
+    previousRoundFailed: bool
+  ): Sigma_t =
+    MaxInt(
+      CalibratedSigmaFloorForRound(nextRound),
+      if (previousRoundFailed) { EscalatedSigma(previousSigma) } else { BaseSigma }
+    )
+
   pure def ControllerStatusFor(pct: Pct_t): str =
     if (pct < CriticalHashParticipationPct) {
       "critical-hash-participation"
@@ -124,6 +205,15 @@ module CrosslinkDynamicSigma {
       "degraded-hash-participation"
     } else {
       "healthy-hash-participation"
+    }
+
+  pure def RiskStatusFor(score: int): str =
+    if (score >= RiskScoreMaxThreshold) {
+      "critical-stochastic-risk"
+    } else if (score >= RiskScoreRaisedThreshold) {
+      "elevated-stochastic-risk"
+    } else {
+      "low-stochastic-risk"
     }
 
   pure def HeadMinusSigma(r: Round_t, s: Sigma_t): Snapshot_t =
@@ -141,13 +231,19 @@ module CrosslinkDynamicSigma {
       "unstable-under-current-sigma"
     }
 
-  action Init = all {
-    round' = 0,
-    sigma' = HashParticipationSigmaFloor(HashParticipationPct.get(0)),
-    sampledSnapshot' = HeadMinusSigma(0, HashParticipationSigmaFloor(HashParticipationPct.get(0))),
-    sampleStability' = SampleStabilityStatusFor(0, HashParticipationSigmaFloor(HashParticipationPct.get(0))),
-    controllerStatus' = ControllerStatusFor(HashParticipationPct.get(0)),
-    firedAction' = "Init",
+  action Init = {
+    val initialRiskScore = CalibratedRiskScoreForRound(0)
+    val initialSigma = CalibratedSigmaFloorForRound(0)
+    all {
+      round' = 0,
+      sigma' = initialSigma,
+      sampledSnapshot' = HeadMinusSigma(0, initialSigma),
+      sampleStability' = SampleStabilityStatusFor(0, initialSigma),
+      controllerStatus' = ControllerStatusFor(HashParticipationPct.get(0)),
+      riskScore' = initialRiskScore,
+      riskStatus' = RiskStatusFor(initialRiskScore),
+      firedAction' = "Init",
+    }
   }
 
   action AdvanceRound = {
@@ -155,12 +251,8 @@ module CrosslinkDynamicSigma {
     val nextRound = oldRound + 1
     val nextHashParticipation = HashParticipationPct.get(nextRound)
     val nextReorgDepth = ObservedReorgDepth.get(nextRound)
-    val nextSigma = ControllerSigmaWithReorg(
-      sigma,
-      nextHashParticipation,
-      RoundFailed.get(oldRound),
-      nextReorgDepth
-    )
+    val nextRiskScore = CalibratedRiskScoreForRound(nextRound)
+    val nextSigma = CalibratedControllerSigma(sigma, nextRound, RoundFailed.get(oldRound))
     all {
       nextRound.in(Rounds),
       round' = nextRound,
@@ -168,6 +260,8 @@ module CrosslinkDynamicSigma {
       sampledSnapshot' = HeadMinusSigma(nextRound, nextSigma),
       sampleStability' = SampleStabilityStatusFor(nextRound, nextSigma),
       controllerStatus' = ControllerStatusFor(nextHashParticipation),
+      riskScore' = nextRiskScore,
+      riskStatus' = RiskStatusFor(nextRiskScore),
       firedAction' =
         if (RoundFailed.get(oldRound)) {
           "AdvanceAfterRoundFailure"
@@ -175,6 +269,8 @@ module CrosslinkDynamicSigma {
           "AdvanceAfterObservedReorg"
         } else if (nextHashParticipation < TargetHashParticipationPct) {
           "AdvanceWithLowHashParticipation"
+        } else if (RiskScoreSigmaFloor(nextRiskScore) > BaseSigma) {
+          "AdvanceWithElevatedStochasticRisk"
         } else {
           "AdvanceStable"
         },
@@ -187,6 +283,8 @@ module CrosslinkDynamicSigma {
     sampledSnapshot' = sampledSnapshot,
     sampleStability' = sampleStability,
     controllerStatus' = controllerStatus,
+    riskScore' = riskScore,
+    riskStatus' = riskStatus,
     firedAction' = firedAction,
   }
 
@@ -205,6 +303,15 @@ module CrosslinkDynamicSigma {
   val SigmaRespectsObservedReorgFloor =
     sigma >= ReorgSigmaFloor(ObservedReorgDepth.get(round))
 
+  val SigmaRespectsCalibratedRiskFloor =
+    sigma >= RiskScoreSigmaFloor(CalibratedRiskScoreForRound(round))
+
+  val RiskScoreMatchesObservedInputs =
+    riskScore == CalibratedRiskScoreForRound(round)
+
+  val RiskStatusMatchesObservedInputs =
+    riskStatus == RiskStatusFor(CalibratedRiskScoreForRound(round))
+
   val SampledSnapshotIsValid =
     Snapshots.contains(sampledSnapshot)
 
@@ -222,6 +329,14 @@ module CrosslinkDynamicSigma {
       )
     )
 
+  val CalibratedRiskScoreIsMonotoneInParticipation =
+    Percentages.forall(lower =>
+      Percentages.forall(higher =>
+        (lower <= higher) implies
+          CalibratedRiskScore(lower, 0, 0, 0) >= CalibratedRiskScore(higher, 0, 0, 0)
+      )
+    )
+
   val ControllerStatusMatchesHashParticipation =
     controllerStatus == ControllerStatusFor(HashParticipationPct.get(round))
 
@@ -229,10 +344,14 @@ module CrosslinkDynamicSigma {
     SigmaWithinBounds and
     SigmaRespectsHashParticipationFloor and
     SigmaRespectsObservedReorgFloor and
+    SigmaRespectsCalibratedRiskFloor and
+    RiskScoreMatchesObservedInputs and
+    RiskStatusMatchesObservedInputs and
     SampledSnapshotIsValid and
     SampledSnapshotMatchesSigma and
     SampleStabilityMatchesSigma and
     HashParticipationFloorIsMonotone and
+    CalibratedRiskScoreIsMonotoneInParticipation and
     ControllerStatusMatchesHashParticipation
 }
 
@@ -279,6 +398,22 @@ module CrosslinkDynamicSigmaTest {
     assert(HashParticipationFloorIsMonotone)
   }
 
+  run calibratedRiskScoreIsMonotoneInParticipationTest = {
+    assert(CalibratedRiskScoreIsMonotoneInParticipation)
+  }
+
+  run combinedStochasticRiskRaisesSigmaWithoutSingleHardSignalTest = {
+    assert(RiskScoreSigmaFloor(CalibratedRiskScore(75, 30, 30, 0)) == RaisedSigma)
+  }
+
+  run criticalStochasticRiskForcesMaxSigmaTest = {
+    assert(RiskScoreSigmaFloor(CalibratedRiskScore(60, 60, 60, 1)) == MaxSigma)
+  }
+
+  run blockIntervalVarianceCanRaiseSigmaTest = {
+    assert(RiskScoreSigmaFloor(CalibratedRiskScore(90, 0, 90, 0)) == RaisedSigma)
+  }
+
   run raisedSigmaCanStabilizeMovingPowSampleTest = all {
     assert(not(SampleStableAcross(0, 1, BaseSigma))),
     assert(SampleStableAcross(0, 1, RaisedSigma)),
@@ -292,6 +427,7 @@ module CrosslinkDynamicSigmaTest {
         assert(sigma == RaisedSigma),
         assert(firedAction == "AdvanceAfterObservedReorg"),
         assert(controllerStatus == "healthy-hash-participation"),
+        assert(riskStatus == "low-stochastic-risk"),
         assert(sampledSnapshot == "deep-a"),
         assert(sampleStability == "stable-under-current-sigma"),
         assert(Safety),
@@ -308,6 +444,7 @@ module CrosslinkDynamicSigmaTest {
         assert(sigma == RaisedSigma),
         assert(firedAction == "AdvanceWithLowHashParticipation"),
         assert(controllerStatus == "degraded-hash-participation"),
+        assert(riskStatus == "low-stochastic-risk"),
         assert(sampledSnapshot == "deep-a"),
         assert(sampleStability == "stable-under-current-sigma"),
         assert(Safety),
@@ -325,6 +462,7 @@ module CrosslinkDynamicSigmaTest {
         assert(sigma == MaxSigma),
         assert(firedAction == "AdvanceWithLowHashParticipation"),
         assert(controllerStatus == "critical-hash-participation"),
+        assert(riskStatus == "low-stochastic-risk"),
         assert(sampledSnapshot == "final-a"),
         assert(sampleStability == "stable-under-current-sigma"),
         assert(Safety),
@@ -355,6 +493,20 @@ module CrosslinkDynamicSigmaHashParticipationModel {
       3 -> false,
       4 -> false,
     ),
+    RoundFailureRatePct = Map(
+      0 -> 0,
+      1 -> 0,
+      2 -> 0,
+      3 -> 0,
+      4 -> 0,
+    ),
+    BlockIntervalVariancePct = Map(
+      0 -> 0,
+      1 -> 0,
+      2 -> 0,
+      3 -> 0,
+      4 -> 0,
+    ),
     ObservedReorgDepth = Map(
       0 -> 0,
       1 -> 0,
@@ -362,6 +514,12 @@ module CrosslinkDynamicSigmaHashParticipationModel {
       3 -> 0,
       4 -> 0,
     ),
+    CoverageRiskWeight = 1,
+    RoundFailureRiskWeight = 1,
+    BlockVarianceRiskWeight = 1,
+    ReorgDepthRiskWeight = 40,
+    RiskScoreRaisedThreshold = 80,
+    RiskScoreMaxThreshold = 160,
     Snapshots = Set("tip-a0", "tip-b1", "tip-c2", "tip-d3", "deep-a", "final-a"),
     SnapshotAtSigma = Map(
       0 -> Map(

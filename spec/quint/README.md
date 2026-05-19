@@ -50,7 +50,10 @@ raised sigma samples a deeper ancestor that remains stable across the same
 round boundary. The controller also accepts an observed reorg-depth schedule:
 if an adversarial or accidental reorg reaches the current depth, sigma moves to
 the next configured floor even when hash participation is healthy and the
-previous BFT round did not fail.
+previous BFT round did not fail. It also includes a bounded stochastic-risk
+score over hash-power coverage, recent round-failure rate, block-interval
+variance, and observed rollback depth; the score can raise sigma when combined
+signals become risky even if no single hard floor fires.
 
 `CrosslinkDynamicSigmaForkSchedule.qnt` composes the dynamic-sigma controller
 with the derived PoW fork schedule. In this model, dynamic sigma consumes
@@ -272,6 +275,10 @@ This runs:
 - `criticalHashParticipationForcesMaxSigmaTest`
 - `adversarialReorgDepthRaisesSigmaFloorTest`
 - `hashParticipationSigmaFloorIsMonotoneTest`
+- `calibratedRiskScoreIsMonotoneInParticipationTest`
+- `combinedStochasticRiskRaisesSigmaWithoutSingleHardSignalTest`
+- `criticalStochasticRiskForcesMaxSigmaTest`
+- `blockIntervalVarianceCanRaiseSigmaTest`
 - `raisedSigmaCanStabilizeMovingPowSampleTest`
 - `observedReorgRaisesLiveSigmaTest`
 - `observedLowHashParticipationRaisesLiveSigmaTest`
@@ -288,7 +295,10 @@ adjacent rounds, but `head - raisedSigma` remains on the same deeper ancestor.
 The reorg-depth witnesses add a third input: observed rollback depth forces the
 controller to move one rung deeper, so an execution that is still healthy by
 participation can nevertheless raise sigma after a reorg reaches the current
-floor.
+floor. The stochastic-risk witnesses add the combined-signal case: moderate
+coverage risk, recent round failures, and block-interval variance can raise
+sigma together even when none of the old individual floors would have done so
+alone; sufficiently high combined risk forces the maximum sigma.
 
 Witness dynamic sigma consuming derived PoW rollback depth:
 
@@ -592,12 +602,12 @@ safety invariants and the finalized-prefix safety invariants.
 
 The dynamic-sigma harness checks a bounded controller invariant: live sigma
 remains within the configured ladder, never falls below the floor implied by
-observed hash-power participation or observed reorg depth, tracks the
-`head - sigma` snapshot selected for the current round, and uses a monotone
-participation floor where lower participation cannot require a lower sigma than
-higher participation. This is still a controller sketch, not a calibrated
-stochastic model; it does not yet derive the thresholds from measured hashrate
-coverage, block interval variance, or reorg distributions.
+observed hash-power participation, observed reorg depth, or the calibrated
+stochastic-risk score, tracks the `head - sigma` snapshot selected for the
+current round, and uses monotone risk surfaces where lower participation cannot
+require a lower sigma than higher participation. The weights and thresholds are
+still fixtures; the model captures the controller shape, not production
+economic calibration.
 
 The dynamic-sigma/fork-schedule composition reports no violation for
 `DerivedSafety`, which combines:
@@ -632,10 +642,9 @@ The full dynamic-sigma/resampling/finality composition reports no violation for
 
 This model is intentionally narrow. The next useful extensions are:
 
-- refine `CrosslinkDynamicSigma.qnt` with a calibrated stochastic controller
-  that uses measured hash-power participation, round-failure rate, block
-  interval variance, and observed reorg depth rather than the current three-step
-  sigma ladder
+- calibrate the dynamic-sigma risk weights and thresholds against measured
+  hash-power participation, round-failure rate, block interval variance, and
+  observed reorg distributions
 - replace the fixed fork schedule with generated PoW branch competition and
   adversarial mining schedules
 - add BFT heights so successive Tenderlink decisions update Crosslink finality
