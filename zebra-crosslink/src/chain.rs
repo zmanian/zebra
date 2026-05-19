@@ -122,6 +122,35 @@ impl DynamicSigmaBftBlockPayload {
             block,
         })
     }
+
+    /// Validate that this payload's evidence permits exactly the carried block.
+    pub fn validate(
+        &self,
+        dynamic_sigma_params: DynamicSigmaParameters,
+    ) -> Result<(), InvalidDynamicSigmaBftBlock> {
+        let evidence_validated_block = BftBlock::try_from_with_dynamic_sigma_evidence(
+            dynamic_sigma_params,
+            self.evidence,
+            self.block.height,
+            self.block.previous_block_fat_ptr.clone(),
+            self.block.finalization_candidate_height,
+            self.block.headers.clone(),
+        )?;
+
+        let expected_bytes = evidence_validated_block
+            .zcash_serialize_to_vec()
+            .map_err(|_| InvalidDynamicSigmaBftBlock::PayloadBlockMismatch)?;
+        let actual_bytes = self
+            .block
+            .zcash_serialize_to_vec()
+            .map_err(|_| InvalidDynamicSigmaBftBlock::PayloadBlockMismatch)?;
+
+        if expected_bytes != actual_bytes {
+            return Err(InvalidDynamicSigmaBftBlock::PayloadBlockMismatch);
+        }
+
+        Ok(())
+    }
 }
 
 impl ZcashSerialize for DynamicSigmaBftBlockPayload {
@@ -331,6 +360,9 @@ pub enum InvalidDynamicSigmaBftBlock {
     /// The BFT block content does not satisfy the selected sigma.
     #[error("invalid dynamic sigma BFT block: {0}")]
     BftBlock(InvalidBftBlock),
+    /// The payload block does not match the block permitted by the evidence.
+    #[error("dynamic sigma payload block does not match the evidence-validated block")]
+    PayloadBlockMismatch,
 }
 
 /// Zcash Crosslink protocol parameters
@@ -686,6 +718,52 @@ mod tests {
             Err(SerializationError::Parse(
                 "invalid dynamic sigma BFT payload magic"
             ))
+        ));
+    }
+
+    #[test]
+    fn dynamic_sigma_bft_block_payload_validates_constructed_payload() {
+        let headers = vec![
+            test_header(BlockHash([0; 32])),
+            test_header(BlockHash([1; 32])),
+            test_header(BlockHash([2; 32])),
+        ];
+        let payload = DynamicSigmaBftBlockPayload::try_from_with_evidence(
+            dynamic_sigma_params(),
+            dynamic_sigma_evidence(63, 3),
+            1,
+            FatPointerToBftBlock2::null(),
+            10,
+            headers,
+        )
+        .expect("valid dynamic-sigma evidence should build a payload");
+
+        payload
+            .validate(dynamic_sigma_params())
+            .expect("constructed dynamic-sigma payload should validate");
+    }
+
+    #[test]
+    fn dynamic_sigma_bft_block_payload_validation_rejects_evidence_block_mismatch() {
+        let headers = vec![
+            test_header(BlockHash([0; 32])),
+            test_header(BlockHash([1; 32])),
+            test_header(BlockHash([2; 32])),
+        ];
+        let mut payload = DynamicSigmaBftBlockPayload::try_from_with_evidence(
+            dynamic_sigma_params(),
+            dynamic_sigma_evidence(63, 3),
+            1,
+            FatPointerToBftBlock2::null(),
+            10,
+            headers,
+        )
+        .expect("valid dynamic-sigma evidence should build a payload");
+        payload.block.version = 2;
+
+        assert!(matches!(
+            payload.validate(dynamic_sigma_params()),
+            Err(InvalidDynamicSigmaBftBlock::PayloadBlockMismatch)
         ));
     }
 }

@@ -123,7 +123,9 @@ The proposal evidence structs now have deterministic Zcash serialization, and
 `DynamicSigmaBftBlockPayload` defines a tagged payload envelope containing the
 evidence followed by the BFT block. The remaining live-wiring step is adopting
 that envelope in the Tenderlink proposal, validation, and decided-block
-callbacks.
+callbacks. The envelope also has a validation helper that replays evidence
+validation and rejects carried blocks that do not match the evidence-selected
+block.
 
 ## Failure Modes
 
@@ -161,8 +163,8 @@ A production implementation of the dynamic-sigma variant should provide:
 - tests showing that dynamic sigma changes do not make honest validators reject
   each other's otherwise valid proposals; the pure Rust proposal-evidence
   verifier and BFT block-construction helper cover identical evidence
-  determinism, evidence serialization, tagged payload encoding, below-floor
-  rejection, and selected-sigma header depth, but live consensus proposal
-  integration still needs tests
+  determinism, evidence serialization, tagged payload encoding, payload/block
+  mismatch rejection, below-floor rejection, and selected-sigma header depth, but
+  live consensus proposal integration still needs tests
 - Quint coverage connecting the implemented telemetry rules back to
   `CrosslinkDynamicSigmaTelemetry.qnt`
