@@ -30,6 +30,7 @@ module CrosslinkDynamicSigma {
   const CriticalHashParticipationPct: Pct_t
   const HashParticipationPct: Round_t -> Pct_t
   const RoundFailed: Round_t -> bool
+  const ObservedReorgDepth: Round_t -> int
   const Snapshots: Set[Snapshot_t]
   const SnapshotAtSigma: Round_t -> Sigma_t -> Snapshot_t
 
@@ -48,6 +49,10 @@ module CrosslinkDynamicSigma {
   assume observed_participation_is_percentage =
     Rounds.forall(r =>
       0 <= HashParticipationPct.get(r) and HashParticipationPct.get(r) <= 100
+    )
+  assume observed_reorg_depth_is_bounded =
+    Rounds.forall(r =>
+      0 <= ObservedReorgDepth.get(r) and ObservedReorgDepth.get(r) <= MaxSigma
     )
   assume sampled_snapshots_are_valid =
     Rounds.forall(r =>
@@ -75,6 +80,15 @@ module CrosslinkDynamicSigma {
       BaseSigma
     }
 
+  pure def ReorgSigmaFloor(depth: int): Sigma_t =
+    if (depth >= RaisedSigma) {
+      MaxSigma
+    } else if (depth >= BaseSigma) {
+      RaisedSigma
+    } else {
+      BaseSigma
+    }
+
   pure def EscalatedSigma(current: Sigma_t): Sigma_t =
     if (current < RaisedSigma) {
       RaisedSigma
@@ -82,15 +96,26 @@ module CrosslinkDynamicSigma {
       MaxSigma
     }
 
+  pure def ControllerSigmaWithReorg(
+    previousSigma: Sigma_t,
+    nextHashParticipationPct: Pct_t,
+    previousRoundFailed: bool,
+    nextObservedReorgDepth: int
+  ): Sigma_t =
+    MaxInt(
+      ReorgSigmaFloor(nextObservedReorgDepth),
+      MaxInt(
+        HashParticipationSigmaFloor(nextHashParticipationPct),
+        if (previousRoundFailed) { EscalatedSigma(previousSigma) } else { BaseSigma }
+      )
+    )
+
   pure def ControllerSigma(
     previousSigma: Sigma_t,
     nextHashParticipationPct: Pct_t,
     previousRoundFailed: bool
   ): Sigma_t =
-    MaxInt(
-      HashParticipationSigmaFloor(nextHashParticipationPct),
-      if (previousRoundFailed) { EscalatedSigma(previousSigma) } else { BaseSigma }
-    )
+    ControllerSigmaWithReorg(previousSigma, nextHashParticipationPct, previousRoundFailed, 0)
 
   pure def ControllerStatusFor(pct: Pct_t): str =
     if (pct < CriticalHashParticipationPct) {
@@ -129,10 +154,12 @@ module CrosslinkDynamicSigma {
     val oldRound = round
     val nextRound = oldRound + 1
     val nextHashParticipation = HashParticipationPct.get(nextRound)
-    val nextSigma = ControllerSigma(
+    val nextReorgDepth = ObservedReorgDepth.get(nextRound)
+    val nextSigma = ControllerSigmaWithReorg(
       sigma,
       nextHashParticipation,
-      RoundFailed.get(oldRound)
+      RoundFailed.get(oldRound),
+      nextReorgDepth
     )
     all {
       nextRound.in(Rounds),
@@ -144,6 +171,8 @@ module CrosslinkDynamicSigma {
       firedAction' =
         if (RoundFailed.get(oldRound)) {
           "AdvanceAfterRoundFailure"
+        } else if (nextReorgDepth >= BaseSigma) {
+          "AdvanceAfterObservedReorg"
         } else if (nextHashParticipation < TargetHashParticipationPct) {
           "AdvanceWithLowHashParticipation"
         } else {
@@ -173,6 +202,9 @@ module CrosslinkDynamicSigma {
   val SigmaRespectsHashParticipationFloor =
     sigma >= HashParticipationSigmaFloor(HashParticipationPct.get(round))
 
+  val SigmaRespectsObservedReorgFloor =
+    sigma >= ReorgSigmaFloor(ObservedReorgDepth.get(round))
+
   val SampledSnapshotIsValid =
     Snapshots.contains(sampledSnapshot)
 
@@ -196,6 +228,7 @@ module CrosslinkDynamicSigma {
   val Safety =
     SigmaWithinBounds and
     SigmaRespectsHashParticipationFloor and
+    SigmaRespectsObservedReorgFloor and
     SampledSnapshotIsValid and
     SampledSnapshotMatchesSigma and
     SampleStabilityMatchesSigma and
@@ -237,6 +270,11 @@ module CrosslinkDynamicSigmaTest {
     assert(ControllerSigma(BaseSigma, CriticalHashParticipationPct - 1, false) == MaxSigma)
   }
 
+  run adversarialReorgDepthRaisesSigmaFloorTest = all {
+    assert(ReorgSigmaFloor(BaseSigma) == RaisedSigma),
+    assert(ReorgSigmaFloor(RaisedSigma) == MaxSigma),
+  }
+
   run hashParticipationSigmaFloorIsMonotoneTest = {
     assert(HashParticipationFloorIsMonotone)
   }
@@ -246,8 +284,24 @@ module CrosslinkDynamicSigmaTest {
     assert(SampleStableAcross(0, 1, RaisedSigma)),
   }
 
+  run observedReorgRaisesLiveSigmaTest = {
+    Init
+      .then(AdvanceRound)
+      .then(AdvanceRound)
+      .then(all {
+        assert(sigma == RaisedSigma),
+        assert(firedAction == "AdvanceAfterObservedReorg"),
+        assert(controllerStatus == "healthy-hash-participation"),
+        assert(sampledSnapshot == "deep-a"),
+        assert(sampleStability == "stable-under-current-sigma"),
+        assert(Safety),
+        Stutter,
+      })
+  }
+
   run observedLowHashParticipationRaisesLiveSigmaTest = {
     Init
+      .then(AdvanceRound)
       .then(AdvanceRound)
       .then(AdvanceRound)
       .then(all {
@@ -266,6 +320,7 @@ module CrosslinkDynamicSigmaTest {
       .then(AdvanceRound)
       .then(AdvanceRound)
       .then(AdvanceRound)
+      .then(AdvanceRound)
       .then(all {
         assert(sigma == MaxSigma),
         assert(firedAction == "AdvanceWithLowHashParticipation"),
@@ -280,7 +335,7 @@ module CrosslinkDynamicSigmaTest {
 
 module CrosslinkDynamicSigmaHashParticipationModel {
   import CrosslinkDynamicSigmaTest(
-    MaxRound = 3,
+    MaxRound = 4,
     BaseSigma = 1,
     RaisedSigma = 3,
     MaxSigma = 6,
@@ -289,14 +344,23 @@ module CrosslinkDynamicSigmaHashParticipationModel {
     HashParticipationPct = Map(
       0 -> 90,
       1 -> 90,
-      2 -> 66,
-      3 -> 45,
+      2 -> 90,
+      3 -> 66,
+      4 -> 45,
     ),
     RoundFailed = Map(
       0 -> true,
       1 -> false,
       2 -> false,
       3 -> false,
+      4 -> false,
+    ),
+    ObservedReorgDepth = Map(
+      0 -> 0,
+      1 -> 0,
+      2 -> 1,
+      3 -> 0,
+      4 -> 0,
     ),
     Snapshots = Set("tip-a0", "tip-b1", "tip-c2", "tip-d3", "deep-a", "final-a"),
     SnapshotAtSigma = Map(
@@ -316,6 +380,11 @@ module CrosslinkDynamicSigmaHashParticipationModel {
         6 -> "final-a",
       ),
       3 -> Map(
+        1 -> "tip-d3",
+        3 -> "deep-a",
+        6 -> "final-a",
+      ),
+      4 -> Map(
         1 -> "tip-d3",
         3 -> "deep-a",
         6 -> "final-a",

@@ -42,7 +42,10 @@ critical hash-participation threshold, the model forces the maximum sigma and
 marks the controller state as degraded. The bounded fixture also makes the
 `head - sigma` sample explicit: base sigma sees adjacent tip churn, while a
 raised sigma samples a deeper ancestor that remains stable across the same
-round boundary.
+round boundary. The controller also accepts an observed reorg-depth schedule:
+if an adversarial or accidental reorg reaches the current depth, sigma moves to
+the next configured floor even when hash participation is healthy and the
+previous BFT round did not fail.
 
 ## Upstream Base
 
@@ -219,8 +222,10 @@ This runs:
 - `roundFailureEscalatesSigmaEvenWithHighHashParticipationTest`
 - `lowHashParticipationRaisesSigmaFloorWithoutRoundFailureTest`
 - `criticalHashParticipationForcesMaxSigmaTest`
+- `adversarialReorgDepthRaisesSigmaFloorTest`
 - `hashParticipationSigmaFloorIsMonotoneTest`
 - `raisedSigmaCanStabilizeMovingPowSampleTest`
+- `observedReorgRaisesLiveSigmaTest`
 - `observedLowHashParticipationRaisesLiveSigmaTest`
 - `observedCriticalHashParticipationForcesLiveMaxSigmaTest`
 
@@ -232,6 +237,10 @@ stream. Lower participation therefore raises the sigma floor even if the current
 round has not failed. The `raisedSigmaCanStabilizeMovingPowSampleTest` fixture
 shows the expected sampling effect directly: `head - baseSigma` changes across
 adjacent rounds, but `head - raisedSigma` remains on the same deeper ancestor.
+The reorg-depth witnesses add a third input: observed rollback depth forces the
+controller to move one rung deeper, so an execution that is still healthy by
+participation can nevertheless raise sigma after a reorg reaches the current
+floor.
 
 Randomized Rust-backend safety simulation:
 
@@ -300,7 +309,7 @@ $QUINT run spec/quint/CrosslinkDynamicSigma.qnt \
   --main=CrosslinkDynamicSigmaHashParticipationModel \
   --init=Init \
   --step=Next \
-  --max-steps=6 \
+  --max-steps=7 \
   --max-samples=1000 \
   --invariant=Safety \
   --backend=rust \
@@ -354,7 +363,7 @@ $QUINT verify spec/quint/CrosslinkComposed.qnt \
 
 $QUINT verify spec/quint/CrosslinkDynamicSigma.qnt \
   --main=CrosslinkDynamicSigmaHashParticipationModel \
-  --max-steps=6 \
+  --max-steps=7 \
   --init=Init \
   --step=Next \
   --invariant=Safety
@@ -397,12 +406,12 @@ safety invariants and the finalized-prefix safety invariants.
 
 The dynamic-sigma harness checks a bounded controller invariant: live sigma
 remains within the configured ladder, never falls below the floor implied by
-observed hash-power participation, tracks the `head - sigma` snapshot selected
-for the current round, and uses a monotone floor where lower participation cannot
-require a lower sigma than higher participation. This is still a controller
-sketch, not a calibrated stochastic model; it does not yet derive the thresholds
-from measured hashrate coverage, block interval variance, or reorg
-distributions.
+observed hash-power participation or observed reorg depth, tracks the
+`head - sigma` snapshot selected for the current round, and uses a monotone
+participation floor where lower participation cannot require a lower sigma than
+higher participation. This is still a controller sketch, not a calibrated
+stochastic model; it does not yet derive the thresholds from measured hashrate
+coverage, block interval variance, or reorg distributions.
 
 ## Next Extensions
 
@@ -414,6 +423,9 @@ This model is intentionally narrow. The next useful extensions are:
   that uses measured hash-power participation, round-failure rate, block
   interval variance, and observed reorg depth rather than the current three-step
   sigma ladder
+- turn the observed reorg-depth schedule into generated PoW fork transitions,
+  so rollback depth is derived from branch competition rather than supplied as
+  a controller input
 - add BFT heights so successive Tenderlink decisions update Crosslink finality
   directly
 - port the full upstream Tendermint accountability evidence model into the
