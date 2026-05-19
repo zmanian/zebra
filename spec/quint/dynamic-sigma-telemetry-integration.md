@@ -127,6 +127,14 @@ callbacks. The envelope also has a validation helper that replays evidence
 validation and rejects carried blocks that do not match the evidence-selected
 block.
 
+The live Tenderlink callbacks now decode proposal bytes through an explicit
+payload router. Legacy fixed-sigma `BftBlock` bytes are still accepted by the
+current prototype path. Tagged dynamic-sigma payloads are recognized but
+rejected until shared dynamic-sigma parameters and proposal-verifiable telemetry
+are wired into the callback path. This preserves backward compatibility while
+preventing a dynamic-sigma payload from being silently treated as a fixed-sigma
+block.
+
 ## Failure Modes
 
 The production controller needs guardrails for adversarial telemetry:
@@ -164,7 +172,8 @@ A production implementation of the dynamic-sigma variant should provide:
   each other's otherwise valid proposals; the pure Rust proposal-evidence
   verifier and BFT block-construction helper cover identical evidence
   determinism, evidence serialization, tagged payload encoding, payload/block
-  mismatch rejection, below-floor rejection, and selected-sigma header depth, but
-  live consensus proposal integration still needs tests
+  mismatch rejection, fixed-vs-dynamic payload routing, below-floor rejection,
+  and selected-sigma header depth, but live dynamic proposal acceptance still
+  needs shared parameters and telemetry-source tests
 - Quint coverage connecting the implemented telemetry rules back to
   `CrosslinkDynamicSigmaTelemetry.qnt`

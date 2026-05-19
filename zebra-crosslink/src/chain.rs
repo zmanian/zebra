@@ -97,6 +97,38 @@ pub struct DynamicSigmaBftBlockPayload {
     pub block: BftBlock,
 }
 
+/// A decoded Tenderlink BFT block payload.
+///
+/// This routes the legacy fixed-sigma block serialization and the tagged
+/// dynamic-sigma envelope without letting one format be accidentally parsed as
+/// the other.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BftBlockPayload {
+    /// Legacy fixed-sigma BFT block bytes.
+    FixedSigma(BftBlock),
+    /// Tagged dynamic-sigma evidence plus BFT block bytes.
+    DynamicSigma(DynamicSigmaBftBlockPayload),
+}
+
+impl BftBlockPayload {
+    /// Decode a Tenderlink payload from bytes.
+    pub fn zcash_deserialize_from_slice(bytes: &[u8]) -> Result<Self, SerializationError> {
+        if bytes.starts_with(&DYNAMIC_SIGMA_BFT_BLOCK_PAYLOAD_MAGIC) {
+            DynamicSigmaBftBlockPayload::zcash_deserialize(bytes).map(Self::DynamicSigma)
+        } else {
+            BftBlock::zcash_deserialize(bytes).map(Self::FixedSigma)
+        }
+    }
+
+    /// Return the carried BFT block regardless of payload variant.
+    pub fn block(&self) -> &BftBlock {
+        match self {
+            Self::FixedSigma(block) => block,
+            Self::DynamicSigma(payload) => &payload.block,
+        }
+    }
+}
+
 impl DynamicSigmaBftBlockPayload {
     /// Attempt to construct a dynamic-sigma payload from proposal-carried
     /// evidence and BFT block fields.
@@ -765,5 +797,73 @@ mod tests {
             payload.validate(dynamic_sigma_params()),
             Err(InvalidDynamicSigmaBftBlock::PayloadBlockMismatch)
         ));
+    }
+
+    #[test]
+    fn bft_block_payload_decodes_legacy_fixed_sigma_block() {
+        let headers = vec![
+            test_header(BlockHash([0; 32])),
+            test_header(BlockHash([1; 32])),
+            test_header(BlockHash([2; 32])),
+        ];
+        let block = BftBlock::try_from_with_confirmation_depth(
+            3,
+            1,
+            FatPointerToBftBlock2::null(),
+            10,
+            headers,
+        )
+        .expect("matching fixed sigma depth should build a block");
+        let encoded = block
+            .zcash_serialize_to_vec()
+            .expect("block serialization should succeed");
+
+        let decoded = BftBlockPayload::zcash_deserialize_from_slice(encoded.as_slice())
+            .expect("fixed-sigma payload should decode");
+
+        assert!(matches!(decoded, BftBlockPayload::FixedSigma(_)));
+        assert_eq!(
+            decoded
+                .block()
+                .zcash_serialize_to_vec()
+                .expect("decoded block serialization should succeed"),
+            encoded,
+        );
+    }
+
+    #[test]
+    fn bft_block_payload_decodes_tagged_dynamic_sigma_payload() {
+        let headers = vec![
+            test_header(BlockHash([0; 32])),
+            test_header(BlockHash([1; 32])),
+            test_header(BlockHash([2; 32])),
+        ];
+        let payload = DynamicSigmaBftBlockPayload::try_from_with_evidence(
+            dynamic_sigma_params(),
+            dynamic_sigma_evidence(63, 3),
+            1,
+            FatPointerToBftBlock2::null(),
+            10,
+            headers,
+        )
+        .expect("valid dynamic-sigma evidence should build a payload");
+        let encoded = payload
+            .zcash_serialize_to_vec()
+            .expect("payload serialization should succeed");
+
+        let decoded = BftBlockPayload::zcash_deserialize_from_slice(encoded.as_slice())
+            .expect("dynamic-sigma payload should decode");
+
+        assert!(matches!(decoded, BftBlockPayload::DynamicSigma(_)));
+        assert_eq!(
+            decoded
+                .block()
+                .zcash_serialize_to_vec()
+                .expect("decoded block serialization should succeed"),
+            payload
+                .block
+                .zcash_serialize_to_vec()
+                .expect("payload block serialization should succeed"),
+        );
     }
 }

@@ -530,6 +530,28 @@ enum BftValidationMode {
     Decided,
 }
 
+#[derive(Debug, Eq, PartialEq)]
+enum TenderlinkPayloadDecodeError {
+    DynamicSigmaUnsupported,
+    Invalid,
+}
+
+fn decode_fixed_sigma_tenderlink_payload(
+    bytes: &[u8],
+) -> Result<BftBlock, TenderlinkPayloadDecodeError> {
+    if bytes.starts_with(&DYNAMIC_SIGMA_BFT_BLOCK_PAYLOAD_MAGIC) {
+        return Err(TenderlinkPayloadDecodeError::DynamicSigmaUnsupported);
+    }
+
+    match BftBlockPayload::zcash_deserialize_from_slice(bytes) {
+        Ok(BftBlockPayload::FixedSigma(block)) => Ok(block),
+        Ok(BftBlockPayload::DynamicSigma(_)) => {
+            Err(TenderlinkPayloadDecodeError::DynamicSigmaUnsupported)
+        }
+        Err(_) => Err(TenderlinkPayloadDecodeError::Invalid),
+    }
+}
+
 fn fat_pointer_has_roster_quorum(
     fat_pointer: &FatPointerToBftBlock2,
     roster: &[MalValidator],
@@ -1347,29 +1369,43 @@ async fn tfl_service_main_loop(internal_handle: TFLServiceHandle) -> Result<(), 
             tenderlink::ClosureToValidateProposedBlock(Arc::new(move |block| {
                 let tfl_handle2 = tfl_handle2.clone();
                 Box::pin(async move {
-                    use bytes::Buf;
-                    use zebra_chain::serialization::ZcashDeserialize;
-
-                    if let Ok(bft_block) = BftBlock::zcash_deserialize(block.0.reader()) {
-                        validate_bft_block_from_malachite(&tfl_handle2, &bft_block).await
-                    } else {
-                        error!("Failed to deserialize Tenderlink payload.");
-                        tenderlink::TMStatus::Fail
+                    match decode_fixed_sigma_tenderlink_payload(block.0.as_slice()) {
+                        Ok(bft_block) => {
+                            validate_bft_block_from_malachite(&tfl_handle2, &bft_block).await
+                        }
+                        Err(TenderlinkPayloadDecodeError::DynamicSigmaUnsupported) => {
+                            error!("Dynamic-sigma Tenderlink payload rejected: dynamic params and telemetry are not wired yet.");
+                            tenderlink::TMStatus::Fail
+                        }
+                        Err(TenderlinkPayloadDecodeError::Invalid) => {
+                            error!("Failed to deserialize Tenderlink payload.");
+                            tenderlink::TMStatus::Fail
+                        }
                     }
                 })
             })),
             tenderlink::ClosureToPushDecidedBlock(Arc::new(move |block, fat_pointer| {
                 let tfl_handle3 = tfl_handle3.clone();
                 Box::pin(async move {
-                    use bytes::Buf;
-                    use zebra_chain::serialization::ZcashDeserialize;
-
-                    new_decided_bft_block_from_malachite(
-                        &tfl_handle3,
-                        &BftBlock::zcash_deserialize(block.0.reader()).unwrap(),
-                        &fat_pointer.into(),
-                    )
-                    .await
+                    match decode_fixed_sigma_tenderlink_payload(block.0.as_slice()) {
+                        Ok(bft_block) => {
+                            new_decided_bft_block_from_malachite(
+                                &tfl_handle3,
+                                &bft_block,
+                                &fat_pointer.into(),
+                            )
+                            .await
+                        }
+                        Err(err) => {
+                            error!(?err, "Rejected decided Tenderlink payload.");
+                            let validators =
+                                malachite_wants_to_know_what_the_current_validator_set_is(
+                                    &tfl_handle3,
+                                )
+                                .await;
+                            tenderlink_roster_from_internal(&validators)
+                        }
+                    }
                 })
             })),
             tenderlink::ClosureToGetHistoricalBlock(Arc::new(move |height| {
@@ -2265,5 +2301,32 @@ mod tests {
     #[test]
     fn finality_candidate_height_at_depth_rejects_underflow() {
         assert_eq!(finality_candidate_height_at_depth(BlockHeight(2), 3), None);
+    }
+
+    #[test]
+    fn fixed_sigma_tenderlink_payload_decoder_accepts_legacy_block() {
+        let block = BftBlock {
+            version: 1,
+            height: 1,
+            previous_block_fat_ptr: FatPointerToBftBlock2::null(),
+            finalization_candidate_height: 10,
+            headers: Vec::new(),
+        };
+        let encoded = block
+            .zcash_serialize_to_vec()
+            .expect("block serialization should succeed");
+
+        let decoded = decode_fixed_sigma_tenderlink_payload(encoded.as_slice())
+            .expect("legacy fixed-sigma payload should decode");
+
+        assert_eq!(decoded, block);
+    }
+
+    #[test]
+    fn fixed_sigma_tenderlink_payload_decoder_rejects_dynamic_tag_until_enabled() {
+        assert_eq!(
+            decode_fixed_sigma_tenderlink_payload(&DYNAMIC_SIGMA_BFT_BLOCK_PAYLOAD_MAGIC),
+            Err(TenderlinkPayloadDecodeError::DynamicSigmaUnsupported)
+        );
     }
 }
