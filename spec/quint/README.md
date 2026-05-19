@@ -110,7 +110,10 @@ mixed-evidence labels into those counters, while rejecting failure-reason
 overcounts. `observed_hash_work_participation` aggregates source-side PoW work
 observations into the total-work denominator and verified-participating
 numerator, so work without objective Crosslink participation evidence is counted
-conservatively as non-participating. `hash_work_observation_from_header` and
+conservatively as non-participating. The regression tests now include a skewed
+window where fewer high-work non-participating observations outweigh more
+participating observations, ensuring the sigma input is percentage of hash
+power rather than observation count. `hash_work_observation_from_header` and
 `hash_work_observations_from_headers` now derive that source signal from PoW
 headers by converting compact difficulty into work and treating the current
 non-null Crosslink fat pointer as the objective participation marker. This keeps
@@ -540,11 +543,14 @@ reconstructing private proposer state. The prototype service now owns an
 in-process hysteresis state and advances it after successfully encoding a
 dynamic proposal. The hysteresis policy and state now have deterministic Zcash
 serialization, giving a production source a stable persistence or
-proposal-carried encoding. Production still needs a durable, consensus-safe or
-proposal-verifiable source for that state before this becomes a deployed
-controller rule. The live proposal callback builds a single proposal plan, so
-the same dynamic-sigma evidence supplies both the BFT block construction depth
-and the encoded payload instead of running selection twice.
+proposal-carried encoding. The typed Rust selection helper now distinguishes
+disabled hysteresis from durable-local and proposal-carried state sources:
+disabled selection emits no next state, while the enabled modes return the next
+state to persist or carry. Production still needs to choose the durable,
+consensus-safe or proposal-verifiable source for that state before this becomes
+a deployed controller rule. The live proposal callback builds a single proposal
+plan, so the same dynamic-sigma evidence supplies both the BFT block
+construction depth and the encoded payload instead of running selection twice.
 
 Witness dynamic-sigma hysteresis:
 
@@ -1180,9 +1186,10 @@ This model is intentionally narrow. The next useful extensions are:
   callback reuses that planned evidence for both depth selection and payload
   encoding, then advances the prototype service's in-process hysteresis state
   after successful encoding. The hysteresis policy/state now have deterministic
-  Zcash serialization for a future durable or proposal-carried state source. The
-  remaining work is replacing the fixture with consensus-safe or
-  proposal-verifiable input producers and a durable production hysteresis state
-  source
+  Zcash serialization for a future durable or proposal-carried state source, and
+  the selection helper now models disabled, durable-local, and proposal-carried
+  source policies explicitly. The remaining work is replacing the fixture with
+  consensus-safe or proposal-verifiable input producers and configuring the
+  production hysteresis state source
 - refine the split projection checks into smaller inductive lemmas if bounds
   beyond the checked depth-10 projections still need very large JVM/Z3 heaps

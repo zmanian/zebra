@@ -434,6 +434,26 @@ pub struct DynamicSigmaHysteresisState {
     pub stable_windows_below_current: u64,
 }
 
+/// Source policy for dynamic-sigma hysteresis state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DynamicSigmaHysteresisStateSource {
+    /// Hysteresis is disabled; proposals select the raw required sigma floor.
+    Disabled,
+    /// Hysteresis state is stored in a local durable source.
+    DurableLocal(DynamicSigmaHysteresisState),
+    /// Hysteresis state is carried with proposal-verifiable evidence.
+    ProposalCarried(DynamicSigmaHysteresisState),
+}
+
+/// Proposal evidence selected using a typed hysteresis state source.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DynamicSigmaHysteresisStateSourceSelection {
+    /// Proposal-carried dynamic-sigma evidence.
+    pub proposal_evidence: DynamicSigmaProposalEvidence,
+    /// Next hysteresis state to persist or carry, if hysteresis is enabled.
+    pub next_state: Option<DynamicSigmaHysteresisState>,
+}
+
 /// Dynamic-sigma selection after applying hysteresis to the required floor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DynamicSigmaHysteresisSelection {
@@ -1149,6 +1169,44 @@ pub fn select_dynamic_sigma_proposal_evidence_with_hysteresis(
         },
         next_hysteresis_state,
     ))
+}
+
+/// Select proposal evidence using an explicit hysteresis state source policy.
+pub fn select_dynamic_sigma_proposal_evidence_with_hysteresis_source(
+    params: DynamicSigmaParameters,
+    raw_telemetry: DynamicSigmaRawTelemetry,
+    margins: TelemetryEstimateMargins,
+    hysteresis_policy: DynamicSigmaHysteresisParameters,
+    state_source: DynamicSigmaHysteresisStateSource,
+) -> Result<DynamicSigmaHysteresisStateSourceSelection, DynamicSigmaProposalEvidenceSelectionError>
+{
+    match state_source {
+        DynamicSigmaHysteresisStateSource::Disabled => {
+            let proposal_evidence =
+                select_dynamic_sigma_proposal_evidence(params, raw_telemetry, margins)?;
+
+            Ok(DynamicSigmaHysteresisStateSourceSelection {
+                proposal_evidence,
+                next_state: None,
+            })
+        }
+        DynamicSigmaHysteresisStateSource::DurableLocal(hysteresis_state)
+        | DynamicSigmaHysteresisStateSource::ProposalCarried(hysteresis_state) => {
+            let (proposal_evidence, next_state) =
+                select_dynamic_sigma_proposal_evidence_with_hysteresis(
+                    params,
+                    raw_telemetry,
+                    margins,
+                    hysteresis_policy,
+                    hysteresis_state,
+                )?;
+
+            Ok(DynamicSigmaHysteresisStateSourceSelection {
+                proposal_evidence,
+                next_state: Some(next_state),
+            })
+        }
+    }
 }
 
 /// Select proposal-carried dynamic-sigma evidence from production-shaped components.
@@ -1995,6 +2053,74 @@ mod tests {
     }
 
     #[test]
+    fn hysteresis_state_source_disabled_selects_required_sigma() {
+        let selection = select_dynamic_sigma_proposal_evidence_with_hysteresis_source(
+            params(),
+            raw_telemetry(90, 0),
+            TelemetryEstimateMargins::default(),
+            hysteresis_policy(),
+            DynamicSigmaHysteresisStateSource::Disabled,
+        )
+        .expect("disabled hysteresis source should select evidence");
+
+        assert_eq!(
+            selection.proposal_evidence.selected_sigma,
+            params().base_sigma
+        );
+        assert_eq!(selection.next_state, None);
+    }
+
+    #[test]
+    fn hysteresis_state_source_durable_local_applies_state() {
+        let selection = select_dynamic_sigma_proposal_evidence_with_hysteresis_source(
+            params(),
+            raw_telemetry(90, 0),
+            TelemetryEstimateMargins::default(),
+            hysteresis_policy(),
+            DynamicSigmaHysteresisStateSource::DurableLocal(DynamicSigmaHysteresisState {
+                current_sigma: params().max_sigma,
+                stable_windows_below_current: 0,
+            }),
+        )
+        .expect("durable hysteresis source should apply state");
+
+        let next_state = DynamicSigmaHysteresisState {
+            current_sigma: params().max_sigma,
+            stable_windows_below_current: 1,
+        };
+        assert_eq!(
+            selection.proposal_evidence.selected_sigma,
+            params().max_sigma
+        );
+        assert_eq!(selection.next_state, Some(next_state));
+    }
+
+    #[test]
+    fn hysteresis_state_source_proposal_carried_applies_state() {
+        let selection = select_dynamic_sigma_proposal_evidence_with_hysteresis_source(
+            params(),
+            raw_telemetry(45, 0),
+            TelemetryEstimateMargins::default(),
+            hysteresis_policy(),
+            DynamicSigmaHysteresisStateSource::ProposalCarried(DynamicSigmaHysteresisState {
+                current_sigma: params().base_sigma,
+                stable_windows_below_current: 3,
+            }),
+        )
+        .expect("proposal-carried hysteresis source should apply state");
+
+        let next_state = DynamicSigmaHysteresisState {
+            current_sigma: params().max_sigma,
+            stable_windows_below_current: 0,
+        };
+        assert_eq!(
+            selection.proposal_evidence.selected_sigma,
+            params().max_sigma
+        );
+        assert_eq!(selection.next_state, Some(next_state));
+    }
+
+    #[test]
     fn hysteresis_selection_raises_immediately_on_low_participation() {
         let selection = select_dynamic_sigma_with_hysteresis(
             params(),
@@ -2101,6 +2227,43 @@ mod tests {
         assert_eq!(healthy_sigma, params().base_sigma);
         assert_eq!(degraded_sigma, params().raised_sigma);
         assert_eq!(critical_sigma, params().max_sigma);
+    }
+
+    #[test]
+    fn hash_work_participation_is_work_weighted_not_observation_counted() {
+        let observations = [
+            DynamicSigmaHashWorkObservation {
+                hash_work: 10,
+                participation: DynamicSigmaHashParticipation::VerifiedParticipating,
+            },
+            DynamicSigmaHashWorkObservation {
+                hash_work: 10,
+                participation: DynamicSigmaHashParticipation::VerifiedParticipating,
+            },
+            DynamicSigmaHashWorkObservation {
+                hash_work: 80,
+                participation: DynamicSigmaHashParticipation::NotVerifiedParticipating,
+            },
+        ];
+
+        let hash_work = observed_hash_work_participation(&observations)
+            .expect("hash-work observations should assemble");
+        let decision = decide(window(
+            hash_work.crosslink_participating_hash_work,
+            0,
+            80,
+            0,
+            0,
+            0,
+            low_risk_curve(),
+            1000,
+            100,
+        ));
+
+        assert_eq!(hash_work.total_hash_work, 100);
+        assert_eq!(hash_work.crosslink_participating_hash_work, 20);
+        assert_eq!(decision.hash_participation_floor, params().max_sigma);
+        assert_eq!(decision.sigma, params().max_sigma);
     }
 
     #[test]

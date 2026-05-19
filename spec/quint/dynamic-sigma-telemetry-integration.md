@@ -60,7 +60,7 @@ consensus-visible or proposal-verifiable telemetry.
 | Quint input | Production meaning | Current source | Missing production work |
 | --- | --- | --- | --- |
 | `TotalHashWork` | Total PoW work observed in the calibration window. | Block headers and chain work can be derived from validated PoW headers; the Rust telemetry assembly boundary now requires explicit total-work evidence before raw telemetry can be built. | Define the exact window and whether competing side-branch work is included or only best-chain work. |
-| `CrosslinkParticipatingHashWork` | PoW work from blocks whose miners are participating in Crosslink. | No complete source in the current prototype; the Rust telemetry assembly boundary rejects missing participating-work evidence instead of assuming healthy participation. | Add an objectively verifiable participation marker or derive participation from valid Crosslink-finality content in blocks. |
+| `CrosslinkParticipatingHashWork` | PoW work from blocks whose miners are participating in Crosslink. | No complete production source yet; the Rust source contracts derive a work-weighted participating numerator from explicit observations or headers and reject missing participating-work evidence instead of assuming healthy participation. | Add an objectively verifiable production participation marker or derive participation from valid Crosslink-finality content in blocks. |
 | `EstimatedCoverageRiskPct` | Conservative upper bound on the non-participating or unseen-work share. | Can be computed from total and participating work once both are defined. | Add safety margin for hidden work, delayed propagation, peer eclipse, and incomplete fork visibility. |
 | `TotalTenderlinkRounds` | Count of Tenderlink rounds in the measurement window. | `DynamicSigmaRoundEvent` can accumulate started rounds into `DynamicSigmaRoundCounters`, but live Tenderlink event hooks are not wired yet. | Wire durable round-start events from Tenderlink into the counter window. |
 | `FailedTenderlinkRounds` | Rounds that do not decide a value and require recovery. | `DynamicSigmaRoundEvent` can accumulate nil-precommit, stale-proposal, timeout, invalid-proposal, and mixed-evidence failure labels, and validation rejects reason counters that outnumber failed rounds. | Wire those labels to live Tenderlink recovery and timeout paths. |
@@ -100,6 +100,10 @@ observed work into the denominator, and only sums verified-participating work
 into the numerator. Empty observation windows are rejected. This still does not
 define the production marker; it prevents the next source producer from treating
 unknown or unverified work as healthy participation.
+The regression tests include a skewed window where two participating
+observations are outweighed by one larger non-participating work observation,
+forcing max sigma. That keeps the input tied to percentage of hash power, not
+number of observations, blocks, pools, or validators.
 
 `hash_work_observation_from_header` is the first concrete source adapter for
 that boundary. It converts a validated PoW header's compact difficulty into
@@ -319,11 +323,15 @@ now stores in-process hysteresis state and advances it after a dynamic proposal
 payload is successfully encoded. `DynamicSigmaHysteresisParameters` and
 `DynamicSigmaHysteresisState` now also have deterministic Zcash serialization,
 so a production source has a stable encoding for persistence or
-proposal-carried state. Production still needs a durable, consensus-safe or
-proposal-verifiable source for the hysteresis state before this becomes a
-deployed controller rule. The prototype proposal callback uses one proposal plan
-for both candidate-depth selection and payload encoding, which is the shape
-needed before that state is promoted beyond the prototype.
+proposal-carried state. The controller API now makes the state source explicit:
+`DynamicSigmaHysteresisStateSource::Disabled` selects the raw telemetry-required
+floor and returns no next state, while `DurableLocal` and `ProposalCarried`
+apply the supplied hysteresis state and return the next state to persist or
+carry. Production still needs to choose the durable, consensus-safe or
+proposal-verifiable state source before this becomes a deployed controller
+rule. The prototype proposal callback uses one proposal plan for both
+candidate-depth selection and payload encoding, which is the shape needed
+before that state is promoted beyond the prototype.
 
 `CrosslinkDynamicSigmaHysteresis.qnt` mirrors that policy with bounded witnesses:
 participation-driven or reorg-driven sigma increases apply immediately, while
@@ -347,10 +355,10 @@ A production implementation of the dynamic-sigma variant should provide:
   explicit policy split and tests for both paths, while production still needs a
   deterministic or proposal-verifiable source if consensus-critical exposure is
   enabled
-- a durable hysteresis state source if the dynamic variant should smooth sigma
-  decreases across windows rather than selecting the raw required floor each
-  time; the hysteresis policy/state now have deterministic serialization, but
-  production still needs the storage or proposal-carried source policy
+- a durable or proposal-carried hysteresis state source if the dynamic variant
+  should smooth sigma decreases across windows rather than selecting the raw
+  required floor each time; the hysteresis policy/state now have deterministic
+  serialization, but production still needs to configure the typed source policy
 - tests showing that lower hash participation never lowers sigma; the pure Rust
   controller now covers the bounded Quint telemetry fixture and raw-counter
   estimate construction, and the prototype-gated Tenderlink payload decoder now
