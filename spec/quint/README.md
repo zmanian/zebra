@@ -72,10 +72,11 @@ faulty proposal, prevote, and precommit powersets in the initial state, while
 keeping the instance small enough for the baseline proof gate. A second
 faulty-init model lifts the same idea into the fixed-sigma/forking `n4_f1`
 parameter surface with a bounded faulty-evidence domain so symbolic checking
-remains tractable. A third quick-check harness runs the full faulty-evidence
-domain over the same fixed-sigma/forking `n4_f1` surface so the larger
-parameterized instance is exercised without adding that full powerset to the
-symbolic gate. The same file also includes counterexample tests for false
+remains tractable. Additional quick-check harnesses run the full
+faulty-evidence domain over the fixed-sigma/forking `n4_f1` surface and the
+proper `n7_f2` BFT-boundary surface so larger parameterized instances are
+exercised without adding those full powersets to the symbolic gate. The same
+file also includes counterexample tests for false
 agreement, amnesia, equivocation, no-conflicting-commit,
 agreement-or-amnesia, amnesia-implies-equivocation,
 amnesia-without-equivocation, and undecided max-round claims, so the
@@ -481,6 +482,11 @@ $QUINT test spec/quint/CrosslinkBaselineAccountability.qnt \
   --backend=rust
 
 $QUINT test spec/quint/CrosslinkBaselineAccountability.qnt \
+  --main=CrosslinkBaselineFullFaultyInitN7F2ForkingModel \
+  --max-samples=100 \
+  --backend=rust
+
+$QUINT test spec/quint/CrosslinkBaselineAccountability.qnt \
   --main=CrosslinkBaselineCounterexampleModel \
   --max-samples=100 \
   --backend=rust
@@ -496,7 +502,9 @@ The forking faulty-init model checks a larger fixed-sigma/forking baseline
 instance with bounded faulty proposal, prevote, and precommit powersets. The
 full forking faulty-init model keeps the complete faulty proposal, prevote, and
 precommit powerset domain alive as a Rust-backed quick check for the same
-`n4_f1` parameter surface while the symbolic gate stays bounded. The
+`n4_f1` parameter surface. The n7/f2 full forking faulty-init model applies the
+same full-domain quick check to the proper f=2 BFT-boundary surface while the
+symbolic gate stays bounded. The
 counterexample model uses `.fail()` witnesses for false
 no-conflicting-commit, no-amnesia, no-equivocation, agreement,
 agreement-or-amnesia, amnesia-implies-equivocation,
@@ -1339,6 +1347,9 @@ parameter surface with a bounded nondeterministic faulty-init domain.
 `BaselineFullForkingFaultyInitSafety` checks the same fixed-sigma/forking
 baseline parameter surface against the full faulty-init domain in the quick
 Rust-backed gate.
+`BaselineFullN7F2ForkingFaultyInitSafety` checks the proper `n7_f2`
+fixed-sigma/forking boundary surface against the full faulty-init domain in the
+quick Rust-backed gate.
 `CrosslinkBaselineCounterexampleModel` adds negative tests showing that false
 claims about conflicting commits, amnesia, equivocation, and agreement are
 rejected by the harness.
