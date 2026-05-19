@@ -113,3 +113,36 @@ module CrosslinkBaselineAccountabilityModel {
       })
   }
 }
+
+module CrosslinkBaselineFaultyInitTinyModel {
+  /*
+   A tiny upstream-style faulty Init harness. It keeps the nondeterministic
+   faulty-message powersets small enough for the baseline proof gate while
+   checking that initially injected faulty evidence is covered by the same
+   baseline accountability invariant.
+   */
+
+  import CrosslinkResamplingTest(
+    Corr = Set("p1", "p2", "p3"),
+    Faulty = Set("p4"),
+    N = 4,
+    T = 1,
+    MaxRound = 1,
+    Proposer = Map(0 -> "p1", 1 -> "p2"),
+    Stream = Map(0 -> "s0", 1 -> "s0"),
+    Snapshots = Set("s0"),
+    ResampleOnNilPrecommit = false,
+    ExpectedRound1Proposal = "s0",
+  ).* from "./CrosslinkResampling"
+
+  val BaselineFaultyInitSafety =
+    Safety
+
+  run baselineFaultyInitCoversInjectedEvidenceTest = {
+    InitWithFaultyEvidence.then(all {
+      assert(EvidenceCoversObservedMessages),
+      assert(BaselineFaultyInitSafety),
+      unchangedAll,
+    })
+  }
+}

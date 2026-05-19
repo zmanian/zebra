@@ -43,7 +43,9 @@ module CrosslinkResampling {
 
   pure val Rounds = 0.to(MaxRound)
   pure val NilRound = -1
+  pure val RoundsOrNil = Set(NilRound).union(Rounds)
   pure val NilSnapshot = "None"
+  pure val SnapshotsOrNil = Set(NilSnapshot).union(Snapshots)
   pure val AllProcs = Corr.union(Faulty)
   pure val THRESHOLD1 = T + 1
   pure val THRESHOLD2 = 2 * T + 1
@@ -134,6 +136,40 @@ module CrosslinkResampling {
   val EvidencePrecommit: Set[Vote_t] =
     evidencePrecommit
 
+  def FaultyProposals(r: Round_t): Set[Propose_t] =
+    tuples(Faulty, Snapshots, RoundsOrNil)
+      .map(((p, v, vr)) => {
+        src: p,
+        round: r,
+        proposal: v,
+        validRound: vr,
+      })
+
+  val AllFaultyProposals =
+    Rounds.map(r => FaultyProposals(r)).flatten()
+
+  def FaultyPrevotes(r: Round_t): Set[Vote_t] =
+    tuples(Faulty, SnapshotsOrNil)
+      .map(((p, v)) => {
+        src: p,
+        round: r,
+        id: v,
+      })
+
+  val AllFaultyPrevotes =
+    Rounds.map(r => FaultyPrevotes(r)).flatten()
+
+  def FaultyPrecommits(r: Round_t): Set[Vote_t] =
+    tuples(Faulty, SnapshotsOrNil)
+      .map(((p, v)) => {
+        src: p,
+        round: r,
+        id: v,
+      })
+
+  val AllFaultyPrecommits =
+    Rounds.map(r => FaultyPrecommits(r)).flatten()
+
   def StickyOrStreamProposal(p: Proc_t): Snapshot_t =
     if (validValue.get(p) == NilSnapshot) {
       if (cachedProposal.get(p) == NilSnapshot) {
@@ -163,6 +199,35 @@ module CrosslinkResampling {
     evidencePrecommit' = Set(),
     firedAction' = "Init",
   }
+
+  action InitWithFaultyEvidence =
+    nondet faultyProposals = AllFaultyProposals.powerset().oneOf()
+    nondet faultyPrevotes = AllFaultyPrevotes.powerset().oneOf()
+    nondet faultyPrecommits = AllFaultyPrecommits.powerset().oneOf()
+    all {
+      round' = Corr.mapBy(_ => 0),
+      step' = Corr.mapBy(_ => "propose"),
+      decision' = Corr.mapBy(_ => NilSnapshot),
+      lockedValue' = Corr.mapBy(_ => NilSnapshot),
+      lockedRound' = Corr.mapBy(_ => NilRound),
+      validValue' = Corr.mapBy(_ => NilSnapshot),
+      validRound' = Corr.mapBy(_ => NilRound),
+      cachedProposal' = Corr.mapBy(_ => NilSnapshot),
+      cachedProposalRound' = Corr.mapBy(_ => NilRound),
+      msgsPropose' = Rounds.mapBy(r =>
+        faultyProposals.filter(m => m.round == r)
+      ),
+      msgsPrevote' = Rounds.mapBy(r =>
+        faultyPrevotes.filter(m => m.round == r)
+      ),
+      msgsPrecommit' = Rounds.mapBy(r =>
+        faultyPrecommits.filter(m => m.round == r)
+      ),
+      evidencePropose' = faultyProposals,
+      evidencePrevote' = faultyPrevotes,
+      evidencePrecommit' = faultyPrecommits,
+      firedAction' = "InitWithFaultyEvidence",
+    }
 
   action BroadcastProposal(p: Proc_t, r: Round_t, v: Snapshot_t, vr: Round_t): bool = {
     val m = {

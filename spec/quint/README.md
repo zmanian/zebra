@@ -61,7 +61,10 @@ same-round value locks in the sticky baseline, and that conflicting value
 commits without unlock evidence expose Tendermint-style amnesia evidence. It
 also includes focused faulty-evidence witnesses showing that faulty proposals,
 prevotes, and nil/value precommit conflicts are carried into the same
-equivocation predicates used by the accountability model.
+equivocation predicates used by the accountability model. Its tiny faulty-init
+model adapts the upstream Tendermint pattern of nondeterministically injecting
+faulty proposal, prevote, and precommit powersets in the initial state, while
+keeping the instance small enough for the baseline proof gate.
 
 `CrosslinkBaselineBftHeights.qnt` gives the baseline variant a named
 heighted-finality model. It checks that fixed-sigma finality advances through
@@ -406,14 +409,22 @@ $QUINT test spec/quint/CrosslinkBaselineAccountability.qnt \
   --main=CrosslinkBaselineAccountabilityModel \
   --max-samples=100 \
   --backend=rust
+
+$QUINT test spec/quint/CrosslinkBaselineAccountability.qnt \
+  --main=CrosslinkBaselineFaultyInitTinyModel \
+  --max-samples=100 \
+  --backend=rust
 ```
 
 This model checks that baseline nil precommit preserves same-round value-lock
 state and that conflicting value commits without nil-unlock evidence are
 accountable through the existing amnesia predicates. It also checks that
 faulty proposal, prevote, and nil/value precommit evidence feeds the
-equivocation detector. This is explicit witness coverage, not yet the upstream
-style of nondeterministically seeding faulty evidence in `Init`.
+equivocation detector. The tiny faulty-init model checks the upstream-style
+`InitWithFaultyEvidence` path with nondeterministic faulty message powersets;
+the remaining upstream-quality step is to lift that path into the larger
+parameterized baseline instances without making the symbolic gate unusably
+large.
 
 Witness baseline BFT-heighted finality:
 
@@ -1244,6 +1255,8 @@ certificate advances the round without clearing same-round `validValue` or
 are attributable through amnesia evidence. The same test module now includes
 faulty proposal, prevote, and nil/value precommit evidence witnesses that prove
 observed faulty evidence reaches the equivocation predicates.
+`BaselineFaultyInitSafety` additionally checks a tiny instance initialized with
+nondeterministic faulty proposal, prevote, and precommit powersets.
 
 The bounded upstream-shaped baseline checks report no violation for
 `BaselineN4F1StableSafety` or `BaselineN4F1ForkingSafety`. The stable instance
