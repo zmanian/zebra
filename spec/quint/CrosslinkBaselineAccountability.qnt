@@ -473,6 +473,120 @@ module CrosslinkBaselineFullFaultyInitN5F1ForkingModel {
   }
 }
 
+module CrosslinkBaselineFullFaultyInitN5F2ForkingModel {
+  /*
+   A full-domain faulty-init harness for the n5/f2 fixed-sigma/forking surface.
+   This above-live-boundary instance has enough correct validators for f+1
+   catchup evidence, but not enough correct validators for a 2f+1 value commit,
+   so arbitrary faulty evidence has to stay visible in the baseline quick gate.
+   */
+
+  import CrosslinkBaselineModels.* from "./CrosslinkBaselineModels"
+
+  pure val TestRounds = 0.to(4)
+
+  pure def TestHeadMinusSigma(r: int): str =
+    AncestorByHeight
+      .get(ForkingBestTip.get(r))
+      .get(HeightBySnapshot.get(ForkingBestTip.get(r)) - 1)
+
+  pure val TestStream: int -> str =
+    TestRounds.mapBy(r => TestHeadMinusSigma(r))
+
+  pure val TestStreamMatchesFixedSigma =
+    TestRounds.forall(r => TestStream.get(r) == TestHeadMinusSigma(r))
+
+  import CrosslinkResampling(
+    Corr = Set("p1", "p2", "p3"),
+    Faulty = Set("p4", "p5"),
+    N = 5,
+    T = 2,
+    MaxRound = 4,
+    Proposer = ProposerSchedule,
+    Stream = TestStream,
+    Snapshots = ValidSnapshots,
+    ResampleOnNilPrecommit = false,
+  ).* from "./CrosslinkResampling"
+
+  action unchangedAll = all {
+    round' = round,
+    step' = step,
+    decision' = decision,
+    lockedValue' = lockedValue,
+    lockedRound' = lockedRound,
+    validValue' = validValue,
+    validRound' = validRound,
+    cachedProposal' = cachedProposal,
+    cachedProposalRound' = cachedProposalRound,
+    msgsPropose' = msgsPropose,
+    msgsPrevote' = msgsPrevote,
+    msgsPrecommit' = msgsPrecommit,
+    evidencePropose' = evidencePropose,
+    evidencePrevote' = evidencePrevote,
+    evidencePrecommit' = evidencePrecommit,
+    firedAction' = firedAction,
+  }
+
+  pure val FullN5F2FaultyInitDomainWellFormed =
+    AllFaultyProposals.forall(m =>
+      m.src.in(Faulty) and
+      m.round.in(Rounds) and
+      m.proposal.in(Snapshots) and
+      m.validRound.in(RoundsOrNil)
+    ) and
+    AllFaultyPrevotes.forall(m =>
+      m.src.in(Faulty) and m.round.in(Rounds) and m.id.in(SnapshotsOrNil)
+    ) and
+    AllFaultyPrecommits.forall(m =>
+      m.src.in(Faulty) and m.round.in(Rounds) and m.id.in(SnapshotsOrNil)
+    )
+
+  pure val FullN5F2FaultyInitUsesWholeForkingDomain =
+    AllFaultyProposals.exists(m =>
+      m.src == "p5" and
+      m.round == 4 and
+      m.proposal == "b2" and
+      m.validRound == 4
+    ) and
+    AllFaultyPrevotes.exists(m =>
+      m.src == "p4" and m.round == 4 and m.id == NilSnapshot
+    ) and
+    AllFaultyPrecommits.exists(m =>
+      m.src == "p5" and m.round == 4 and m.id == "a1"
+    )
+
+  val BaselineFullN5F2ForkingFaultyInitSafety =
+    Safety and
+    TestStreamMatchesFixedSigma and
+    FullN5F2FaultyInitDomainWellFormed
+
+  run baselineFullN5F2ForkingFaultyInitCoversEvidenceTest = {
+    InitWithFaultyEvidence.then(all {
+      assert(THRESHOLD1 == 3),
+      assert(THRESHOLD2 == 5),
+      assert(size(Corr) >= THRESHOLD1),
+      assert(not(size(Corr) >= THRESHOLD2)),
+      assert(TestHeadMinusSigma(0) == "a1"),
+      assert(TestHeadMinusSigma(1) == "b1"),
+      assert(FullN5F2FaultyInitUsesWholeForkingDomain),
+      assert(EvidenceCoversObservedMessages),
+      assert(BaselineFullN5F2ForkingFaultyInitSafety),
+      unchangedAll,
+    })
+  }
+
+  run baselineFullN5F2ForkingFaultyInitAllowsCorrectProposalTest = {
+    InitWithFaultyEvidence
+      .then(InsertProposal("p1"))
+      .then(all {
+        assert(HasProposal(0, "a1")),
+        assert(EvidenceCoversObservedMessages),
+        assert(BaselineFullN5F2ForkingFaultyInitSafety),
+        unchangedAll,
+      })
+  }
+}
+
 module CrosslinkBaselineFullFaultyInitN7F2ForkingModel {
   /*
    A full-domain faulty-init harness for the proper f=2 boundary instance. This

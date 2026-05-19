@@ -73,8 +73,8 @@ keeping the instance small enough for the baseline proof gate. A second
 faulty-init model lifts the same idea into the fixed-sigma/forking `n4_f1`
 parameter surface with a bounded faulty-evidence domain so symbolic checking
 remains tractable. Additional quick-check harnesses run the full
-faulty-evidence domain over the fixed-sigma/forking `n4_f1` surface and the
-proper `n7_f2` BFT-boundary surface so larger parameterized instances are
+faulty-evidence domain over the fixed-sigma/forking `n4_f1`, `n5_f1`, `n5_f2`,
+and proper `n7_f2` BFT-boundary surfaces so larger parameterized instances are
 exercised without adding those full powersets to the symbolic gate. The same
 file also includes counterexample tests for false
 agreement, amnesia, equivocation, no-conflicting-commit,
@@ -515,6 +515,9 @@ full forking faulty-init model keeps the complete faulty proposal, prevote, and
 precommit powerset domain alive as a Rust-backed quick check for the same
 `n4_f1` parameter surface. The n5/f1 full forking faulty-init model extends the
 same full-domain quick check to the intermediate one-fault validator surface.
+The n5/f2 full forking faulty-init model applies the same full-domain quick
+check to the above-live-boundary f=2 surface where correct validators can form
+f+1 catchup evidence but not a 2f+1 value quorum.
 The n7/f2 full forking faulty-init model applies the full-domain quick check to
 the proper f=2 BFT-boundary surface while the symbolic gate stays bounded. The
 counterexample model uses `.fail()` witnesses for false
@@ -1396,6 +1399,9 @@ Rust-backed gate.
 `BaselineFullN5F1ForkingFaultyInitSafety` checks the intermediate `n5_f1`
 fixed-sigma/forking surface against the full faulty-init domain in the quick
 Rust-backed gate.
+`BaselineFullN5F2ForkingFaultyInitSafety` checks the above-live-boundary
+`n5_f2` fixed-sigma/forking surface against the full faulty-init domain in the
+quick Rust-backed gate.
 `BaselineFullN7F2ForkingFaultyInitSafety` checks the proper `n7_f2`
 fixed-sigma/forking boundary surface against the full faulty-init domain in the
 quick Rust-backed gate.
