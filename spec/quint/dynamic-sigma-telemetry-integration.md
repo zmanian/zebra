@@ -37,6 +37,12 @@ the controller-required floor. That controller is executable scaffolding for
 the third Crosslink variant, but it is not wired into production proposal or
 validation logic yet.
 
+`BftBlock::try_from_with_confirmation_depth` is now available as the matching
+block-construction hook. The existing `BftBlock::try_from(params, ...)` still
+uses the fixed `bc_confirmation_depth_sigma`, but a future dynamic-sigma
+proposal path can validate proposal-carried evidence first and then validate
+the header count against the selected sigma.
+
 A production implementation must replace the fixed parameter at proposal and
 validation time with a consensus-safe controller output, and it must populate
 the controller input from consensus-visible or proposal-verifiable telemetry.

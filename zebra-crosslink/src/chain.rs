@@ -133,7 +133,29 @@ impl BftBlock {
         finalization_candidate_height: u32,
         headers: Vec<BcBlockHeader>,
     ) -> Result<Self, InvalidBftBlock> {
-        let expected = params.bc_confirmation_depth_sigma;
+        Self::try_from_with_confirmation_depth(
+            params.bc_confirmation_depth_sigma,
+            height,
+            previous_block_fat_ptr,
+            finalization_candidate_height,
+            headers,
+        )
+    }
+
+    /// Attempt to construct a [BftBlock] using a selected confirmation depth.
+    ///
+    /// This is the dynamic-sigma construction hook: the existing
+    /// [BftBlock::try_from] path still reads the fixed protocol sigma from
+    /// [ZcashCrosslinkParameters], while future proposal-carried controller
+    /// evidence can validate the selected sigma first and then call this method.
+    pub fn try_from_with_confirmation_depth(
+        expected_confirmation_depth: u64,
+        height: u32,
+        previous_block_fat_ptr: FatPointerToBftBlock2,
+        finalization_candidate_height: u32,
+        headers: Vec<BcBlockHeader>,
+    ) -> Result<Self, InvalidBftBlock> {
+        let expected = expected_confirmation_depth;
         let actual = headers.len() as u64;
         if actual != expected {
             return Err(InvalidBftBlock::IncorrectConfirmationDepth { expected, actual });
@@ -280,5 +302,87 @@ impl ZcashSerialize for BftBlockAndFatPointerToIt {
         self.block.zcash_serialize(&mut writer);
         self.fat_ptr.zcash_serialize(&mut writer);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use zebra_chain::{
+        block::{merkle::Root, FatPointerToBftBlock, Hash as BlockHash, Header},
+        fmt::HexDebug,
+        work::{difficulty::INVALID_COMPACT_DIFFICULTY, equihash::Solution},
+    };
+
+    fn test_header(previous_block_hash: BlockHash) -> Header {
+        Header {
+            version: 4,
+            previous_block_hash,
+            merkle_root: Root([0; 32]),
+            commitment_bytes: HexDebug([0; 32]),
+            time: Utc::now(),
+            difficulty_threshold: INVALID_COMPACT_DIFFICULTY,
+            nonce: HexDebug([0; 32]),
+            solution: Solution::for_proposal(),
+            fat_pointer_to_bft_block: FatPointerToBftBlock::null(),
+        }
+    }
+
+    #[test]
+    fn try_from_with_confirmation_depth_uses_selected_sigma() {
+        let err = BftBlock::try_from_with_confirmation_depth(
+            6,
+            1,
+            FatPointerToBftBlock2::null(),
+            10,
+            Vec::new(),
+        )
+        .expect_err("empty headers should not satisfy selected sigma 6");
+
+        assert!(matches!(
+            err,
+            InvalidBftBlock::IncorrectConfirmationDepth {
+                expected: 6,
+                actual: 0,
+            }
+        ));
+    }
+
+    #[test]
+    fn try_from_keeps_using_fixed_parameter_sigma() {
+        let params = ZcashCrosslinkParameters {
+            bc_confirmation_depth_sigma: 3,
+            finalization_gap_bound: 7,
+        };
+        let err = BftBlock::try_from(&params, 1, FatPointerToBftBlock2::null(), 10, Vec::new())
+            .expect_err("empty headers should not satisfy fixed sigma 3");
+
+        assert!(matches!(
+            err,
+            InvalidBftBlock::IncorrectConfirmationDepth {
+                expected: 3,
+                actual: 0,
+            }
+        ));
+    }
+
+    #[test]
+    fn try_from_with_confirmation_depth_accepts_matching_header_count() {
+        let headers = vec![
+            test_header(BlockHash([0; 32])),
+            test_header(BlockHash([1; 32])),
+        ];
+
+        let block = BftBlock::try_from_with_confirmation_depth(
+            2,
+            1,
+            FatPointerToBftBlock2::null(),
+            10,
+            headers.clone(),
+        )
+        .expect("matching selected sigma should be accepted");
+
+        assert_eq!(block.headers, headers);
     }
 }

@@ -91,7 +91,9 @@ prototype: it derives conservative coverage and round-failure estimates from
 raw counters, validates telemetry windows, and selects the same sigma floor as
 the Quint telemetry fixture. It also includes a proposal-carried evidence
 verifier that rejects selected sigma values below the controller-required floor,
-without yet changing consensus proposal or validation rules.
+plus a `BftBlock::try_from_with_confirmation_depth` construction hook that can
+validate a selected sigma's header count without changing the existing
+fixed-parameter proposal path.
 
 `CrosslinkDynamicSigmaForkSchedule.qnt` composes the dynamic-sigma controller
 with the derived PoW fork schedule. In this model, dynamic sigma consumes
