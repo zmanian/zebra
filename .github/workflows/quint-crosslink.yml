@@ -1,0 +1,66 @@
+name: Crosslink Quint Specs
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/quint-crosslink.yml"
+      - "spec/quint/**"
+  push:
+    paths:
+      - ".github/workflows/quint-crosslink.yml"
+      - "spec/quint/**"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  QUINT_VERSION: "0.31.0"
+
+jobs:
+  baseline-quick:
+    name: Baseline quick checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install Quint
+        run: npm install --global "@informalsystems/quint@${QUINT_VERSION}"
+      - name: Show Quint version
+        run: quint --version
+      - name: Run baseline quick checks
+        run: spec/quint/check.sh quick-baseline
+
+  baseline-symbolic:
+    name: Baseline symbolic checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Cache Apalache distribution
+        uses: actions/cache@v4
+        with:
+          path: ~/.quint
+          key: ${{ runner.os }}-quint-apalache-${{ env.QUINT_VERSION }}
+      - name: Install Quint
+        run: npm install --global "@informalsystems/quint@${QUINT_VERSION}"
+      - name: Show Quint version
+        run: quint --version
+      - name: Run baseline symbolic checks
+        env:
+          JVM_ARGS: -Xmx8192m
+        run: spec/quint/check.sh symbolic-baseline
