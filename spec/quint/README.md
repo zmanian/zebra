@@ -72,7 +72,9 @@ faulty proposal, prevote, and precommit powersets in the initial state, while
 keeping the instance small enough for the baseline proof gate. A second
 faulty-init model lifts the same idea into the fixed-sigma/forking `n4_f1`
 parameter surface with a bounded faulty-evidence domain so symbolic checking
-remains tractable. Additional quick-check harnesses run the full
+remains tractable. A representative bounded `n5_f2` faulty-init model adds a
+tractable f=2 symbolic gate without using the full powerset. Additional
+quick-check harnesses run the full
 faulty-evidence domain over the fixed-sigma/forking `n4_f1`, `n4_f2`, `n5_f1`,
 `n5_f2`, and proper `n7_f2` BFT-boundary surfaces so larger parameterized
 instances are exercised without adding those full powersets to the symbolic
@@ -511,8 +513,11 @@ equivocation detector. The tiny faulty-init model checks the upstream-style
 `InitWithFaultyEvidence` path with nondeterministic faulty message powersets.
 The forking faulty-init model checks a larger fixed-sigma/forking baseline
 instance with bounded faulty proposal, prevote, and precommit powersets. The
-full forking faulty-init model keeps the complete faulty proposal, prevote, and
-precommit powerset domain alive as a Rust-backed quick check for the same
+bounded n5/f2 faulty-init model checks a representative f=2 faulty-message
+domain in the symbolic gate, preserving the same fixed-sigma/forking value
+rule without attempting the full powerset.
+The full forking faulty-init model keeps the complete faulty proposal, prevote,
+and precommit powerset domain alive as a Rust-backed quick check for the same
 `n4_f1` parameter surface. The n4/f2 full forking faulty-init model applies the
 same full-domain quick check to the above-live-boundary f=2 surface where
 correct validators cannot form f+1 catchup evidence or a 2f+1 value quorum. The
@@ -1396,6 +1401,9 @@ observed faulty evidence reaches the equivocation predicates.
 nondeterministic faulty proposal, prevote, and precommit powersets.
 `BaselineForkingFaultyInitSafety` checks the fixed-sigma/forking baseline
 parameter surface with a bounded nondeterministic faulty-init domain.
+`BaselineBoundedN5F2ForkingFaultyInitSafety` checks a representative bounded
+`n5_f2` faulty-init domain in both the quick gate and the symbolic baseline
+gate.
 `BaselineFullForkingFaultyInitSafety` checks the same fixed-sigma/forking
 baseline parameter surface against the full faulty-init domain in the quick
 Rust-backed gate.
