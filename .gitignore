@@ -164,6 +164,9 @@ $RECYCLE.BIN/
 # Python pycache
 __pycache__/
 
+# Quint / Apalache local verification output
+_apalache-out/
+
 # RPC tests cache 
 zebra-rpc/qa/cache/
 .vscode/launch.json

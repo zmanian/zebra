@@ -32,6 +32,15 @@ final.
 resampled PoW snapshot becomes the input to Crosslink finality, which can then
 advance to a tail-confirmed snapshot while preserving the finalized prefix.
 
+`CrosslinkDynamicSigma.qnt` sketches the third Crosslink variant: a
+dynamic-sigma controller. It treats the percentage of total PoW hash power that
+is participating in Crosslink as an explicit controller input. Low hash-power
+participation raises the minimum sigma floor because the finalizers' observed
+PoW stream is less representative of the global longest-chain race. Round
+failures can still raise sigma, but they are not the only signal; below a
+critical hash-participation threshold, the model forces the maximum sigma and
+marks the controller state as degraded.
+
 ## Upstream Base
 
 The best current Tendermint Quint base is the Quint repository's Cosmos example:
@@ -191,6 +200,32 @@ resamples `a2`, decides it, and finalizes `a2` using `a3` as the tail-confirming
 PoW tip. This also demonstrates height skipping in the composed flow: finality
 moves from genesis `g` directly to `a2`.
 
+Witness the dynamic-sigma hash-participation controller:
+
+```sh
+$QUINT test spec/quint/CrosslinkDynamicSigma.qnt \
+  --main=CrosslinkDynamicSigmaHashParticipationModel \
+  --max-samples=100 \
+  --backend=rust
+```
+
+This runs:
+
+- `highHashParticipationStartsAtBaseSigmaTest`
+- `roundFailureEscalatesSigmaEvenWithHighHashParticipationTest`
+- `lowHashParticipationRaisesSigmaFloorWithoutRoundFailureTest`
+- `criticalHashParticipationForcesMaxSigmaTest`
+- `hashParticipationSigmaFloorIsMonotoneTest`
+- `observedLowHashParticipationRaisesLiveSigmaTest`
+- `observedCriticalHashParticipationForcesLiveMaxSigmaTest`
+
+The model separates two signals that should both feed a production controller:
+round failures tell the protocol that the current sampled stream is not stable
+enough for Tenderlink to decide, while hash-power participation estimates how
+much of the global PoW race is actually represented in the Crosslink-visible
+stream. Lower participation therefore raises the sigma floor even if the current
+round has not failed.
+
 Randomized Rust-backend safety simulation:
 
 ```sh
@@ -253,6 +288,16 @@ $QUINT run spec/quint/CrosslinkComposed.qnt \
   --invariant=LivenessSafety \
   --backend=rust \
   --verbosity=0
+
+$QUINT run spec/quint/CrosslinkDynamicSigma.qnt \
+  --main=CrosslinkDynamicSigmaHashParticipationModel \
+  --init=Init \
+  --step=Next \
+  --max-steps=6 \
+  --max-samples=1000 \
+  --invariant=Safety \
+  --backend=rust \
+  --verbosity=0
 ```
 
 Bounded Apalache verification:
@@ -299,6 +344,13 @@ $QUINT verify spec/quint/CrosslinkComposed.qnt \
   --init=LivenessInit \
   --step=LivenessStep \
   --invariant=LivenessSafety
+
+$QUINT verify spec/quint/CrosslinkDynamicSigma.qnt \
+  --main=CrosslinkDynamicSigmaHashParticipationModel \
+  --max-steps=6 \
+  --init=Init \
+  --step=Next \
+  --invariant=Safety
 ```
 
 The bounded resampling checks currently report no violation for `Safety`, which
@@ -336,12 +388,24 @@ to `a2`, resampling reaches a fresh `a2` Tenderlink decision and then a fresh
 `a2` finality update by phase 16 while preserving both the Tenderlink lock
 safety invariants and the finalized-prefix safety invariants.
 
+The dynamic-sigma harness checks a bounded controller invariant: live sigma
+remains within the configured ladder, never falls below the floor implied by
+observed hash-power participation, and uses a monotone floor where lower
+participation cannot require a lower sigma than higher participation. This is
+still a controller sketch, not a calibrated stochastic model; it does not yet
+derive the thresholds from measured hashrate coverage, block interval variance,
+or reorg distributions.
+
 ## Next Extensions
 
 This model is intentionally narrow. The next useful extensions are:
 
 - replace the concrete fork fixture with parameterized PoW chains and
   `head - sigma` sampling
+- refine `CrosslinkDynamicSigma.qnt` with a calibrated stochastic controller
+  that uses measured hash-power participation, round-failure rate, block
+  interval variance, and observed reorg depth rather than the current three-step
+  sigma ladder
 - add BFT heights so successive Tenderlink decisions update Crosslink finality
   directly
 - port the full upstream Tendermint accountability evidence model into the
