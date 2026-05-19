@@ -97,6 +97,10 @@ prototype: it derives conservative coverage and round-failure estimates from
 raw counters, validates telemetry windows, and selects the same sigma floor as
 the Quint telemetry fixture. It also includes a proposal-carried evidence
 verifier that rejects selected sigma values below the controller-required floor.
+The pure module now exposes proposal-evidence selection helpers for raw
+telemetry and production-shaped components, with optional hysteresis, and the
+Tenderlink prototype path calls those helpers rather than duplicating controller
+selection logic.
 `DynamicSigmaTelemetryComponents` and `DynamicSigmaRoundCounters` are the first
 production-shaped assembly boundary: they require explicit total and
 Crosslink-participating hash work, reject inconsistent round counters, and only
@@ -1158,16 +1162,16 @@ This model is intentionally narrow. The next useful extensions are:
   the observed reorg-depth input from explicit best-tip transition evidence. The
   economic exposure policy now explicitly separates consensus-critical exposure
   from service-local risk, with proposal-evidence tests rejecting selected sigma
-  below a consensus-critical economic floor. The
-  observation-window assembler now composes source-shaped inputs into telemetry
-  components, and the
-  prototype proposal path uses it. The pure hysteresis helper covers bounded
-  sigma decreases for short-window stability, and the prototype evidence builder
-  now applies an explicit hysteresis state before carrying `selected_sigma`. The
-  proposal callback reuses that planned evidence for both depth selection and
-  payload encoding, then advances the prototype service's in-process hysteresis
-  state after successful encoding. The remaining work is replacing the fixture
-  with consensus-safe or proposal-verifiable input producers and a durable
-  production hysteresis state source
+  below a consensus-critical economic floor. The pure evidence-selection
+  helpers now construct proposal evidence from raw telemetry or assembled
+  components, with optional hysteresis, and the prototype proposal path uses
+  them. The pure hysteresis helper covers bounded sigma decreases for
+  short-window stability, and the prototype evidence builder now applies an
+  explicit hysteresis state before carrying `selected_sigma`. The proposal
+  callback reuses that planned evidence for both depth selection and payload
+  encoding, then advances the prototype service's in-process hysteresis state
+  after successful encoding. The remaining work is replacing the fixture with
+  consensus-safe or proposal-verifiable input producers and a durable production
+  hysteresis state source
 - refine the split projection checks into smaller inductive lemmas if bounds
   beyond the checked depth-10 projections still need very large JVM/Z3 heaps

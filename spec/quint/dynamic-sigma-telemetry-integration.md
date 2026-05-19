@@ -160,16 +160,18 @@ This suggests two viable production shapes:
 The Rust controller now prototypes the second shape for raw telemetry counters:
 the verifier reconstructs the conservative telemetry window, rejects selected
 sigma values below the required floor, and can be composed with `BftBlock`
-construction so the selected sigma controls header depth. A production
-deployment still needs precise validity rules for the source of each raw
-measurement and live proposal plumbing for carrying or committing the evidence.
+construction so the selected sigma controls header depth. The same module now
+exposes `select_dynamic_sigma_proposal_evidence*` helpers for raw telemetry and
+production-shaped telemetry components, with and without hysteresis, so
+proposal code uses the pure controller path instead of reimplementing evidence
+selection. A production deployment still needs precise validity rules for the
+source of each raw measurement and live source plumbing for carrying or
+committing the evidence.
 The proposal evidence structs now have deterministic Zcash serialization, and
 `DynamicSigmaBftBlockPayload` defines a tagged payload envelope containing the
-evidence followed by the BFT block. The remaining live-wiring step is adopting
-that envelope in the Tenderlink proposal, validation, and decided-block
-callbacks. The envelope also has a validation helper that replays evidence
-validation and rejects carried blocks that do not match the evidence-selected
-block.
+evidence followed by the BFT block. The envelope has a validation helper that
+replays evidence validation and rejects carried blocks that do not match the
+evidence-selected block.
 
 The live Tenderlink callbacks now route proposal bytes through an explicit
 payload encoder/decoder. Legacy fixed-sigma `BftBlock` bytes are still emitted

@@ -510,6 +510,17 @@ pub enum DynamicSigmaEvidenceError {
     },
 }
 
+/// Invalid proposal-evidence selection from telemetry inputs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DynamicSigmaProposalEvidenceSelectionError {
+    /// Raw telemetry could not be converted into a valid controller window.
+    InvalidTelemetry(DynamicSigmaError),
+    /// Production-shaped telemetry components could not be assembled.
+    InvalidTelemetryAssembly(DynamicSigmaTelemetryAssemblyError),
+    /// Hysteresis selection failed for the supplied state or telemetry.
+    InvalidHysteresisSelection(DynamicSigmaHysteresisSelectionError),
+}
+
 fn write_u64_le<W: Write>(writer: &mut W, value: u64) -> Result<(), std::io::Error> {
     writer.write_all(&value.to_le_bytes())
 }
@@ -1000,6 +1011,91 @@ where
         max_acceptable_expected_loss_units: window.max_acceptable_expected_loss_units,
     })
     .map_err(DynamicSigmaHeaderObservationWindowError::InvalidTelemetry)
+}
+
+/// Select proposal-carried dynamic-sigma evidence from raw telemetry.
+pub fn select_dynamic_sigma_proposal_evidence(
+    params: DynamicSigmaParameters,
+    raw_telemetry: DynamicSigmaRawTelemetry,
+    margins: TelemetryEstimateMargins,
+) -> Result<DynamicSigmaProposalEvidence, DynamicSigmaProposalEvidenceSelectionError> {
+    let window = raw_telemetry
+        .into_window(margins)
+        .map_err(DynamicSigmaProposalEvidenceSelectionError::InvalidTelemetry)?;
+    let decision = select_dynamic_sigma(params, window)
+        .map_err(DynamicSigmaProposalEvidenceSelectionError::InvalidTelemetry)?;
+
+    Ok(DynamicSigmaProposalEvidence {
+        raw_telemetry,
+        margins,
+        selected_sigma: decision.sigma,
+    })
+}
+
+/// Select proposal-carried dynamic-sigma evidence from raw telemetry and hysteresis state.
+pub fn select_dynamic_sigma_proposal_evidence_with_hysteresis(
+    params: DynamicSigmaParameters,
+    raw_telemetry: DynamicSigmaRawTelemetry,
+    margins: TelemetryEstimateMargins,
+    hysteresis_policy: DynamicSigmaHysteresisParameters,
+    hysteresis_state: DynamicSigmaHysteresisState,
+) -> Result<
+    (DynamicSigmaProposalEvidence, DynamicSigmaHysteresisState),
+    DynamicSigmaProposalEvidenceSelectionError,
+> {
+    let window = raw_telemetry
+        .into_window(margins)
+        .map_err(DynamicSigmaProposalEvidenceSelectionError::InvalidTelemetry)?;
+    let selection =
+        select_dynamic_sigma_with_hysteresis(params, window, hysteresis_policy, hysteresis_state)
+            .map_err(DynamicSigmaProposalEvidenceSelectionError::InvalidHysteresisSelection)?;
+    let next_hysteresis_state = selection.applied_state;
+
+    Ok((
+        DynamicSigmaProposalEvidence {
+            raw_telemetry,
+            margins,
+            selected_sigma: next_hysteresis_state.current_sigma,
+        },
+        next_hysteresis_state,
+    ))
+}
+
+/// Select proposal-carried dynamic-sigma evidence from production-shaped components.
+pub fn select_dynamic_sigma_proposal_evidence_from_components(
+    params: DynamicSigmaParameters,
+    telemetry_components: DynamicSigmaTelemetryComponents,
+    margins: TelemetryEstimateMargins,
+) -> Result<DynamicSigmaProposalEvidence, DynamicSigmaProposalEvidenceSelectionError> {
+    let raw_telemetry = telemetry_components
+        .try_into_raw_telemetry()
+        .map_err(DynamicSigmaProposalEvidenceSelectionError::InvalidTelemetryAssembly)?;
+
+    select_dynamic_sigma_proposal_evidence(params, raw_telemetry, margins)
+}
+
+/// Select proposal-carried dynamic-sigma evidence from components and hysteresis state.
+pub fn select_dynamic_sigma_proposal_evidence_from_components_with_hysteresis(
+    params: DynamicSigmaParameters,
+    telemetry_components: DynamicSigmaTelemetryComponents,
+    margins: TelemetryEstimateMargins,
+    hysteresis_policy: DynamicSigmaHysteresisParameters,
+    hysteresis_state: DynamicSigmaHysteresisState,
+) -> Result<
+    (DynamicSigmaProposalEvidence, DynamicSigmaHysteresisState),
+    DynamicSigmaProposalEvidenceSelectionError,
+> {
+    let raw_telemetry = telemetry_components
+        .try_into_raw_telemetry()
+        .map_err(DynamicSigmaProposalEvidenceSelectionError::InvalidTelemetryAssembly)?;
+
+    select_dynamic_sigma_proposal_evidence_with_hysteresis(
+        params,
+        raw_telemetry,
+        margins,
+        hysteresis_policy,
+        hysteresis_state,
+    )
 }
 
 /// Validate proposal-carried dynamic-sigma evidence.
@@ -2365,6 +2461,62 @@ mod tests {
 
         assert_eq!(decision.economic_floor, 3);
         assert_eq!(decision.sigma, 3);
+    }
+
+    #[test]
+    fn proposal_evidence_selection_from_raw_telemetry_selects_required_sigma() {
+        let proposal_evidence = select_dynamic_sigma_proposal_evidence(
+            params(),
+            raw_telemetry(63, 0),
+            TelemetryEstimateMargins::default(),
+        )
+        .expect("raw telemetry should select proposal evidence");
+
+        assert_eq!(proposal_evidence.selected_sigma, params().raised_sigma);
+    }
+
+    #[test]
+    fn proposal_evidence_selection_from_components_rejects_missing_participation() {
+        let mut components = production_telemetry_components();
+        components.crosslink_participating_hash_work = None;
+
+        assert_eq!(
+            select_dynamic_sigma_proposal_evidence_from_components(
+                params(),
+                components,
+                TelemetryEstimateMargins::default(),
+            ),
+            Err(
+                DynamicSigmaProposalEvidenceSelectionError::InvalidTelemetryAssembly(
+                    DynamicSigmaTelemetryAssemblyError::MissingCrosslinkParticipatingHashWork,
+                )
+            ),
+        );
+    }
+
+    #[test]
+    fn proposal_evidence_selection_with_hysteresis_returns_applied_state() {
+        let (proposal_evidence, next_state) =
+            select_dynamic_sigma_proposal_evidence_with_hysteresis(
+                params(),
+                raw_telemetry(90, 0),
+                TelemetryEstimateMargins::default(),
+                hysteresis_policy(),
+                DynamicSigmaHysteresisState {
+                    current_sigma: params().max_sigma,
+                    stable_windows_below_current: 0,
+                },
+            )
+            .expect("hysteresis should select proposal evidence");
+
+        assert_eq!(proposal_evidence.selected_sigma, params().max_sigma);
+        assert_eq!(
+            next_state,
+            DynamicSigmaHysteresisState {
+                current_sigma: params().max_sigma,
+                stable_windows_below_current: 1,
+            }
+        );
     }
 
     #[test]

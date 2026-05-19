@@ -42,7 +42,9 @@ use chain::*;
 
 pub mod dynamic_sigma;
 use crate::dynamic_sigma::{
-    select_dynamic_sigma, select_dynamic_sigma_with_hysteresis,
+    select_dynamic_sigma_proposal_evidence, select_dynamic_sigma_proposal_evidence_from_components,
+    select_dynamic_sigma_proposal_evidence_from_components_with_hysteresis,
+    select_dynamic_sigma_proposal_evidence_with_hysteresis,
     telemetry_components_from_observation_window, DynamicSigmaHashParticipation,
     DynamicSigmaHashWorkObservation, DynamicSigmaHysteresisParameters, DynamicSigmaHysteresisState,
     DynamicSigmaProposalEvidence, DynamicSigmaRawTelemetry, DynamicSigmaRoundCounters,
@@ -676,17 +678,8 @@ fn dynamic_sigma_proposal_evidence_from_raw_telemetry(
     raw_telemetry: DynamicSigmaRawTelemetry,
     margins: TelemetryEstimateMargins,
 ) -> Result<DynamicSigmaProposalEvidence, TenderlinkPayloadEncodeError> {
-    let window = raw_telemetry
-        .into_window(margins)
-        .map_err(|_| TenderlinkPayloadEncodeError::DynamicSigmaInvalid)?;
-    let decision = select_dynamic_sigma(params, window)
-        .map_err(|_| TenderlinkPayloadEncodeError::DynamicSigmaInvalid)?;
-
-    Ok(DynamicSigmaProposalEvidence {
-        raw_telemetry,
-        margins,
-        selected_sigma: decision.sigma,
-    })
+    select_dynamic_sigma_proposal_evidence(params, raw_telemetry, margins)
+        .map_err(|_| TenderlinkPayloadEncodeError::DynamicSigmaInvalid)
 }
 
 fn dynamic_sigma_proposal_evidence_from_raw_telemetry_with_hysteresis(
@@ -697,22 +690,14 @@ fn dynamic_sigma_proposal_evidence_from_raw_telemetry_with_hysteresis(
     hysteresis_state: DynamicSigmaHysteresisState,
 ) -> Result<(DynamicSigmaProposalEvidence, DynamicSigmaHysteresisState), TenderlinkPayloadEncodeError>
 {
-    let window = raw_telemetry
-        .into_window(margins)
-        .map_err(|_| TenderlinkPayloadEncodeError::DynamicSigmaInvalid)?;
-    let selection =
-        select_dynamic_sigma_with_hysteresis(params, window, hysteresis_policy, hysteresis_state)
-            .map_err(|_| TenderlinkPayloadEncodeError::DynamicSigmaInvalid)?;
-    let next_hysteresis_state = selection.applied_state;
-
-    Ok((
-        DynamicSigmaProposalEvidence {
-            raw_telemetry,
-            margins,
-            selected_sigma: next_hysteresis_state.current_sigma,
-        },
-        next_hysteresis_state,
-    ))
+    select_dynamic_sigma_proposal_evidence_with_hysteresis(
+        params,
+        raw_telemetry,
+        margins,
+        hysteresis_policy,
+        hysteresis_state,
+    )
+    .map_err(|_| TenderlinkPayloadEncodeError::DynamicSigmaInvalid)
 }
 
 fn dynamic_sigma_proposal_evidence_from_telemetry_components(
@@ -720,11 +705,8 @@ fn dynamic_sigma_proposal_evidence_from_telemetry_components(
     telemetry_components: DynamicSigmaTelemetryComponents,
     margins: TelemetryEstimateMargins,
 ) -> Result<DynamicSigmaProposalEvidence, TenderlinkPayloadEncodeError> {
-    let raw_telemetry = telemetry_components
-        .try_into_raw_telemetry()
-        .map_err(|_| TenderlinkPayloadEncodeError::DynamicSigmaInvalid)?;
-
-    dynamic_sigma_proposal_evidence_from_raw_telemetry(params, raw_telemetry, margins)
+    select_dynamic_sigma_proposal_evidence_from_components(params, telemetry_components, margins)
+        .map_err(|_| TenderlinkPayloadEncodeError::DynamicSigmaInvalid)
 }
 
 fn dynamic_sigma_proposal_evidence_from_telemetry_components_with_hysteresis(
@@ -735,17 +717,14 @@ fn dynamic_sigma_proposal_evidence_from_telemetry_components_with_hysteresis(
     hysteresis_state: DynamicSigmaHysteresisState,
 ) -> Result<(DynamicSigmaProposalEvidence, DynamicSigmaHysteresisState), TenderlinkPayloadEncodeError>
 {
-    let raw_telemetry = telemetry_components
-        .try_into_raw_telemetry()
-        .map_err(|_| TenderlinkPayloadEncodeError::DynamicSigmaInvalid)?;
-
-    dynamic_sigma_proposal_evidence_from_raw_telemetry_with_hysteresis(
+    select_dynamic_sigma_proposal_evidence_from_components_with_hysteresis(
         params,
-        raw_telemetry,
+        telemetry_components,
         margins,
         hysteresis_policy,
         hysteresis_state,
     )
+    .map_err(|_| TenderlinkPayloadEncodeError::DynamicSigmaInvalid)
 }
 
 fn prototype_dynamic_sigma_round_counters() -> DynamicSigmaRoundCounters {
