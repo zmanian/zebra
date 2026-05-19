@@ -13,17 +13,11 @@ module CrosslinkDynamicSigmaFinality {
 
   type ConsensusHeight_t = int
   type Height_t = int
-  type Work_t = int
   type Block_t = str
 
   const MaxConsensusHeight: ConsensusHeight_t
   const MaxHeight: Height_t
-  const MaxWork: Work_t
   const InitialFinalized: Snapshot_t
-  const PublishedAt: Round_t -> Snapshot_t -> bool
-  const HonestWorkAt: Round_t -> Snapshot_t -> Work_t
-  const AdversarialWorkAt: Round_t -> Snapshot_t -> Work_t
-  const TieBreakRank: Snapshot_t -> int
   const AncestorAt: Snapshot_t -> Height_t -> Block_t
 
   pure val ConsensusHeights = 0.to(MaxConsensusHeight)
@@ -33,18 +27,6 @@ module CrosslinkDynamicSigmaFinality {
     MaxConsensusHeight >= 0
   assume initial_finalized_is_snapshot =
     Snapshots.contains(InitialFinalized)
-  assume max_work_non_negative =
-    MaxWork >= 0
-  assume published_work_is_bounded =
-    Rounds.forall(r =>
-      Snapshots.forall(v =>
-        0 <= HonestWorkAt.get(r).get(v) and
-        0 <= AdversarialWorkAt.get(r).get(v) and
-        TotalWorkAt(r, v) <= MaxWork
-      )
-    )
-  assume generated_best_tips_match_work_competition =
-    Rounds.forall(r => IsBestTipAt(r, BestTip.get(r)))
 
   var consensusHeight: ConsensusHeight_t
   var latestFinal: Snapshot_t
@@ -59,25 +41,6 @@ module CrosslinkDynamicSigmaFinality {
 
   pure def BlockAt(v: Snapshot_t, h: Height_t): Block_t =
     AncestorAt.get(v).get(h)
-
-  pure def TotalWorkAt(r: Round_t, v: Snapshot_t): Work_t =
-    HonestWorkAt.get(r).get(v) + AdversarialWorkAt.get(r).get(v)
-
-  pure def CandidateAt(r: Round_t, v: Snapshot_t): bool =
-    Snapshots.contains(v) and PublishedAt.get(r).get(v)
-
-  pure def BetterOrEqualAt(r: Round_t, a: Snapshot_t, b: Snapshot_t): bool =
-    TotalWorkAt(r, a) > TotalWorkAt(r, b) or
-      (
-        TotalWorkAt(r, a) == TotalWorkAt(r, b) and
-        TieBreakRank.get(a) >= TieBreakRank.get(b)
-      )
-
-  pure def IsBestTipAt(r: Round_t, v: Snapshot_t): bool =
-    CandidateAt(r, v) and
-      Snapshots.forall(w =>
-        not(CandidateAt(r, w)) or BetterOrEqualAt(r, v, w)
-      )
 
   def Extends(newer: Snapshot_t, older: Snapshot_t): bool =
     IsSnapshot(newer) and
@@ -205,9 +168,6 @@ module CrosslinkDynamicSigmaFinality {
   val ConsensusHeightIsBounded =
     0 <= consensusHeight and consensusHeight <= MaxConsensusHeight
 
-  val CurrentDynamicBestTipMatchesGeneratedCompetition =
-    IsBestTipAt(dynRound, BestTip.get(dynRound))
-
   val FinalitySafety =
     ConsensusHeightIsBounded and
     FinalizedPrefixLinear and
@@ -303,6 +263,51 @@ module CrosslinkDynamicSigmaFinalityTest {
       .fail()
   }
 
+  run hashParticipationSignalRaisesFullCompositionSigmaTest = {
+    FullComposedInit
+      .then(FullAdvanceDerivedForkSignal)
+      .then(FullAdvanceHashParticipationSignal)
+      .then(all {
+        assert(dynRound == 2),
+        assert(DerivedReorgDepth(dynRound) == 0),
+        assert(dynSigma == MaxSigma),
+        assert(controllerStatus == "critical-hash-participation"),
+        assert(dynamicAction == "CriticalHashParticipationRaiseSigma"),
+        assert(FullComposedSafety),
+        FullComposedStutter,
+      })
+  }
+
+  run hashParticipationSigmaCanDelayFullFinalityTest = {
+    FullComposedInit
+      .then(FullSeedValidNil("p1"))
+      .then(FullSeedValidNil("p2"))
+      .then(FullSeedFaultyNil("p4"))
+      .then(FullSeedSameRoundLock("p3"))
+      .then(FullAdvanceDerivedForkSignal)
+      .then(FullStartNextRound("p1"))
+      .then(FullStartNextRound("p2"))
+      .then(FullStartNextRound("p3"))
+      .then(FullInsertProposal("p2"))
+      .then(FullPrevote("p1", "b2"))
+      .then(FullPrevote("p2", "b2"))
+      .then(FullPrevote("p3", "b2"))
+      .then(FullPrecommitValue("p1", "b2"))
+      .then(FullPrecommitValue("p2", "b2"))
+      .then(FullPrecommitValue("p3", "b2"))
+      .then(FullDecide("p1", 1, "b2"))
+      .then(FullAdvanceHashParticipationSignal)
+      .then(all {
+        assert(dynSigma == MaxSigma),
+        assert(DerivedReorgDepth(dynRound) == 0),
+        assert(controllerStatus == "critical-hash-participation"),
+        assert(FullComposedSafety),
+        FullComposedStutter,
+      })
+      .then(FullFinalizeDecision("p1", "b2", "b5"))
+      .fail()
+  }
+
   run generatedCompetitionBacksFullCompositionForkSignalTest = all {
     assert(IsBestTipAt(0, "a3")),
     assert(not(CandidateAt(0, "b4"))),
@@ -332,7 +337,7 @@ module CrosslinkDynamicSigmaFinalityModel {
     HashParticipationPct = Map(
       0 -> 90,
       1 -> 90,
-      2 -> 90,
+      2 -> 45,
     ),
     BestTip = Map(
       0 -> "a3",

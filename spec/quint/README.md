@@ -87,10 +87,10 @@ generated published-tip work competition.
 
 `CrosslinkDynamicSigmaFinality.qnt` composes dynamic sigma, nil-precommit
 resampling, and Crosslink finality. It uses the live `dynSigma` value as the
-tail-confirmation depth for finality, so a fork-derived sigma increase delays
-finalization until the fresh decision is confirmed deeply enough. Its fork
-signal is now backed by generated published-tip work competition, and finality
-advances at explicit BFT consensus heights.
+tail-confirmation depth for finality, so fork-derived and hash-participation
+sigma increases both delay finalization until the fresh decision is confirmed
+deeply enough. Its fork signal is now backed by generated published-tip work
+competition, and finality advances at explicit BFT consensus heights.
 
 ## Upstream Base
 
@@ -443,6 +443,8 @@ This runs:
 - `dynamicSigmaResamplingFinalizesTailConfirmedFreshCandidateTest`
 - `dynamicSigmaRejectsUnderconfirmedFreshCandidateTest`
 - `dynamicSigmaRejectsSkippedBftHeightFinalityTest`
+- `hashParticipationSignalRaisesFullCompositionSigmaTest`
+- `hashParticipationSigmaCanDelayFullFinalityTest`
 - `generatedCompetitionBacksFullCompositionForkSignalTest`
 
 The witness forms a nil-precommit recovery scenario, derives a rollback-depth
@@ -454,7 +456,11 @@ than the base confirmation depth. The generated-competition witness checks that
 the fork signal is backed by published work: hidden `b4` does not win at round
 0, but published `b4` becomes the generated best tip at round 1. The skipped
 BFT-height witness rejects trying to finalize the decided value at consensus
-height 2 when the current full-composition height is still 0.
+height 2 when the current full-composition height is still 0. The
+hash-participation witnesses then advance to a round with no new fork rollback
+but only 45% Crosslink-participating hash power; the controller raises sigma to
+the maximum, and the previously tail-confirmed `b2` candidate is rejected
+against `b5` because it is no longer deep enough under the live sigma.
 
 Randomized Rust-backend safety simulation:
 
@@ -808,6 +814,8 @@ The full dynamic-sigma/resampling/finality composition reports no violation for
 - the initial finalized snapshot remains finalized
 - finality advances exactly one BFT consensus height at a time
 - finality uses the live dynamic sigma as the tail-confirmation depth
+- hash-participation-driven sigma increases compose with the same finality
+  depth rule as fork-derived sigma increases
 
 ## Next Extensions
 
