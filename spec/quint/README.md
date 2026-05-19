@@ -53,8 +53,9 @@ still not modeled because the current focused shell assumes
 `CrosslinkBaselineTest.qnt` adds upstream-style smoke tests for the baseline
 shell: fixed-sigma sampling, normal decision, no double proposal, nil prevote
 quorum precommit-nil handling, timeout-driven nil votes and round advance,
-deriving a fresh `head - sigma` value after a fork switch, and the sticky
-baseline witness that still carries the stale fixed-sigma sample.
+future-round catchup, deriving a fresh `head - sigma` value after a fork
+switch, and the sticky baseline witness that still carries the stale
+fixed-sigma sample.
 
 `CrosslinkBaselineAccountability.qnt` makes the baseline accountability
 projection explicit. It checks that a nil-precommit certificate does not clear
@@ -1287,9 +1288,10 @@ The bounded upstream-shaped baseline checks report no violation for
 `BaselineN4F1StableSafety` or `BaselineN4F1ForkingSafety`. The stable instance
 keeps the normal fixed-sigma decision path, no-double-proposal witness,
 nil-prevote quorum path, and timeout-driven nil vote/round-advance witnesses
-alive through the parameter shell; the forking instance records that the shell
-derives the fresh round-1 `head - sigma` sample while the sticky baseline can
-still carry the stale round-0 sample.
+alive through the parameter shell. It also covers a focused future-round
+catchup witness from `f + 1` future-round messages. The forking instance
+records that the shell derives the fresh round-1 `head - sigma` sample while
+the sticky baseline can still carry the stale round-0 sample.
 
 The bounded baseline BFT-height checks report no violation for
 `BaselineBftHeightSafety`, which combines bounded consensus-height progression

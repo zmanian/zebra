@@ -112,6 +112,20 @@ module CrosslinkBaselineN4F1StableTest {
         unchangedAll,
       })
   }
+
+  run roundCatchupStartsFutureRoundTest = {
+    Init
+      .then(SeedCorrectNilPrevoteState("p2", 2))
+      .then(SeedCorrectNilPrevoteState("p3", 2))
+      .then(CatchUpToRound("p1", 2))
+      .then(all {
+        assert(RoundCatchupEvidence(2)),
+        assert(round.get("p1") == 2),
+        assert(step.get("p1") == "propose"),
+        assert(BaselineN4F1StableSafety),
+        unchangedAll,
+      })
+  }
 }
 
 module CrosslinkBaselineN4F1ForkingTest {

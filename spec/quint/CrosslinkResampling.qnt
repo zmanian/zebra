@@ -101,6 +101,14 @@ module CrosslinkResampling {
   pure def Voters(votes: Set[Vote_t]): Set[Proc_t] =
     votes.map(m => m.src)
 
+  def Proposers(r: Round_t): Set[Proc_t] =
+    msgsPropose.get(r).map(m => m.src)
+
+  def RoundActivityVoters(r: Round_t): Set[Proc_t] =
+    Proposers(r)
+      .union(Voters(msgsPrevote.get(r)))
+      .union(Voters(msgsPrecommit.get(r)))
+
   def PrevoteQuorum(r: Round_t, v: Snapshot_t): bool =
     size(Voters(msgsPrevote.get(r).filter(m => m.id == v))) >= THRESHOLD2
 
@@ -109,6 +117,9 @@ module CrosslinkResampling {
 
   def NilPrecommitCert(r: Round_t): bool =
     PrecommitQuorum(r, NilSnapshot)
+
+  def RoundCatchupEvidence(r: Round_t): bool =
+    size(RoundActivityVoters(r)) >= THRESHOLD1
 
   def HasPrevoteFrom(p: Proc_t, r: Round_t): bool =
     msgsPrevote.get(r).exists(m => m.src == p)
@@ -560,6 +571,29 @@ module CrosslinkResampling {
     }
   }
 
+  action CatchUpToRound(p: Proc_t, targetRound: Round_t): bool =
+    all {
+      targetRound.in(Rounds),
+      targetRound > round.get(p),
+      RoundCatchupEvidence(targetRound),
+      round' = round.set(p, targetRound),
+      step' = step.set(p, "propose"),
+      firedAction' = "CatchUpToRound",
+      decision' = decision,
+      lockedValue' = lockedValue,
+      lockedRound' = lockedRound,
+      validValue' = validValue,
+      validRound' = validRound,
+      cachedProposal' = cachedProposal,
+      cachedProposalRound' = cachedProposalRound,
+      msgsPropose' = msgsPropose,
+      msgsPrevote' = msgsPrevote,
+      msgsPrecommit' = msgsPrecommit,
+      evidencePropose' = evidencePropose,
+      evidencePrevote' = evidencePrevote,
+      evidencePrecommit' = evidencePrecommit,
+    }
+
   action ApplyLateNilPrecommitCertificate(p: Proc_t, certRound: Round_t): bool = {
     all {
       certRound.in(Rounds),
@@ -970,6 +1004,8 @@ module CrosslinkResampling {
       UponStreamChangePrecommitNil(p),
       StartNextRoundAfterPrecommitQuorum(p),
       TimeoutPrecommitStartNextRound(p),
+      nondet targetRound = oneOf(Rounds)
+      CatchUpToRound(p, targetRound),
       nondet r = oneOf(Rounds)
       nondet v = oneOf(Snapshots)
       Decide(p, r, v),
