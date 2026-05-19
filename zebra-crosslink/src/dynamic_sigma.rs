@@ -110,6 +110,63 @@ pub struct DynamicSigmaRawTelemetry {
     pub max_acceptable_expected_loss_units: u128,
 }
 
+/// Tenderlink round counters collected over a dynamic-sigma telemetry window.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DynamicSigmaRoundCounters {
+    /// Tenderlink rounds that started in the measurement window.
+    pub started_rounds: u64,
+    /// Tenderlink rounds that failed to decide and required recovery.
+    pub failed_rounds: u64,
+    /// Failed rounds with a nil-precommit recovery certificate.
+    pub nil_precommit_rounds: u64,
+    /// Failed rounds caused by a stale proposal or stream change.
+    pub stale_proposal_rounds: u64,
+    /// Tenderlink rounds that decided a value.
+    pub decided_rounds: u64,
+}
+
+/// Production-shaped telemetry inputs before raw controller telemetry assembly.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DynamicSigmaTelemetryComponents {
+    /// Total observed PoW work over the measurement window.
+    pub total_hash_work: Option<u128>,
+    /// Observed PoW work with objectively verifiable Crosslink participation.
+    pub crosslink_participating_hash_work: Option<u128>,
+    /// Tenderlink round counters for the same measurement window.
+    pub round_counters: DynamicSigmaRoundCounters,
+    /// Measured PoW timing variance percentage.
+    pub measured_block_interval_variance_pct: u8,
+    /// Maximum observed rollback depth in the window.
+    pub measured_observed_reorg_depth: u64,
+    /// Rollback risk estimates across the sigma ladder.
+    pub rollback_risk: RollbackRiskCurve,
+    /// Economic value exposed to rollback in the window.
+    pub value_at_risk_units: u128,
+    /// Maximum acceptable expected loss for this window.
+    pub max_acceptable_expected_loss_units: u128,
+}
+
+/// Invalid production telemetry assembly inputs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DynamicSigmaTelemetryAssemblyError {
+    /// Total PoW work evidence was not provided.
+    MissingTotalHashWork,
+    /// Crosslink-participating PoW work evidence was not provided.
+    MissingCrosslinkParticipatingHashWork,
+    /// Failed rounds exceed started rounds.
+    FailedRoundsExceedStarted,
+    /// Decided rounds exceed started rounds.
+    DecidedRoundsExceedStarted,
+    /// Failed and decided rounds together exceed started rounds.
+    DecidedAndFailedRoundsExceedStarted,
+    /// Nil-precommit recovery rounds exceed failed rounds.
+    NilPrecommitRoundsExceedFailed,
+    /// Stale-proposal rounds exceed failed rounds.
+    StaleProposalRoundsExceedFailed,
+    /// Assembled raw telemetry is invalid.
+    InvalidRawTelemetry(DynamicSigmaError),
+}
+
 /// Hash-participation health status.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HashParticipationStatus {
@@ -377,6 +434,73 @@ impl DynamicSigmaRawTelemetry {
         validate_window(window)?;
 
         Ok(window)
+    }
+}
+
+impl DynamicSigmaTelemetryComponents {
+    /// Assemble production-shaped telemetry into raw controller telemetry.
+    ///
+    /// This requires the hash-participation numerator to be explicit. Unknown
+    /// participation is not treated as healthy participation.
+    pub fn try_into_raw_telemetry(
+        self,
+    ) -> Result<DynamicSigmaRawTelemetry, DynamicSigmaTelemetryAssemblyError> {
+        self.round_counters.validate()?;
+
+        let total_hash_work = self
+            .total_hash_work
+            .ok_or(DynamicSigmaTelemetryAssemblyError::MissingTotalHashWork)?;
+        let crosslink_participating_hash_work = self
+            .crosslink_participating_hash_work
+            .ok_or(DynamicSigmaTelemetryAssemblyError::MissingCrosslinkParticipatingHashWork)?;
+
+        let raw_telemetry = DynamicSigmaRawTelemetry {
+            total_hash_work,
+            crosslink_participating_hash_work,
+            total_tenderlink_rounds: self.round_counters.started_rounds,
+            failed_tenderlink_rounds: self.round_counters.failed_rounds,
+            measured_block_interval_variance_pct: self.measured_block_interval_variance_pct,
+            measured_observed_reorg_depth: self.measured_observed_reorg_depth,
+            rollback_risk: self.rollback_risk,
+            value_at_risk_units: self.value_at_risk_units,
+            max_acceptable_expected_loss_units: self.max_acceptable_expected_loss_units,
+        };
+
+        raw_telemetry
+            .into_window(TelemetryEstimateMargins::default())
+            .map_err(DynamicSigmaTelemetryAssemblyError::InvalidRawTelemetry)?;
+
+        Ok(raw_telemetry)
+    }
+}
+
+impl DynamicSigmaRoundCounters {
+    fn validate(self) -> Result<(), DynamicSigmaTelemetryAssemblyError> {
+        if self.failed_rounds > self.started_rounds {
+            return Err(DynamicSigmaTelemetryAssemblyError::FailedRoundsExceedStarted);
+        }
+
+        if self.decided_rounds > self.started_rounds {
+            return Err(DynamicSigmaTelemetryAssemblyError::DecidedRoundsExceedStarted);
+        }
+
+        if self
+            .failed_rounds
+            .checked_add(self.decided_rounds)
+            .is_none_or(|observed_rounds| observed_rounds > self.started_rounds)
+        {
+            return Err(DynamicSigmaTelemetryAssemblyError::DecidedAndFailedRoundsExceedStarted);
+        }
+
+        if self.nil_precommit_rounds > self.failed_rounds {
+            return Err(DynamicSigmaTelemetryAssemblyError::NilPrecommitRoundsExceedFailed);
+        }
+
+        if self.stale_proposal_rounds > self.failed_rounds {
+            return Err(DynamicSigmaTelemetryAssemblyError::StaleProposalRoundsExceedFailed);
+        }
+
+        Ok(())
     }
 }
 
@@ -739,6 +863,29 @@ mod tests {
         }
     }
 
+    fn production_telemetry_components() -> DynamicSigmaTelemetryComponents {
+        DynamicSigmaTelemetryComponents {
+            total_hash_work: Some(100),
+            crosslink_participating_hash_work: Some(63),
+            round_counters: DynamicSigmaRoundCounters {
+                started_rounds: 10,
+                failed_rounds: 2,
+                nil_precommit_rounds: 1,
+                stale_proposal_rounds: 1,
+                decided_rounds: 8,
+            },
+            measured_block_interval_variance_pct: 10,
+            measured_observed_reorg_depth: 0,
+            rollback_risk: RollbackRiskCurve {
+                base_sigma_ppm: 80,
+                raised_sigma_ppm: 20,
+                max_sigma_ppm: 2,
+            },
+            value_at_risk_units: 1000,
+            max_acceptable_expected_loss_units: 100,
+        }
+    }
+
     #[test]
     fn raw_observation_counters_build_conservative_window() {
         let telemetry = raw_telemetry(63, 15)
@@ -776,6 +923,50 @@ mod tests {
 
         assert_eq!(decision.hash_participation_floor, 3);
         assert_eq!(decision.sigma, 3);
+    }
+
+    #[test]
+    fn production_telemetry_requires_crosslink_participating_hash_work() {
+        let mut components = production_telemetry_components();
+        components.crosslink_participating_hash_work = None;
+
+        assert_eq!(
+            components.try_into_raw_telemetry(),
+            Err(DynamicSigmaTelemetryAssemblyError::MissingCrosslinkParticipatingHashWork),
+        );
+    }
+
+    #[test]
+    fn production_telemetry_uses_round_counters_as_raw_failure_window() {
+        let raw = production_telemetry_components()
+            .try_into_raw_telemetry()
+            .expect("complete production telemetry components should assemble");
+
+        assert_eq!(raw.total_tenderlink_rounds, 10);
+        assert_eq!(raw.failed_tenderlink_rounds, 2);
+        assert_eq!(raw.crosslink_participating_hash_work, 63);
+
+        let decision = select_dynamic_sigma(
+            params(),
+            raw.into_window(TelemetryEstimateMargins::default())
+                .expect("assembled raw telemetry should build a window"),
+        )
+        .expect("assembled production telemetry should feed the controller");
+
+        assert_eq!(decision.hash_participation_floor, 3);
+        assert_eq!(decision.sigma, 3);
+    }
+
+    #[test]
+    fn production_telemetry_rejects_inconsistent_round_counters() {
+        let mut components = production_telemetry_components();
+        components.round_counters.failed_rounds = 3;
+        components.round_counters.decided_rounds = 8;
+
+        assert_eq!(
+            components.try_into_raw_telemetry(),
+            Err(DynamicSigmaTelemetryAssemblyError::DecidedAndFailedRoundsExceedStarted),
+        );
     }
 
     #[test]

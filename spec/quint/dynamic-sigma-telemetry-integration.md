@@ -59,12 +59,12 @@ consensus-visible or proposal-verifiable telemetry.
 
 | Quint input | Production meaning | Current source | Missing production work |
 | --- | --- | --- | --- |
-| `TotalHashWork` | Total PoW work observed in the calibration window. | Block headers and chain work can be derived from validated PoW headers. | Define the exact window and whether competing side-branch work is included or only best-chain work. |
-| `CrosslinkParticipatingHashWork` | PoW work from blocks whose miners are participating in Crosslink. | No complete source in the current prototype. | Add an objectively verifiable participation marker or derive participation from valid Crosslink-finality content in blocks. |
+| `TotalHashWork` | Total PoW work observed in the calibration window. | Block headers and chain work can be derived from validated PoW headers; the Rust telemetry assembly boundary now requires explicit total-work evidence before raw telemetry can be built. | Define the exact window and whether competing side-branch work is included or only best-chain work. |
+| `CrosslinkParticipatingHashWork` | PoW work from blocks whose miners are participating in Crosslink. | No complete source in the current prototype; the Rust telemetry assembly boundary rejects missing participating-work evidence instead of assuming healthy participation. | Add an objectively verifiable participation marker or derive participation from valid Crosslink-finality content in blocks. |
 | `EstimatedCoverageRiskPct` | Conservative upper bound on the non-participating or unseen-work share. | Can be computed from total and participating work once both are defined. | Add safety margin for hidden work, delayed propagation, peer eclipse, and incomplete fork visibility. |
-| `TotalTenderlinkRounds` | Count of Tenderlink rounds in the measurement window. | The prototype tracks BFT event flags and blocks. | Add durable round-start, timeout, nil-precommit, and decision counters. |
-| `FailedTenderlinkRounds` | Rounds that do not decide a value and require recovery. | Not exposed as a production metric. | Define failure labels: timeout, nil-precommit certificate, stale proposal, invalid proposal, or mixed evidence. |
-| `EstimatedRoundFailureRatePct` | Conservative upper bound on failed-round frequency. | Derived from round counters once available. | Decide smoothing, hysteresis, and window size so transient jitter does not create unstable sigma changes. |
+| `TotalTenderlinkRounds` | Count of Tenderlink rounds in the measurement window. | `DynamicSigmaRoundCounters` can assemble started rounds into raw telemetry, but live Tenderlink event hooks are not wired yet. | Add durable round-start, timeout, nil-precommit, and decision counters. |
+| `FailedTenderlinkRounds` | Rounds that do not decide a value and require recovery. | `DynamicSigmaRoundCounters` can assemble failed rounds and validates nil-precommit/stale-proposal subcounters against the failed-round count. | Define failure labels for timeout, invalid proposal, or mixed evidence and wire them to live events. |
+| `EstimatedRoundFailureRatePct` | Conservative upper bound on failed-round frequency. | Derived from assembled round counters, with conservative margins applied by the raw telemetry conversion. | Decide smoothing, hysteresis, and window size so transient jitter does not create unstable sigma changes. |
 | `MeasuredBlockIntervalVariancePct` | PoW timing instability over the same window. | Header times are available from validated blocks. | Define a robust estimator that handles timestamp manipulation and difficulty-adjustment lag. |
 | `MeasuredObservedReorgDepth` | Maximum rollback depth observed across best-tip changes in the window. | Zebra state can observe best-tip transitions, but Crosslink-specific rollback-depth telemetry is not present. | Add a metric that records replaced prefix depth for best-tip changes and side-branch releases. |
 | `RollbackRiskPpmAtSigma` | Modelled rollback probability for each candidate sigma. | Not a direct node metric. | Build an offline or deterministic estimator from participation, observed work competition, variance, and historical reorg data. |
@@ -158,6 +158,14 @@ is below the configured target, the selected sigma must be at least the degraded
 floor; if it is below the critical threshold, the selected sigma must be the max
 floor.
 
+The branch also now has a pure production-shaped telemetry assembly contract.
+`DynamicSigmaTelemetryComponents::try_into_raw_telemetry` requires explicit total
+hash work and explicit Crosslink-participating hash work, rejects inconsistent
+round counters, and only then builds `DynamicSigmaRawTelemetry`. This does not
+solve the source-of-truth problem by itself; it makes the next source-integration
+step fail closed instead of letting unknown participation or contradictory round
+metrics look like a healthy calibration window.
+
 ## Failure Modes
 
 The production controller needs guardrails for adversarial telemetry:
@@ -192,8 +200,10 @@ A production implementation of the dynamic-sigma variant should provide:
   controller now covers the bounded Quint telemetry fixture and raw-counter
   estimate construction, and the prototype-gated Tenderlink payload decoder now
   rejects dynamic payload evidence whose Crosslink-participating hash-power
-  share requires a higher sigma than the proposer selected, but production
-  source integration still needs tests
+  share requires a higher sigma than the proposer selected. The new pure
+  telemetry assembly tests also reject missing participating-work evidence and
+  inconsistent round counters, but live production source integration still
+  needs tests
 - tests showing that dynamic sigma changes do not make honest validators reject
   each other's otherwise valid proposals; the pure Rust proposal-evidence
   verifier and BFT block-construction helper cover identical evidence

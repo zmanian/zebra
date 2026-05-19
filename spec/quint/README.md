@@ -90,9 +90,13 @@ a deployed controller can replace the prototype's fixed sigma parameter.
 prototype: it derives conservative coverage and round-failure estimates from
 raw counters, validates telemetry windows, and selects the same sigma floor as
 the Quint telemetry fixture. It also includes a proposal-carried evidence
-verifier that rejects selected sigma values below the controller-required floor,
-plus a `BftBlock::try_from_with_confirmation_depth` construction hook and tagged
-payload envelope. The live Tenderlink proposal, validation, and decided-block
+verifier that rejects selected sigma values below the controller-required floor.
+`DynamicSigmaTelemetryComponents` and `DynamicSigmaRoundCounters` are the first
+production-shaped assembly boundary: they require explicit total and
+Crosslink-participating hash work, reject inconsistent round counters, and only
+then build raw controller telemetry. The branch also includes a
+`BftBlock::try_from_with_confirmation_depth` construction hook and tagged payload
+envelope. The live Tenderlink proposal, validation, and decided-block
 callbacks now route through a config-aware payload path: default config still
 emits and accepts the legacy fixed-sigma `BftBlock`, while
 `dynamic_sigma_prototype` emits and validates the tagged dynamic-sigma envelope
@@ -1032,7 +1036,9 @@ This model is intentionally narrow. The next useful extensions are:
   selected-sigma BFT block constructor to production telemetry sources and live
   proposal validation, including a consensus-safe Crosslink hash-participation
   metric and a validated economic exposure model. The live prototype proposal
-  path now runs the controller over fixture telemetry, so the remaining work is
-  replacing that fixture with consensus-safe or proposal-verifiable inputs
+  path now runs the controller over fixture telemetry, and the pure telemetry
+  assembly boundary fails closed on missing participating-work evidence or
+  inconsistent round counters, so the remaining work is replacing the fixture
+  with consensus-safe or proposal-verifiable input producers
 - refine the split projection checks into smaller inductive lemmas if bounds
   beyond the checked depth-10 projections still need very large JVM/Z3 heaps
