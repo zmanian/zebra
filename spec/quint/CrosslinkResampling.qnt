@@ -350,6 +350,30 @@ module CrosslinkResampling {
     }
   }
 
+  action UponNilPrevoteQuorum(p: Proc_t): bool = {
+    val r = round.get(p)
+    all {
+      step.get(p).in(Set("prevote", "precommit")),
+      PrevoteQuorum(r, NilSnapshot),
+      not(HasPrecommitFrom(p, r)),
+      BroadcastPrecommit(p, r, NilSnapshot),
+      step' = step.set(p, "precommit"),
+      firedAction' = "UponNilPrevoteQuorum",
+      round' = round,
+      decision' = decision,
+      lockedValue' = lockedValue,
+      lockedRound' = lockedRound,
+      validValue' = validValue,
+      validRound' = validRound,
+      cachedProposal' = cachedProposal,
+      cachedProposalRound' = cachedProposalRound,
+      msgsPropose' = msgsPropose,
+      msgsPrevote' = msgsPrevote,
+      evidencePropose' = evidencePropose,
+      evidencePrevote' = evidencePrevote,
+    }
+  }
+
   action UponStreamChangePrecommitNil(p: Proc_t): bool = {
     val r = round.get(p)
     all {
@@ -691,6 +715,27 @@ module CrosslinkResampling {
       evidencePrevote' = evidencePrevote,
     }
 
+  action SeedCorrectNilPrevoteState(p: Proc_t, r: Round_t): bool =
+    all {
+      p.in(Corr),
+      r.in(Rounds),
+      BroadcastPrevote(p, r, NilSnapshot),
+      firedAction' = "SeedCorrectNilPrevoteState",
+      round' = round,
+      step' = step.set(p, "prevote"),
+      decision' = decision,
+      lockedValue' = lockedValue,
+      lockedRound' = lockedRound,
+      validValue' = validValue,
+      validRound' = validRound,
+      cachedProposal' = cachedProposal,
+      cachedProposalRound' = cachedProposalRound,
+      msgsPropose' = msgsPropose,
+      msgsPrecommit' = msgsPrecommit,
+      evidencePropose' = evidencePropose,
+      evidencePrecommit' = evidencePrecommit,
+    }
+
   action SeedFaultyPrecommitEvidence(p: Proc_t, r: Round_t, v: Snapshot_t): bool =
     all {
       p.in(Faulty),
@@ -813,6 +858,7 @@ module CrosslinkResampling {
       UponProposalPrevote(p, v),
       nondet v = oneOf(Snapshots)
       UponValuePrevoteQuorum(p, v),
+      UponNilPrevoteQuorum(p),
       UponStreamChangePrecommitNil(p),
       StartNextRoundAfterPrecommitQuorum(p),
       nondet r = oneOf(Rounds)

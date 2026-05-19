@@ -68,8 +68,8 @@ The current branch has these baseline-specific files:
   - currently covers `n4_f1_stable`, `n4_f1_forking`, and `n5_f1_forking`
 - `CrosslinkBaselineTest.qnt`
   - adds upstream-style smoke tests for fixed-sigma sampling, normal decision,
-    no double proposal, fork-derived stream change, and sticky stale-sample
-    carryover
+    no double proposal, nil prevote quorum handling, fork-derived stream
+    change, and sticky stale-sample carryover
 - `CrosslinkBaselinePowSampling.qnt`
   - derives `Stream(round)` from an explicit `head - sigma` ancestor
   - records the fork-switch stale-sample behavior
@@ -119,11 +119,11 @@ The current branch has these baseline-specific files:
 | Automated CI baseline gates | `.github/workflows/quint-crosslink.yml` | Covered structurally; requires green run evidence per commit |
 | Parameterized `Corr/Faulty/N/T` validator model | `CrosslinkBaselineTenderlink.qnt` | Partial; parameter shell exists, full transition/faulty injection is still focused |
 | Upstream-style model instances (`n4_f1`, `n4_f2`, `n5_f2`) | `CrosslinkBaselineModels.qnt`; `n4_f1_stable`, `n4_f1_forking`, `n5_f1_forking` | Partial; above-threshold faulty instances are still missing |
-| Upstream-style normal decision/no-double-proposal tests | `CrosslinkBaselineTest.qnt`; `decisionTest`; `noProposeTwiceTest` | Covered for `n4_f1_stable` |
+| Upstream-style normal decision/no-double-proposal/nil-prevote tests | `CrosslinkBaselineTest.qnt`; `decisionTest`; `noProposeTwiceTest`; `nilPrevoteQuorumPrecommitsNilTest` | Covered for `n4_f1_stable` |
 | Upstream-style stream-change/sticky-sample test | `CrosslinkBaselineTest.qnt`; `streamChangeDerivesFreshHeadMinusSigmaTest`; `stickyBaselineCarriesStaleFixedSigmaSampleTest` | Covered for `n4_f1_forking` |
 | Faulty proposal/prevote/precommit evidence reaches equivocation predicates | `CrosslinkBaselineAccountability.qnt`; `baselineFaultyProposalEvidenceFeedsEquivocationTest`; `baselineFaultyPrevoteEvidenceFeedsEquivocationTest`; `baselineFaultyNilValuePrecommitEvidenceFeedsEquivocationTest` | Covered as witnesses |
 | Nondeterministic faulty message injection in `Init` | `InitWithFaultyEvidence`; `CrosslinkBaselineFaultyInitTinyModel`; `CrosslinkBaselineFaultyInitForkingModel`; `BaselineFaultyInitSafety`; `BaselineForkingFaultyInitSafety` | Partial; covered by a tiny full-powerset instance and a larger fixed-sigma/forking instance with bounded faulty evidence, but not yet by the unbounded larger parameterized instances |
-| Full Tendermint transition surface | Current model isolates the Crosslink fork-recovery question | Missing |
+| Full Tendermint transition surface | Current model covers value prevote quorum, nil prevote quorum, stream-change nil precommit, round advance after precommit quorum, and decision; timeout-specific transitions remain focused/implicit | Partial |
 | Full agreement/validity/accountability invariant suite over arbitrary evidence | Current suite has bounded safety plus focused accountability witnesses | Partial |
 | False-invariant/counterexample harnesses for amnesia/equivocation/agreement | `CrosslinkBaselineCounterexampleModel`; `falseNoConflictingCommitsInvariantFailsTest`; `falseNoAmnesiaEvidenceInvariantFailsTest`; `falseNoEquivocationEvidenceInvariantFailsTest`; `falseAgreementInvariantFailsTest` | Partial; core negative witnesses covered in Rust tests, not yet an exhaustive counterexample suite |
 | Generated/adversarial PoW schedule for baseline long reorgs | Baseline uses a bounded fork-switch fixture | Partial |

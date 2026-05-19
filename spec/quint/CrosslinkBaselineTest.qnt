@@ -66,6 +66,22 @@ module CrosslinkBaselineN4F1StableTest {
       .then(InsertProposal("p1"))
       .fail()
   }
+
+  run nilPrevoteQuorumPrecommitsNilTest = {
+    Init
+      .then(SeedCorrectNilPrevoteState("p1", 0))
+      .then(SeedCorrectNilPrevoteState("p2", 0))
+      .then(SeedCorrectNilPrevoteState("p3", 0))
+      .then(UponNilPrevoteQuorum("p1"))
+      .then(UponNilPrevoteQuorum("p2"))
+      .then(UponNilPrevoteQuorum("p3"))
+      .then(all {
+        assert(PrevoteQuorum(0, NilSnapshot)),
+        assert(NilPrecommitCert(0)),
+        assert(BaselineN4F1StableSafety),
+        unchangedAll,
+      })
+  }
 }
 
 module CrosslinkBaselineN4F1ForkingTest {

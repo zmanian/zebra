@@ -41,8 +41,8 @@ valid and invalid snapshot sets, round/proposer parameters, and the
 Crosslink-specific fixed-sigma rule
 `BaselineStream(round) = ancestor(bestTip(round), height(bestTip(round)) -
 sigma)`. It still delegates to the focused sticky model, so full upstream
-faulty-message injection and the full Tendermint transition surface remain
-future work.
+faulty-message injection and most of the full Tendermint transition surface
+remain future work.
 
 `CrosslinkBaselineModels.qnt` adds small baseline instances over that shell,
 including stable and forking `n4_f1` fixtures plus a forking `n5_f1` fixture.
@@ -51,9 +51,10 @@ still not modeled because the current focused shell assumes
 `size(Faulty) <= T`.
 
 `CrosslinkBaselineTest.qnt` adds upstream-style smoke tests for the baseline
-shell: fixed-sigma sampling, normal decision, no double proposal, deriving a
-fresh `head - sigma` value after a fork switch, and the sticky baseline witness
-that still carries the stale fixed-sigma sample.
+shell: fixed-sigma sampling, normal decision, no double proposal, nil prevote
+quorum precommit-nil handling, deriving a fresh `head - sigma` value after a
+fork switch, and the sticky baseline witness that still carries the stale
+fixed-sigma sample.
 
 `CrosslinkBaselineAccountability.qnt` makes the baseline accountability
 projection explicit. It checks that a nil-precommit certificate does not clear
@@ -402,10 +403,11 @@ $QUINT test spec/quint/CrosslinkBaselineTest.qnt \
   --backend=rust
 ```
 
-The stable `n4_f1` test checks fixed-sigma sampling, normal decision, and
-no-double-proposal behavior. The forking `n4_f1` test checks that the shell
-derives the fresh `head - sigma` sample after a fork switch while the sticky
-baseline still carries the old sample into the next round.
+The stable `n4_f1` test checks fixed-sigma sampling, normal decision,
+no-double-proposal behavior, and the normal Tendermint transition from a nil
+prevote quorum to nil precommits. The forking `n4_f1` test checks that the
+shell derives the fresh `head - sigma` sample after a fork switch while the
+sticky baseline still carries the old sample into the next round.
 
 Witness the named baseline accountability behavior:
 
