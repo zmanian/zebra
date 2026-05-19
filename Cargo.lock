@@ -5445,7 +5445,7 @@ dependencies = [
 [[package]]
 name = "tenderlink"
 version = "0.1.0"
-source = "git+https://github.com/zmanian/tenderlink.git?rev=4121363ef8234ae4f61195f802e919f0312e8f82#4121363ef8234ae4f61195f802e919f0312e8f82"
+source = "git+https://github.com/zmanian/tenderlink.git?rev=297dfe96f894f9afd5f6da5d80729e0feffac0ed#297dfe96f894f9afd5f6da5d80729e0feffac0ed"
 dependencies = [
  "blake3",
  "byteorder",

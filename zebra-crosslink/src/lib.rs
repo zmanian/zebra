@@ -207,6 +207,50 @@ pub(crate) struct TFLServiceInternal {
     // consensus-safe or proposal-verifiable state source before enabling the
     // dynamic variant by default.
     prototype_dynamic_sigma_hysteresis_state: DynamicSigmaHysteresisState,
+    prototype_dynamic_sigma_round_telemetry: PrototypeDynamicSigmaRoundTelemetry,
+}
+
+#[derive(Debug, Default)]
+struct PrototypeDynamicSigmaRoundTelemetry {
+    counters: DynamicSigmaRoundCounters,
+    started_rounds: HashSet<(u64, u32)>,
+    decided_rounds: HashSet<(u64, u32)>,
+    failed_rounds: HashSet<(u64, u32)>,
+}
+
+impl PrototypeDynamicSigmaRoundTelemetry {
+    fn record_consensus_event(&mut self, event: tenderlink::ConsensusEvent) {
+        let round_key = (event.height, event.round);
+
+        match event.kind {
+            tenderlink::ConsensusEventKind::StartedRound => {
+                if self.started_rounds.insert(round_key) {
+                    self.counters
+                        .record_event(DynamicSigmaRoundEvent::StartedRound);
+                }
+            }
+            tenderlink::ConsensusEventKind::Decided => {
+                if self.decided_rounds.insert(round_key) {
+                    self.counters.record_event(DynamicSigmaRoundEvent::Decided);
+                }
+            }
+            tenderlink::ConsensusEventKind::NilPrecommitRecovery => {
+                self.record_failed_round(round_key, DynamicSigmaRoundEvent::NilPrecommitRecovery)
+            }
+            tenderlink::ConsensusEventKind::StaleProposal => {
+                self.record_failed_round(round_key, DynamicSigmaRoundEvent::StaleProposal)
+            }
+            tenderlink::ConsensusEventKind::Timeout => {
+                self.record_failed_round(round_key, DynamicSigmaRoundEvent::Timeout)
+            }
+        }
+    }
+
+    fn record_failed_round(&mut self, round_key: (u64, u32), event: DynamicSigmaRoundEvent) {
+        if self.failed_rounds.insert(round_key) {
+            self.counters.record_event(event);
+        }
+    }
 }
 
 // TODO: Result?
@@ -1816,8 +1860,9 @@ async fn tfl_service_main_loop(internal_handle: TFLServiceHandle) -> Result<(), 
         let tfl_handle2 = internal_handle.clone();
         let tfl_handle3 = internal_handle.clone();
         let tfl_handle4 = internal_handle.clone();
+        let tfl_handle5 = internal_handle.clone();
 
-        tokio::spawn(tenderlink::entry_point(
+        tokio::spawn(tenderlink::entry_point_with_consensus_observer(
             my_private_key,
             static_keypair_maybe,
             endpoint_maybe,
@@ -1898,6 +1943,21 @@ async fn tfl_service_main_loop(internal_handle: TFLServiceHandle) -> Result<(), 
                         }
                         None
                     }
+                })
+            })),
+            tenderlink::ClosureToObserveConsensusEvent(Arc::new(move |event| {
+                let tfl_handle = tfl_handle5.clone();
+                Box::pin(async move {
+                    if !tfl_handle.config.dynamic_sigma_prototype {
+                        return;
+                    }
+
+                    tfl_handle
+                        .internal
+                        .lock()
+                        .await
+                        .prototype_dynamic_sigma_round_telemetry
+                        .record_consensus_event(event);
                 })
             })),
         ));
@@ -2790,6 +2850,96 @@ mod tests {
             counters.record_event(*event);
         }
         counters
+    }
+
+    fn consensus_event(kind: tenderlink::ConsensusEventKind) -> tenderlink::ConsensusEvent {
+        tenderlink::ConsensusEvent {
+            height: 7,
+            round: 3,
+            kind,
+        }
+    }
+
+    #[test]
+    fn prototype_dynamic_sigma_round_telemetry_deduplicates_round_events() {
+        let mut telemetry = PrototypeDynamicSigmaRoundTelemetry::default();
+
+        telemetry.record_consensus_event(consensus_event(
+            tenderlink::ConsensusEventKind::StartedRound,
+        ));
+        telemetry.record_consensus_event(consensus_event(
+            tenderlink::ConsensusEventKind::StartedRound,
+        ));
+        telemetry.record_consensus_event(consensus_event(tenderlink::ConsensusEventKind::Decided));
+        telemetry.record_consensus_event(consensus_event(tenderlink::ConsensusEventKind::Decided));
+
+        assert_eq!(
+            telemetry.counters,
+            DynamicSigmaRoundCounters {
+                started_rounds: 1,
+                decided_rounds: 1,
+                ..DynamicSigmaRoundCounters::default()
+            }
+        );
+    }
+
+    #[test]
+    fn prototype_dynamic_sigma_round_telemetry_counts_one_failure_reason_per_round() {
+        let mut telemetry = PrototypeDynamicSigmaRoundTelemetry::default();
+
+        telemetry.record_consensus_event(consensus_event(
+            tenderlink::ConsensusEventKind::StartedRound,
+        ));
+        telemetry.record_consensus_event(consensus_event(
+            tenderlink::ConsensusEventKind::StaleProposal,
+        ));
+        telemetry.record_consensus_event(consensus_event(
+            tenderlink::ConsensusEventKind::NilPrecommitRecovery,
+        ));
+        telemetry.record_consensus_event(consensus_event(tenderlink::ConsensusEventKind::Timeout));
+
+        assert_eq!(
+            telemetry.counters,
+            DynamicSigmaRoundCounters {
+                started_rounds: 1,
+                failed_rounds: 1,
+                stale_proposal_rounds: 1,
+                ..DynamicSigmaRoundCounters::default()
+            }
+        );
+    }
+
+    #[test]
+    fn prototype_dynamic_sigma_round_telemetry_counts_distinct_failed_rounds() {
+        let mut telemetry = PrototypeDynamicSigmaRoundTelemetry::default();
+
+        telemetry.record_consensus_event(consensus_event(
+            tenderlink::ConsensusEventKind::StartedRound,
+        ));
+        telemetry.record_consensus_event(consensus_event(
+            tenderlink::ConsensusEventKind::StaleProposal,
+        ));
+        telemetry.record_consensus_event(tenderlink::ConsensusEvent {
+            height: 7,
+            round: 4,
+            kind: tenderlink::ConsensusEventKind::StartedRound,
+        });
+        telemetry.record_consensus_event(tenderlink::ConsensusEvent {
+            height: 7,
+            round: 4,
+            kind: tenderlink::ConsensusEventKind::NilPrecommitRecovery,
+        });
+
+        assert_eq!(
+            telemetry.counters,
+            DynamicSigmaRoundCounters {
+                started_rounds: 2,
+                failed_rounds: 2,
+                nil_precommit_rounds: 1,
+                stale_proposal_rounds: 1,
+                ..DynamicSigmaRoundCounters::default()
+            }
+        );
     }
 
     #[test]

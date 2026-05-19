@@ -164,6 +164,7 @@ pub fn spawn_new_tfl_service(
         prototype_dynamic_sigma_hysteresis_state: crate::prototype_dynamic_sigma_hysteresis_state(
             crate::PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS,
         ),
+        prototype_dynamic_sigma_round_telemetry: Default::default(),
     }));
 
     let handle_mtx = Arc::new(std::sync::Mutex::new(None));

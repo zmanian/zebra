@@ -311,6 +311,12 @@ recovery, stale proposals, timeouts, invalid proposals, and mixed evidence into
 deterministic or proposal-carried evidence, but the event API gives live
 Tenderlink hooks a single place to accumulate the durable window. Validation
 rejects impossible totals and failure-reason overcounts.
+The local Tenderlink fork now exposes lifecycle events for started rounds,
+decisions, nil-precommit recovery, stale proposals, and timeouts; the Zebra
+prototype records those events into a deduplicated in-process counter window
+when `dynamic_sigma_prototype` is enabled. Proposal evidence is still
+fixture-backed until the remaining PoW and round telemetry sources are promoted
+to consensus-safe or proposal-verifiable inputs.
 
 The prototype proposal path now uses this same assembly boundary through
 `dynamic_sigma_proposal_evidence_from_telemetry_components`: telemetry components
