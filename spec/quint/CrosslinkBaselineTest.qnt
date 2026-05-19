@@ -126,6 +126,47 @@ module CrosslinkBaselineN4F1StableTest {
         unchangedAll,
       })
   }
+
+  run validRoundProposalWithoutPrevoteQuorumIsRejectedTest = {
+    Init
+      .then(SeedValidNilPrecommitState("p1"))
+      .then(SeedValidNilPrecommitState("p2"))
+      .then(SeedValidNilPrecommitState("p3"))
+      .then(StartNextRoundAfterPrecommitQuorum("p1"))
+      .then(StartNextRoundAfterPrecommitQuorum("p2"))
+      .then(StartNextRoundAfterPrecommitQuorum("p3"))
+      .then(InsertProposal("p2"))
+      .then(UponProposalPrevote("p1", "a1"))
+      .fail()
+  }
+
+  run validRoundProposalWithPrevoteQuorumIsAcceptedTest = {
+    Init
+      .then(InsertProposal("p1"))
+      .then(UponProposalPrevote("p1", "a1"))
+      .then(UponProposalPrevote("p2", "a1"))
+      .then(UponProposalPrevote("p3", "a1"))
+      .then(UponValuePrevoteQuorum("p2", "a1"))
+      .then(TimeoutPrevotePrecommitNil("p1"))
+      .then(TimeoutPrecommitStartNextRound("p1"))
+      .then(TimeoutPrecommitStartNextRound("p2"))
+      .then(InsertProposal("p2"))
+      .then(UponProposalPrevote("p1", "a1"))
+      .then(all {
+        assert(PrevoteQuorum(0, "a1")),
+        assert(msgsPropose.get(1).exists(m =>
+          m.src == "p2" and
+            m.round == 1 and
+            m.proposal == "a1" and
+            m.validRound == 0
+        )),
+        assert(msgsPrevote.get(1).exists(m =>
+          m.src == "p1" and m.round == 1 and m.id == "a1"
+        )),
+        assert(BaselineN4F1StableSafety),
+        unchangedAll,
+      })
+  }
 }
 
 module CrosslinkBaselineN4F1ForkingTest {

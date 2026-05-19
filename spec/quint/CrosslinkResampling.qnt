@@ -141,6 +141,20 @@ module CrosslinkResampling {
       m.src == Proposer.get(r) and m.round == r and m.proposal == v
     )
 
+  def HasPrevoteJustifiedProposal(r: Round_t, v: Snapshot_t): bool =
+    msgsPropose.get(r).exists(m =>
+      m.src == Proposer.get(r) and
+      m.round == r and
+      m.proposal == v and
+      (
+        m.validRound == NilRound or (
+          m.validRound.in(Rounds) and
+          m.validRound < r and
+          PrevoteQuorum(m.validRound, v)
+        )
+      )
+    )
+
   val EvidencePropose: Set[Propose_t] =
     evidencePropose
 
@@ -318,7 +332,7 @@ module CrosslinkResampling {
     }
     all {
       step.get(p) == "propose",
-      HasProposal(r, v),
+      HasPrevoteJustifiedProposal(r, v),
       not(HasPrevoteFrom(p, r)),
       BroadcastPrevote(p, r, vote),
       step' = step.set(p, "prevote"),

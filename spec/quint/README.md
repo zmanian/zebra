@@ -451,15 +451,18 @@ $QUINT test spec/quint/CrosslinkBaselineTest.qnt \
 ```
 
 The stable `n4_f1` test checks fixed-sigma sampling, normal decision,
-no-double-proposal behavior, and the normal Tendermint transition from a nil
-prevote quorum to nil precommits. The forking `n4_f1` test checks that the
-shell derives the fresh `head - sigma` sample after a fork switch while the
-sticky baseline still carries the old sample into the next round. The `f = 2`
-tests record that `n4_f2` and `n5_f2` sit above the live fault boundary for
-correct-only value commits, while `n7_f2` still supports a 2f+1 correct
-decision path. These three `f = 2` safety invariants are also included in
-`symbolic-baseline` at max depth 2; the shallow bound is deliberate because
-`n7_f2` is materially more expensive than the smaller boundary instances.
+no-double-proposal behavior, the normal Tendermint transition from a nil prevote
+quorum to nil precommits, and the valid-round proposal path. The valid-round
+witnesses reject a proposal whose `validRound` has no supporting prevote quorum,
+then accept the same shape once round 0 really has a 2f+1 prevote quorum for
+the proposed value. The forking `n4_f1` test checks that the shell derives the
+fresh `head - sigma` sample after a fork switch while the sticky baseline still
+carries the old sample into the next round. The `f = 2` tests record that
+`n4_f2` and `n5_f2` sit above the live fault boundary for correct-only value
+commits, while `n7_f2` still supports a 2f+1 correct decision path. These three
+`f = 2` safety invariants are also included in `symbolic-baseline` at max depth
+2; the shallow bound is deliberate because `n7_f2` is materially more expensive
+than the smaller boundary instances.
 
 Witness the named baseline accountability behavior:
 
