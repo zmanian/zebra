@@ -265,6 +265,20 @@ pub enum DynamicSigmaRollbackTelemetryError {
     CommonAncestorAboveNewTip,
 }
 
+/// Invalid rollback-risk estimator input.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DynamicSigmaRollbackRiskEstimatorError {
+    /// Controller parameters were invalid.
+    InvalidParameters(DynamicSigmaError),
+    /// No observed rollback-depth windows were supplied.
+    EmptyObservationWindow,
+    /// The safety margin exceeds one million parts per million.
+    RiskMarginTooLarge {
+        /// Risk margin supplied by the caller.
+        margin_ppm: u64,
+    },
+}
+
 /// Source-side observation window for building dynamic-sigma telemetry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DynamicSigmaTelemetryObservationWindow<'a> {
@@ -954,6 +968,48 @@ pub fn max_observed_rollback_depth(
     })
 }
 
+/// Estimate rollback risk for each sigma from observed rollback-depth windows.
+///
+/// Each supplied depth should be the maximum rollback depth observed in one
+/// measurement window. The resulting risk for a sigma is the empirical
+/// frequency of windows whose rollback depth reached that sigma, rounded up to
+/// parts-per-million and increased by `risk_margin_ppm`.
+pub fn rollback_risk_curve_from_observed_rollback_depths(
+    params: DynamicSigmaParameters,
+    observed_rollback_depths: &[u64],
+    risk_margin_ppm: u64,
+) -> Result<RollbackRiskCurve, DynamicSigmaRollbackRiskEstimatorError> {
+    validate_params(params).map_err(DynamicSigmaRollbackRiskEstimatorError::InvalidParameters)?;
+
+    if observed_rollback_depths.is_empty() {
+        return Err(DynamicSigmaRollbackRiskEstimatorError::EmptyObservationWindow);
+    }
+
+    if u128::from(risk_margin_ppm) > PPM_DENOMINATOR {
+        return Err(DynamicSigmaRollbackRiskEstimatorError::RiskMarginTooLarge {
+            margin_ppm: risk_margin_ppm,
+        });
+    }
+
+    Ok(RollbackRiskCurve {
+        base_sigma_ppm: rollback_depth_exceedance_risk_ppm(
+            observed_rollback_depths,
+            params.base_sigma,
+            risk_margin_ppm,
+        ),
+        raised_sigma_ppm: rollback_depth_exceedance_risk_ppm(
+            observed_rollback_depths,
+            params.raised_sigma,
+            risk_margin_ppm,
+        ),
+        max_sigma_ppm: rollback_depth_exceedance_risk_ppm(
+            observed_rollback_depths,
+            params.max_sigma,
+            risk_margin_ppm,
+        ),
+    })
+}
+
 /// Assemble source-side observations into production-shaped telemetry components.
 pub fn telemetry_components_from_observation_window(
     window: DynamicSigmaTelemetryObservationWindow<'_>,
@@ -1401,6 +1457,28 @@ fn rollback_risk_ppm_at_sigma(
     } else {
         window.rollback_risk.max_sigma_ppm
     }
+}
+
+fn rollback_depth_exceedance_risk_ppm(
+    observed_rollback_depths: &[u64],
+    sigma: u64,
+    risk_margin_ppm: u64,
+) -> u64 {
+    let exceedance_count = observed_rollback_depths
+        .iter()
+        .filter(|rollback_depth| **rollback_depth >= sigma)
+        .count();
+    let raw_risk_ppm = ceil_mul_div(
+        exceedance_count as u128,
+        PPM_DENOMINATOR,
+        observed_rollback_depths.len() as u128,
+    );
+
+    raw_risk_ppm
+        .saturating_add(u128::from(risk_margin_ppm))
+        .min(PPM_DENOMINATOR)
+        .try_into()
+        .expect("PPM risk is capped at the denominator")
 }
 
 fn expected_loss_within_budget(
@@ -2359,6 +2437,68 @@ mod tests {
 
         assert_eq!(decision.reorg_floor, 3);
         assert_eq!(decision.sigma, 3);
+    }
+
+    #[test]
+    fn rollback_risk_estimator_derives_monotone_curve_from_depth_windows() {
+        let curve = rollback_risk_curve_from_observed_rollback_depths(params(), &[0, 1, 4, 6], 0)
+            .expect("rollback-depth windows should produce a risk curve");
+
+        assert_eq!(
+            curve,
+            RollbackRiskCurve {
+                base_sigma_ppm: 750_000,
+                raised_sigma_ppm: 500_000,
+                max_sigma_ppm: 250_000,
+            }
+        );
+    }
+
+    #[test]
+    fn rollback_risk_estimator_adds_conservative_margin() {
+        let curve = rollback_risk_curve_from_observed_rollback_depths(params(), &[0, 0, 0, 0], 25)
+            .expect("rollback-depth windows should produce a risk curve");
+
+        assert_eq!(
+            curve,
+            RollbackRiskCurve {
+                base_sigma_ppm: 25,
+                raised_sigma_ppm: 25,
+                max_sigma_ppm: 25,
+            }
+        );
+    }
+
+    #[test]
+    fn rollback_risk_estimator_rejects_empty_windows() {
+        assert_eq!(
+            rollback_risk_curve_from_observed_rollback_depths(params(), &[], 0),
+            Err(DynamicSigmaRollbackRiskEstimatorError::EmptyObservationWindow),
+        );
+    }
+
+    #[test]
+    fn rollback_risk_estimator_rejects_impossible_margin() {
+        assert_eq!(
+            rollback_risk_curve_from_observed_rollback_depths(params(), &[0], 1_000_001),
+            Err(DynamicSigmaRollbackRiskEstimatorError::RiskMarginTooLarge {
+                margin_ppm: 1_000_001,
+            }),
+        );
+    }
+
+    #[test]
+    fn rollback_risk_estimator_feeds_dynamic_sigma_economic_floor() {
+        let curve = rollback_risk_curve_from_observed_rollback_depths(params(), &[0, 1, 4, 6], 0)
+            .expect("rollback-depth windows should produce a risk curve");
+        let decision = decide(window(90, 0, 10, 0, 0, 0, curve, 1_000, 100));
+
+        assert_eq!(decision.economic_floor, params().max_sigma);
+        assert_eq!(decision.sigma, params().max_sigma);
+        assert_eq!(
+            decision.economic_target_status,
+            EconomicTargetStatus::TargetUnreachableAtMax,
+        );
     }
 
     #[test]

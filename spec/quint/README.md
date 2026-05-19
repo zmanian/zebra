@@ -128,6 +128,10 @@ and cannot silently change validator validity.
 `DynamicSigmaBestTipTransition` derives the observed reorg-depth input from
 explicit old-tip, new-tip, and common-ancestor heights, with a helper for taking
 the maximum rollback depth over a transition window.
+`rollback_risk_curve_from_observed_rollback_depths` derives a deterministic
+empirical `RollbackRiskCurve` by measuring how often observed rollback-depth
+windows reach each sigma in the ladder, then adding a bounded conservative ppm
+margin.
 `telemetry_components_from_observation_window` composes these source-shaped
 hash-work observations, round counters, and best-tip transitions into telemetry
 components before proposal evidence selection. The branch also
@@ -1160,6 +1164,9 @@ This model is intentionally narrow. The next useful extensions are:
   observation-window assembler composes those headers with round and fork
   evidence into telemetry components, and the pure rollback-depth helper derives
   the observed reorg-depth input from explicit best-tip transition evidence. The
+  pure rollback-risk estimator derives a monotone ppm curve from observed
+  rollback-depth windows plus a bounded margin, while leaving the production
+  history-window policy open. The
   economic exposure policy now explicitly separates consensus-critical exposure
   from service-local risk, with proposal-evidence tests rejecting selected sigma
   below a consensus-critical economic floor. The pure evidence-selection

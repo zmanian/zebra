@@ -67,7 +67,7 @@ consensus-visible or proposal-verifiable telemetry.
 | `EstimatedRoundFailureRatePct` | Conservative upper bound on failed-round frequency. | Derived from assembled round counters, with conservative margins applied by the raw telemetry conversion. | Decide smoothing, hysteresis, and window size so transient jitter does not create unstable sigma changes. |
 | `MeasuredBlockIntervalVariancePct` | PoW timing instability over the same window. | Header times are available from validated blocks. | Define a robust estimator that handles timestamp manipulation and difficulty-adjustment lag. |
 | `MeasuredObservedReorgDepth` | Maximum rollback depth observed across best-tip changes in the window. | `DynamicSigmaBestTipTransition` can derive rollback depth from old-tip, new-tip, and common-ancestor heights, but live state hooks are not wired yet. | Add a metric that records replaced prefix depth for best-tip changes and side-branch releases. |
-| `RollbackRiskPpmAtSigma` | Modelled rollback probability for each candidate sigma. | Not a direct node metric. | Build an offline or deterministic estimator from participation, observed work competition, variance, and historical reorg data. |
+| `RollbackRiskPpmAtSigma` | Modelled rollback probability for each candidate sigma. | `rollback_risk_curve_from_observed_rollback_depths` can derive an empirical ppm exceedance curve from observed rollback-depth windows plus a conservative margin. | Define the production window/history policy and decide whether the empirical estimator is sufficient or should be replaced by a calibrated offline model. |
 | `ValueAtRiskUnits` | Economic value exposed to rollback if a finalized point is wrong or delayed. | The pure Rust controller now has an explicit `DynamicSigmaEconomicExposurePolicy` that distinguishes consensus-critical exposure from service-local exposure. | Wire a production source if exposure is consensus-critical, or keep service-local exposure outside proposal validity. |
 | `MaxAcceptableExpectedLossUnits` | Governance or operator budget for expected loss. | Consensus-critical policy carries this budget into proposal evidence; service-local policy maps to zero consensus exposure. | Decide the governance/operator source for consensus-critical budgets, if any. |
 
@@ -241,6 +241,17 @@ round-counter consistency, derives maximum observed rollback depth, and produces
 state source, and economic/risk estimators open, but it gives those producers a
 single pure assembly target.
 
+Rollback-risk estimation now has a pure deterministic baseline:
+`rollback_risk_curve_from_observed_rollback_depths` takes a sequence of
+measurement-window rollback depths and computes, for each sigma in the ladder,
+the rounded-up parts-per-million frequency of windows whose rollback depth
+reached that sigma. A bounded margin is then added and capped at one million
+ppm. This produces a monotone `RollbackRiskCurve` that can feed the existing
+economic floor and expected-loss checks. It is intentionally empirical: a
+production deployment still has to define the history window, source of
+rollback-depth samples, and whether a calibrated offline model should override
+or augment this baseline.
+
 `CrosslinkDynamicSigmaTelemetry.qnt` now mirrors that source boundary in the
 production-shaped telemetry harness: source hash-work samples derive the
 total-work denominator and participating numerator, source round counters are
@@ -325,7 +336,9 @@ A production implementation of the dynamic-sigma variant should provide:
 - round-start, round-failure, nil-precommit, stale-proposal, and decision
   counters
 - best-tip rollback-depth telemetry derived from actual fork transitions
-- an explicit rollback-risk estimator for each allowed sigma
+- an explicit rollback-risk estimator for each allowed sigma; the pure
+  controller now includes an empirical observed-depth exceedance estimator, but
+  production still needs a window/history policy and may need a calibrated model
 - an economic exposure model or a clear decision that expected loss is
   service-local rather than consensus-critical; the pure controller now has an
   explicit policy split and tests for both paths, while production still needs a
