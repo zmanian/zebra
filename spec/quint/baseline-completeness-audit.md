@@ -26,6 +26,10 @@ The current upstream reference is:
 https://github.com/informalsystems/quint/tree/main/examples/cosmos/tendermint
 ```
 
+`baseline-upstream-crosswalk.md` records the exact upstream commit used for the
+line-item comparison and maps the current baseline artifacts against each
+upstream surface.
+
 That directory contains a Quint port of the CometBFT accountability TLA+ spec.
 The relevant upstream surface is:
 
@@ -103,11 +107,15 @@ The current branch has these baseline-specific files:
     long local runs
 - `.github/workflows/quint-crosslink.yml`
   - runs baseline quick and symbolic checks on the personal fork
+- `baseline-upstream-crosswalk.md`
+  - maps the upstream Tendermint Quint surface to the baseline Crosslink
+    artifacts and names the remaining upstream-quality gaps
 
 ## Coverage Matrix
 
 | Requirement | Current evidence | Status |
 | --- | --- | --- |
+| Upstream Tendermint crosswalk | `baseline-upstream-crosswalk.md` | Covered |
 | Named fixed-sigma/sticky baseline variant | `CrosslinkBaseline.qnt`; `ResampleOnNilPrecommit = false` | Covered |
 | Stable-stream decision path | `baselineStableStreamDecidesSampledSnapshotTest` | Covered |
 | Stream-change halt/stale-sample limitation | `baselineCarriesStaleSampleAfterStreamChangeTest`; `baselineSameRoundLockBlocksFreshDecisionAfterStreamChangeTest` | Covered |
@@ -150,6 +158,9 @@ To finish a focused baseline artifact, the remaining work is:
    of the upstream Tendermint transition system.
 
 To finish an upstream-quality baseline spec, the remaining work is larger:
+
+Use `baseline-upstream-crosswalk.md` as the controlling checklist for the
+remaining upstream-quality gaps.
 
 1. Extend the parameterized baseline shell into a full transition model.
    - Keep the current upstream-shaped constants and assumptions:

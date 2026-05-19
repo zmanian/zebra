@@ -96,6 +96,12 @@ the upstream Tendermint Quint example and tracks the remaining work before the
 baseline reaches upstream-style completeness rather than focused witness
 coverage.
 
+`baseline-upstream-crosswalk.md` is the line-item map from the current upstream
+Tendermint Quint surface to the baseline Crosslink artifacts. Use it as the
+working checklist for deciding whether a baseline change is closing an upstream
+completeness gap, documenting an intentional Crosslink deviation, or adding a
+Crosslink-only proof obligation.
+
 `CrosslinkForkFinality.qnt` is a separate value-semantics model. It abstracts
 PoW snapshots as a finite fork tree, then checks that Crosslink finality can skip
 heights on one branch while rejecting finalization of a fork after a block is
