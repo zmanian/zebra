@@ -184,6 +184,16 @@ critical participation shares through this path, so lower verified
 participation raises or preserves the selected sigma floor instead of lowering
 it.
 
+The source contracts are now composed by
+`telemetry_components_from_observation_window`. It accepts hash-work
+observations, already accumulated Tenderlink round counters, best-tip
+transitions, block-variance telemetry, rollback-risk estimates, and economic
+exposure inputs. It derives the participation numerator/denominator, validates
+round-counter consistency, derives maximum observed rollback depth, and produces
+`DynamicSigmaTelemetryComponents`. This still leaves the live production marker,
+state source, and economic/risk estimators open, but it gives those producers a
+single pure assembly target.
+
 Round telemetry now has a matching event contract.
 `DynamicSigmaRoundEvent` records started rounds, decisions, nil-precommit
 recovery, stale proposals, timeouts, invalid proposals, and mixed evidence into
@@ -244,11 +254,14 @@ A production implementation of the dynamic-sigma variant should provide:
   share requires a higher sigma than the proposer selected. The hash-work
   observation tests now derive the participation numerator from explicit
   verified-participating observations and cover healthy, degraded, and critical
-  shares through telemetry assembly. The new pure telemetry assembly tests also
-  reject missing participating-work evidence and inconsistent round counters,
-  the event-counter tests reject failure-reason overcounts, and rollback-depth
-  tests derive the observed reorg-depth input from explicit best-tip transition
-  evidence, but live production source integration still needs tests
+  shares through telemetry assembly. The observation-window tests now compose
+  hash-work observations, round counters, and best-tip transitions into
+  telemetry components and reject invalid source counters or rollback evidence.
+  The new pure telemetry assembly tests also reject missing participating-work
+  evidence and inconsistent round counters, the event-counter tests reject
+  failure-reason overcounts, and rollback-depth tests derive the observed
+  reorg-depth input from explicit best-tip transition evidence, but live
+  production source integration still needs tests
 - tests showing that dynamic sigma changes do not make honest validators reject
   each other's otherwise valid proposals; the pure Rust proposal-evidence
   verifier and BFT block-construction helper cover identical evidence

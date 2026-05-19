@@ -252,6 +252,36 @@ pub enum DynamicSigmaRollbackTelemetryError {
     CommonAncestorAboveNewTip,
 }
 
+/// Source-side observation window for building dynamic-sigma telemetry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DynamicSigmaTelemetryObservationWindow<'a> {
+    /// PoW work observations used to derive hash participation.
+    pub hash_work_observations: &'a [DynamicSigmaHashWorkObservation],
+    /// Tenderlink round counters for this window.
+    pub round_counters: DynamicSigmaRoundCounters,
+    /// Best-tip transitions used to derive observed rollback depth.
+    pub best_tip_transitions: &'a [DynamicSigmaBestTipTransition],
+    /// Measured PoW timing variance percentage.
+    pub measured_block_interval_variance_pct: u8,
+    /// Rollback risk estimates across the sigma ladder.
+    pub rollback_risk: RollbackRiskCurve,
+    /// Economic value exposed to rollback in the window.
+    pub value_at_risk_units: u128,
+    /// Maximum acceptable expected loss for this window.
+    pub max_acceptable_expected_loss_units: u128,
+}
+
+/// Invalid source-side observation window.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DynamicSigmaTelemetryObservationError {
+    /// Hash-work observations were invalid.
+    InvalidHashWork(DynamicSigmaHashWorkTelemetryError),
+    /// Tenderlink round counters were internally inconsistent.
+    InvalidRoundCounters(DynamicSigmaTelemetryAssemblyError),
+    /// Rollback-depth observations were invalid.
+    InvalidRollbackTelemetry(DynamicSigmaRollbackTelemetryError),
+}
+
 /// Hash-participation health status.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HashParticipationStatus {
@@ -700,6 +730,31 @@ pub fn max_observed_rollback_depth(
     })
 }
 
+/// Assemble source-side observations into production-shaped telemetry components.
+pub fn telemetry_components_from_observation_window(
+    window: DynamicSigmaTelemetryObservationWindow<'_>,
+) -> Result<DynamicSigmaTelemetryComponents, DynamicSigmaTelemetryObservationError> {
+    let hash_work = observed_hash_work_participation(window.hash_work_observations)
+        .map_err(DynamicSigmaTelemetryObservationError::InvalidHashWork)?;
+    window
+        .round_counters
+        .validate()
+        .map_err(DynamicSigmaTelemetryObservationError::InvalidRoundCounters)?;
+    let measured_observed_reorg_depth = max_observed_rollback_depth(window.best_tip_transitions)
+        .map_err(DynamicSigmaTelemetryObservationError::InvalidRollbackTelemetry)?;
+
+    Ok(DynamicSigmaTelemetryComponents {
+        total_hash_work: Some(hash_work.total_hash_work),
+        crosslink_participating_hash_work: Some(hash_work.crosslink_participating_hash_work),
+        round_counters: window.round_counters,
+        measured_block_interval_variance_pct: window.measured_block_interval_variance_pct,
+        measured_observed_reorg_depth,
+        rollback_risk: window.rollback_risk,
+        value_at_risk_units: window.value_at_risk_units,
+        max_acceptable_expected_loss_units: window.max_acceptable_expected_loss_units,
+    })
+}
+
 /// Validate proposal-carried dynamic-sigma evidence.
 pub fn validate_dynamic_sigma_evidence(
     params: DynamicSigmaParameters,
@@ -1127,6 +1182,26 @@ mod tests {
             .sigma
     }
 
+    fn telemetry_observation_window<'a>(
+        hash_work_observations: &'a [DynamicSigmaHashWorkObservation],
+        round_counters: DynamicSigmaRoundCounters,
+        best_tip_transitions: &'a [DynamicSigmaBestTipTransition],
+    ) -> DynamicSigmaTelemetryObservationWindow<'a> {
+        DynamicSigmaTelemetryObservationWindow {
+            hash_work_observations,
+            round_counters,
+            best_tip_transitions,
+            measured_block_interval_variance_pct: 0,
+            rollback_risk: RollbackRiskCurve {
+                base_sigma_ppm: 1,
+                raised_sigma_ppm: 1,
+                max_sigma_ppm: 1,
+            },
+            value_at_risk_units: 1000,
+            max_acceptable_expected_loss_units: 100,
+        }
+    }
+
     #[test]
     fn raw_observation_counters_build_conservative_window() {
         let telemetry = raw_telemetry(63, 15)
@@ -1240,6 +1315,98 @@ mod tests {
         assert_eq!(
             observed_hash_work_participation(&[]),
             Err(DynamicSigmaHashWorkTelemetryError::EmptyObservationWindow),
+        );
+    }
+
+    #[test]
+    fn telemetry_observation_window_assembles_components_from_source_inputs() {
+        let hash_work_observations = [
+            DynamicSigmaHashWorkObservation {
+                hash_work: 60,
+                participation: DynamicSigmaHashParticipation::VerifiedParticipating,
+            },
+            DynamicSigmaHashWorkObservation {
+                hash_work: 40,
+                participation: DynamicSigmaHashParticipation::NotVerifiedParticipating,
+            },
+        ];
+        let best_tip_transitions = [DynamicSigmaBestTipTransition {
+            previous_tip_height: 105,
+            new_tip_height: 107,
+            common_ancestor_height: 103,
+        }];
+
+        let components =
+            telemetry_components_from_observation_window(telemetry_observation_window(
+                &hash_work_observations,
+                decided_round_counters(10),
+                &best_tip_transitions,
+            ))
+            .expect("source observations should assemble into telemetry components");
+
+        assert_eq!(components.total_hash_work, Some(100));
+        assert_eq!(components.crosslink_participating_hash_work, Some(60));
+        assert_eq!(components.measured_observed_reorg_depth, 2);
+
+        let raw = components
+            .try_into_raw_telemetry()
+            .expect("assembled source components should build raw telemetry");
+        let decision = select_dynamic_sigma(
+            params(),
+            raw.into_window(TelemetryEstimateMargins::default())
+                .expect("source raw telemetry should build a window"),
+        )
+        .expect("source telemetry should feed the controller");
+
+        assert_eq!(decision.hash_participation_floor, params().raised_sigma);
+        assert_eq!(decision.reorg_floor, params().raised_sigma);
+        assert_eq!(decision.sigma, params().raised_sigma);
+    }
+
+    #[test]
+    fn telemetry_observation_window_rejects_invalid_round_counters() {
+        let hash_work_observations = [DynamicSigmaHashWorkObservation {
+            hash_work: 100,
+            participation: DynamicSigmaHashParticipation::VerifiedParticipating,
+        }];
+        let mut round_counters = decided_round_counters(2);
+        round_counters.failed_rounds = 1;
+
+        assert_eq!(
+            telemetry_components_from_observation_window(telemetry_observation_window(
+                &hash_work_observations,
+                round_counters,
+                &[],
+            )),
+            Err(DynamicSigmaTelemetryObservationError::InvalidRoundCounters(
+                DynamicSigmaTelemetryAssemblyError::DecidedAndFailedRoundsExceedStarted,
+            )),
+        );
+    }
+
+    #[test]
+    fn telemetry_observation_window_rejects_invalid_best_tip_transition() {
+        let hash_work_observations = [DynamicSigmaHashWorkObservation {
+            hash_work: 100,
+            participation: DynamicSigmaHashParticipation::VerifiedParticipating,
+        }];
+        let best_tip_transitions = [DynamicSigmaBestTipTransition {
+            previous_tip_height: 105,
+            new_tip_height: 107,
+            common_ancestor_height: 108,
+        }];
+
+        assert_eq!(
+            telemetry_components_from_observation_window(telemetry_observation_window(
+                &hash_work_observations,
+                decided_round_counters(10),
+                &best_tip_transitions,
+            )),
+            Err(
+                DynamicSigmaTelemetryObservationError::InvalidRollbackTelemetry(
+                    DynamicSigmaRollbackTelemetryError::CommonAncestorAbovePreviousTip,
+                )
+            ),
         );
     }
 
