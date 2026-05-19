@@ -83,6 +83,10 @@ round-failure estimates, and adds an explicit acceptable rollback-risk target
 plus expected-loss budget that the selected sigma must satisfy whenever the
 configured ladder can satisfy both.
 
+`dynamic-sigma-telemetry-integration.md` maps those telemetry inputs to
+production data sources and documents the consensus-safety requirements before
+a deployed controller can replace the prototype's fixed sigma parameter.
+
 `CrosslinkDynamicSigmaForkSchedule.qnt` composes the dynamic-sigma controller
 with the derived PoW fork schedule. In this model, dynamic sigma consumes
 rollback depth computed from best-tip transitions instead of a supplied
@@ -1007,8 +1011,8 @@ generated-work-competition obligations and run substantially faster.
 
 This model is intentionally narrow. The next useful extensions are:
 
-- connect the telemetry contract parameters to production data sources and a
-  validated economic exposure model rather than the bounded fixture values used
-  here
+- implement the production telemetry sources in
+  `dynamic-sigma-telemetry-integration.md`, including a consensus-safe
+  Crosslink hash-participation metric and a validated economic exposure model
 - refine the split projection checks into smaller inductive lemmas if bounds
   beyond the checked depth-10 projections still need very large JVM/Z3 heaps
