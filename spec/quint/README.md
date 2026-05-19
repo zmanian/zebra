@@ -89,8 +89,9 @@ a deployed controller can replace the prototype's fixed sigma parameter.
 `zebra-crosslink/src/dynamic_sigma.rs` is the matching pure Rust controller
 prototype: it derives conservative coverage and round-failure estimates from
 raw counters, validates telemetry windows, and selects the same sigma floor as
-the Quint telemetry fixture, without yet changing consensus proposal or
-validation rules.
+the Quint telemetry fixture. It also includes a proposal-carried evidence
+verifier that rejects selected sigma values below the controller-required floor,
+without yet changing consensus proposal or validation rules.
 
 `CrosslinkDynamicSigmaForkSchedule.qnt` composes the dynamic-sigma controller
 with the derived PoW fork schedule. In this model, dynamic sigma consumes

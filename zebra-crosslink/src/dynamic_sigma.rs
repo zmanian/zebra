@@ -145,6 +145,17 @@ pub struct DynamicSigmaDecision {
     pub economic_target_status: EconomicTargetStatus,
 }
 
+/// Proposal-carried evidence for a dynamic-sigma decision.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DynamicSigmaProposalEvidence {
+    /// Raw telemetry counters included with or committed by a proposal.
+    pub raw_telemetry: DynamicSigmaRawTelemetry,
+    /// Conservative margins applied while deriving the telemetry window.
+    pub margins: TelemetryEstimateMargins,
+    /// Sigma selected by the proposer.
+    pub selected_sigma: u64,
+}
+
 /// Invalid controller parameters or telemetry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DynamicSigmaError {
@@ -168,6 +179,25 @@ pub enum DynamicSigmaError {
     RoundFailureEstimateTooLow,
     /// Rollback risk estimates are not monotone as sigma increases.
     RollbackRiskCurveNotMonotone,
+}
+
+/// Invalid proposal-carried dynamic-sigma evidence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DynamicSigmaEvidenceError {
+    /// The underlying telemetry window is invalid.
+    InvalidTelemetry(DynamicSigmaError),
+    /// The selected sigma is not in the configured sigma ladder.
+    SelectedSigmaOutsideLadder {
+        /// Sigma selected by the proposer.
+        selected: u64,
+    },
+    /// The selected sigma is below the controller-required floor.
+    SelectedSigmaBelowRequired {
+        /// Sigma selected by the proposer.
+        selected: u64,
+        /// Minimum sigma required by the controller.
+        required: u64,
+    },
 }
 
 impl DynamicSigmaRawTelemetry {
@@ -224,6 +254,36 @@ impl DynamicSigmaRawTelemetry {
 
         Ok(window)
     }
+}
+
+/// Validate proposal-carried dynamic-sigma evidence.
+pub fn validate_dynamic_sigma_evidence(
+    params: DynamicSigmaParameters,
+    evidence: DynamicSigmaProposalEvidence,
+) -> Result<DynamicSigmaDecision, DynamicSigmaEvidenceError> {
+    validate_params(params).map_err(DynamicSigmaEvidenceError::InvalidTelemetry)?;
+
+    if !sigma_is_in_ladder(params, evidence.selected_sigma) {
+        return Err(DynamicSigmaEvidenceError::SelectedSigmaOutsideLadder {
+            selected: evidence.selected_sigma,
+        });
+    }
+
+    let window = evidence
+        .raw_telemetry
+        .into_window(evidence.margins)
+        .map_err(DynamicSigmaEvidenceError::InvalidTelemetry)?;
+    let decision = select_dynamic_sigma(params, window)
+        .map_err(DynamicSigmaEvidenceError::InvalidTelemetry)?;
+
+    if evidence.selected_sigma < decision.sigma {
+        return Err(DynamicSigmaEvidenceError::SelectedSigmaBelowRequired {
+            selected: evidence.selected_sigma,
+            required: decision.sigma,
+        });
+    }
+
+    Ok(decision)
 }
 
 /// Select dynamic sigma from a validated telemetry window.
@@ -330,6 +390,10 @@ fn max_floor(floors: [u64; 4]) -> u64 {
         .into_iter()
         .max()
         .expect("fixed-size array is nonempty")
+}
+
+fn sigma_is_in_ladder(params: DynamicSigmaParameters, sigma: u64) -> bool {
+    sigma == params.base_sigma || sigma == params.raised_sigma || sigma == params.max_sigma
 }
 
 fn hash_participation_floor(
@@ -518,6 +582,17 @@ mod tests {
         select_dynamic_sigma(params(), window).expect("fixture telemetry should be valid")
     }
 
+    fn evidence(
+        participating_hash_work: u128,
+        selected_sigma: u64,
+    ) -> DynamicSigmaProposalEvidence {
+        DynamicSigmaProposalEvidence {
+            raw_telemetry: raw_telemetry(participating_hash_work, 0),
+            margins: TelemetryEstimateMargins::default(),
+            selected_sigma,
+        }
+    }
+
     fn raw_telemetry(
         participating_hash_work: u128,
         failed_rounds: u64,
@@ -576,6 +651,52 @@ mod tests {
 
         assert_eq!(decision.hash_participation_floor, 3);
         assert_eq!(decision.sigma, 3);
+    }
+
+    #[test]
+    fn proposal_evidence_accepts_required_sigma() {
+        let decision = validate_dynamic_sigma_evidence(params(), evidence(63, 3))
+            .expect("selected sigma should satisfy evidence");
+
+        assert_eq!(decision.sigma, 3);
+        assert_eq!(decision.hash_participation_floor, 3);
+    }
+
+    #[test]
+    fn proposal_evidence_accepts_more_conservative_ladder_sigma() {
+        let decision = validate_dynamic_sigma_evidence(params(), evidence(63, 6))
+            .expect("higher ladder sigma should satisfy evidence");
+
+        assert_eq!(decision.sigma, 3);
+    }
+
+    #[test]
+    fn proposal_evidence_is_deterministic_for_identical_inputs() {
+        let proposal_evidence = evidence(63, 3);
+
+        assert_eq!(
+            validate_dynamic_sigma_evidence(params(), proposal_evidence),
+            validate_dynamic_sigma_evidence(params(), proposal_evidence),
+        );
+    }
+
+    #[test]
+    fn proposal_evidence_rejects_sigma_below_required_floor() {
+        assert_eq!(
+            validate_dynamic_sigma_evidence(params(), evidence(63, 1)),
+            Err(DynamicSigmaEvidenceError::SelectedSigmaBelowRequired {
+                selected: 1,
+                required: 3,
+            })
+        );
+    }
+
+    #[test]
+    fn proposal_evidence_rejects_sigma_outside_ladder() {
+        assert_eq!(
+            validate_dynamic_sigma_evidence(params(), evidence(63, 4)),
+            Err(DynamicSigmaEvidenceError::SelectedSigmaOutsideLadder { selected: 4 })
+        );
     }
 
     #[test]

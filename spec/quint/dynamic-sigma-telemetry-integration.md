@@ -31,9 +31,11 @@ The Rust prototype still treats sigma as a fixed protocol parameter:
 The branch now also includes `zebra-crosslink/src/dynamic_sigma.rs`, a pure
 Rust controller that derives conservative coverage and round-failure estimates
 from raw counters, validates a telemetry window, and selects the same sigma
-floor as the Quint telemetry fixture. That controller is executable scaffolding
-for the third Crosslink variant, but it is not wired into production proposal
-or validation logic yet.
+floor as the Quint telemetry fixture. It also has a proposal-carried evidence
+verifier that rejects a selected sigma outside the configured ladder or below
+the controller-required floor. That controller is executable scaffolding for
+the third Crosslink variant, but it is not wired into production proposal or
+validation logic yet.
 
 A production implementation must replace the fixed parameter at proposal and
 validation time with a consensus-safe controller output, and it must populate
@@ -105,9 +107,10 @@ This suggests two viable production shapes:
   evidence and the BFT validity rules verify that the selected sigma is at
   least the required floor.
 
-The second shape is closer to the current Quint telemetry contract because it
-models supplied measurement windows, but it requires a precise validity rule for
-each measurement.
+The Rust controller now prototypes the second shape for raw telemetry counters:
+the verifier reconstructs the conservative telemetry window and rejects
+selected sigma values below the required floor. A production deployment still
+needs precise validity rules for the source of each raw measurement.
 
 ## Failure Modes
 
@@ -143,6 +146,8 @@ A production implementation of the dynamic-sigma variant should provide:
   controller now covers the bounded Quint telemetry fixture and raw-counter
   estimate construction, but production source integration still needs tests
 - tests showing that dynamic sigma changes do not make honest validators reject
-  each other's otherwise valid proposals
+  each other's otherwise valid proposals; the pure Rust proposal-evidence
+  verifier covers identical evidence determinism and below-floor rejection, but
+  BFT proposal integration still needs tests
 - Quint coverage connecting the implemented telemetry rules back to
   `CrosslinkDynamicSigmaTelemetry.qnt`
