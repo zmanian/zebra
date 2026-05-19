@@ -51,7 +51,7 @@ without clearing same-round value or proposal-cache state.
 | Consensus state `round`, `step`, `decision`, `lockedValue`, `lockedRound`, `validValue`, `validRound` | Same state in `CrosslinkResampling.qnt` | Covered | Baseline also adds `cachedProposal` and `cachedProposalRound` for sticky Crosslink proposal carryover. |
 | Message/evidence state for proposals, prevotes, precommits | `msgsPropose`, `msgsPrevote`, `msgsPrecommit`, `evidencePropose`, `evidencePrevote`, `evidencePrecommit` | Covered | Evidence is used by equivocation, amnesia, and Crosslink-specific accountability witnesses. |
 | Faulty proposal/prevote/precommit domains | `FaultyProposals`, `FaultyPrevotes`, `FaultyPrecommits`, `AllFaulty*` | Covered structurally | The full domains exist in the shared model. |
-| Nondeterministic faulty message injection in `Init` | `InitWithFaultyEvidence`, `CrosslinkBaselineFaultyInitTinyModel`, `CrosslinkBaselineFaultyInitForkingModel`, `CrosslinkBaselineFullFaultyInitForkingModel`, `CrosslinkBaselineFullFaultyInitN7F2ForkingModel` | Partial | Covered in a tiny full-powerset harness, a bounded symbolic forking harness, and full-powerset quick-check forking `n4_f1` and `n7_f2` harnesses; not lifted into all larger parameterized instances. |
+| Nondeterministic faulty message injection in `Init` | `InitWithFaultyEvidence`, `CrosslinkBaselineFaultyInitTinyModel`, `CrosslinkBaselineFaultyInitForkingModel`, `CrosslinkBaselineFullFaultyInitForkingModel`, `CrosslinkBaselineFullFaultyInitN5F1ForkingModel`, `CrosslinkBaselineFullFaultyInitN7F2ForkingModel` | Partial | Covered in a tiny full-powerset harness, a bounded symbolic forking harness, and full-powerset quick-check forking `n4_f1`, `n5_f1`, and `n7_f2` harnesses; not lifted into all larger parameterized instances. |
 | `StartRound` | `StartNextRoundAfterPrecommitQuorum`, `TimeoutPrecommitStartNextRound`, `CatchUpToRound` | Partial | Baseline models the externally visible round advance paths, but does not expose an upstream-identical `StartRound` helper. |
 | `BroadcastProposal`, `BroadcastPrevote`, `BroadcastPrecommit` | Same named broadcast actions | Covered | Message evidence is updated alongside observed messages. |
 | `InsertProposal(p, v)` | `InsertProposal(p)` using `StickyOrStreamProposal(p)` | Intentional Crosslink deviation | A correct Crosslink proposer samples `Stream(round)` or reuses sticky cached/valid state; it does not choose arbitrary `v`. |
@@ -82,7 +82,7 @@ without clearing same-round value or proposal-cache state.
 | Typecheck the parameterized model | `check.sh quick-baseline` typechecks all baseline files | Covered |
 | Run witness tests | `check.sh quick-baseline` runs baseline, accountability, BFT-height, finality, PoW-sampling, and `f = 2` witness modules | Covered |
 | Bounded agreement/validity/accountability checks | `check.sh symbolic-baseline` verifies focused baseline safety invariants | Covered, bounded |
-| Faulty init symbolic checking | Tiny full-powerset faulty init plus bounded forking faulty init; full forking faulty init remains quick-check-only for `n4_f1` and `n7_f2` | Partial |
+| Faulty init symbolic checking | Tiny full-powerset faulty init plus bounded forking faulty init; full forking faulty init remains quick-check-only for `n4_f1`, `n5_f1`, and `n7_f2` | Partial |
 | `f = 2` symbolic checking | `symbolic-baseline` verifies `n4_f2`, `n5_f2`, and `n7_f2` safety invariants at depth 2 | Covered, shallow |
 | Full arbitrary-evidence accountability checking | Focused witnesses, upstream-shaped negative witnesses, and bounded faulty-init gates | Partial |
 | Full PoW environment checking | Fixed fork switch, long-reorg, generated adversarial work-competition, repeated generated stream-change, finite stochastic-production, and fixed-sigma sampling fixtures | Partial; bounded fixtures rather than an unbounded PoW environment |
@@ -117,7 +117,8 @@ The crosswalk leaves these concrete gaps:
 3. Make faulty proposal, prevote, and precommit injection usable in all larger
    parameterized instances, and find a tractable symbolic shape beyond the tiny
    and bounded harnesses. The fixed-sigma/forking `n4_f1` and `n7_f2`
-   instances now have full-powerset quick checks.
+   instances now have full-powerset quick checks, and the `n5_f1` forking
+   surface now has the same full-powerset quick coverage.
 4. Add broader symbolic checks for agreement, validity, and accountability over
    those larger instances.
 5. Decide whether the `n4_f2`, `n5_f2`, and `n7_f2` symbolic gates should be

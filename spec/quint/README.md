@@ -488,6 +488,11 @@ $QUINT test spec/quint/CrosslinkBaselineAccountability.qnt \
   --backend=rust
 
 $QUINT test spec/quint/CrosslinkBaselineAccountability.qnt \
+  --main=CrosslinkBaselineFullFaultyInitN5F1ForkingModel \
+  --max-samples=100 \
+  --backend=rust
+
+$QUINT test spec/quint/CrosslinkBaselineAccountability.qnt \
   --main=CrosslinkBaselineFullFaultyInitN7F2ForkingModel \
   --max-samples=100 \
   --backend=rust
@@ -508,9 +513,10 @@ The forking faulty-init model checks a larger fixed-sigma/forking baseline
 instance with bounded faulty proposal, prevote, and precommit powersets. The
 full forking faulty-init model keeps the complete faulty proposal, prevote, and
 precommit powerset domain alive as a Rust-backed quick check for the same
-`n4_f1` parameter surface. The n7/f2 full forking faulty-init model applies the
-same full-domain quick check to the proper f=2 BFT-boundary surface while the
-symbolic gate stays bounded. The
+`n4_f1` parameter surface. The n5/f1 full forking faulty-init model extends the
+same full-domain quick check to the intermediate one-fault validator surface.
+The n7/f2 full forking faulty-init model applies the full-domain quick check to
+the proper f=2 BFT-boundary surface while the symbolic gate stays bounded. The
 counterexample model uses `.fail()` witnesses for false
 no-conflicting-commit, no-amnesia, no-equivocation, agreement,
 agreement-or-amnesia, amnesia-implies-equivocation,
@@ -1386,6 +1392,9 @@ nondeterministic faulty proposal, prevote, and precommit powersets.
 parameter surface with a bounded nondeterministic faulty-init domain.
 `BaselineFullForkingFaultyInitSafety` checks the same fixed-sigma/forking
 baseline parameter surface against the full faulty-init domain in the quick
+Rust-backed gate.
+`BaselineFullN5F1ForkingFaultyInitSafety` checks the intermediate `n5_f1`
+fixed-sigma/forking surface against the full faulty-init domain in the quick
 Rust-backed gate.
 `BaselineFullN7F2ForkingFaultyInitSafety` checks the proper `n7_f2`
 fixed-sigma/forking boundary surface against the full faulty-init domain in the
