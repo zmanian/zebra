@@ -74,6 +74,38 @@ pub struct DynamicSigmaTelemetryWindow {
     pub max_acceptable_expected_loss_units: u128,
 }
 
+/// Conservative margins added to raw telemetry-derived estimates.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TelemetryEstimateMargins {
+    /// Additional coverage-risk percentage points.
+    pub coverage_risk_margin_pct: u8,
+    /// Additional round-failure percentage points.
+    pub round_failure_margin_pct: u8,
+}
+
+/// Raw telemetry counters before conservative percentage estimates are derived.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DynamicSigmaRawTelemetry {
+    /// Total observed PoW work over the measurement window.
+    pub total_hash_work: u128,
+    /// Observed PoW work with objectively verifiable Crosslink participation.
+    pub crosslink_participating_hash_work: u128,
+    /// Tenderlink rounds observed in the measurement window.
+    pub total_tenderlink_rounds: u64,
+    /// Tenderlink rounds that failed to decide and required recovery.
+    pub failed_tenderlink_rounds: u64,
+    /// Measured PoW timing variance percentage.
+    pub measured_block_interval_variance_pct: u8,
+    /// Maximum observed rollback depth in the window.
+    pub measured_observed_reorg_depth: u64,
+    /// Rollback risk estimates across the sigma ladder.
+    pub rollback_risk: RollbackRiskCurve,
+    /// Economic value exposed to rollback in the window.
+    pub value_at_risk_units: u128,
+    /// Maximum acceptable expected loss for this window.
+    pub max_acceptable_expected_loss_units: u128,
+}
+
 /// Hash-participation health status.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HashParticipationStatus {
@@ -136,6 +168,62 @@ pub enum DynamicSigmaError {
     RoundFailureEstimateTooLow,
     /// Rollback risk estimates are not monotone as sigma increases.
     RollbackRiskCurveNotMonotone,
+}
+
+impl DynamicSigmaRawTelemetry {
+    /// Convert raw observation counters into a conservative telemetry window.
+    pub fn into_window(
+        self,
+        margins: TelemetryEstimateMargins,
+    ) -> Result<DynamicSigmaTelemetryWindow, DynamicSigmaError> {
+        if self.total_hash_work == 0 {
+            return Err(DynamicSigmaError::EmptyHashWorkWindow);
+        }
+
+        if self.crosslink_participating_hash_work > self.total_hash_work {
+            return Err(DynamicSigmaError::ParticipatingHashWorkExceedsTotal);
+        }
+
+        if self.total_tenderlink_rounds == 0 {
+            return Err(DynamicSigmaError::EmptyTenderlinkRoundWindow);
+        }
+
+        if self.failed_tenderlink_rounds > self.total_tenderlink_rounds {
+            return Err(DynamicSigmaError::FailedRoundsExceedTotal);
+        }
+
+        let raw_coverage_gap_pct = ceil_ratio_pct(
+            self.total_hash_work - self.crosslink_participating_hash_work,
+            self.total_hash_work,
+        );
+        let raw_round_failure_pct = ceil_ratio_pct(
+            u128::from(self.failed_tenderlink_rounds),
+            u128::from(self.total_tenderlink_rounds),
+        );
+        let window = DynamicSigmaTelemetryWindow {
+            total_hash_work: self.total_hash_work,
+            crosslink_participating_hash_work: self.crosslink_participating_hash_work,
+            total_tenderlink_rounds: self.total_tenderlink_rounds,
+            failed_tenderlink_rounds: self.failed_tenderlink_rounds,
+            estimated_coverage_risk_pct: saturating_pct_add(
+                raw_coverage_gap_pct,
+                margins.coverage_risk_margin_pct,
+            ),
+            estimated_round_failure_rate_pct: saturating_pct_add(
+                raw_round_failure_pct,
+                margins.round_failure_margin_pct,
+            ),
+            measured_block_interval_variance_pct: self.measured_block_interval_variance_pct,
+            measured_observed_reorg_depth: self.measured_observed_reorg_depth,
+            rollback_risk: self.rollback_risk,
+            value_at_risk_units: self.value_at_risk_units,
+            max_acceptable_expected_loss_units: self.max_acceptable_expected_loss_units,
+        };
+
+        validate_window(window)?;
+
+        Ok(window)
+    }
 }
 
 /// Select dynamic sigma from a validated telemetry window.
@@ -374,6 +462,10 @@ fn ceil_mul_div(value: u128, multiplier: u128, divisor: u128) -> u128 {
     quotient_product + remainder_product.div_ceil(divisor)
 }
 
+fn saturating_pct_add(raw_pct: u8, margin_pct: u8) -> u8 {
+    raw_pct.saturating_add(margin_pct).min(100)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -424,6 +516,66 @@ mod tests {
 
     fn decide(window: DynamicSigmaTelemetryWindow) -> DynamicSigmaDecision {
         select_dynamic_sigma(params(), window).expect("fixture telemetry should be valid")
+    }
+
+    fn raw_telemetry(
+        participating_hash_work: u128,
+        failed_rounds: u64,
+    ) -> DynamicSigmaRawTelemetry {
+        DynamicSigmaRawTelemetry {
+            total_hash_work: 100,
+            crosslink_participating_hash_work: participating_hash_work,
+            total_tenderlink_rounds: 100,
+            failed_tenderlink_rounds: failed_rounds,
+            measured_block_interval_variance_pct: 10,
+            measured_observed_reorg_depth: 0,
+            rollback_risk: RollbackRiskCurve {
+                base_sigma_ppm: 80,
+                raised_sigma_ppm: 20,
+                max_sigma_ppm: 2,
+            },
+            value_at_risk_units: 1000,
+            max_acceptable_expected_loss_units: 100,
+        }
+    }
+
+    #[test]
+    fn raw_observation_counters_build_conservative_window() {
+        let telemetry = raw_telemetry(63, 15)
+            .into_window(TelemetryEstimateMargins {
+                coverage_risk_margin_pct: 2,
+                round_failure_margin_pct: 3,
+            })
+            .expect("raw telemetry should build a window");
+
+        assert_eq!(telemetry.estimated_coverage_risk_pct, 39);
+        assert_eq!(telemetry.estimated_round_failure_rate_pct, 18);
+        assert_eq!(telemetry.crosslink_participating_hash_work, 63);
+        assert_eq!(telemetry.failed_tenderlink_rounds, 15);
+    }
+
+    #[test]
+    fn raw_observation_estimates_saturate_at_one_hundred_percent() {
+        let telemetry = raw_telemetry(0, 100)
+            .into_window(TelemetryEstimateMargins {
+                coverage_risk_margin_pct: 5,
+                round_failure_margin_pct: 5,
+            })
+            .expect("raw telemetry should build a saturated window");
+
+        assert_eq!(telemetry.estimated_coverage_risk_pct, 100);
+        assert_eq!(telemetry.estimated_round_failure_rate_pct, 100);
+    }
+
+    #[test]
+    fn raw_observation_window_feeds_dynamic_sigma_controller() {
+        let telemetry = raw_telemetry(63, 0)
+            .into_window(TelemetryEstimateMargins::default())
+            .expect("raw telemetry should build a window");
+        let decision = decide(telemetry);
+
+        assert_eq!(decision.hash_participation_floor, 3);
+        assert_eq!(decision.sigma, 3);
     }
 
     #[test]
