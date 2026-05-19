@@ -40,6 +40,11 @@ projection explicit. It checks that a nil-precommit certificate does not clear
 same-round value locks in the sticky baseline, and that conflicting value
 commits without unlock evidence expose Tendermint-style amnesia evidence.
 
+`CrosslinkBaselineBftHeights.qnt` gives the baseline variant a named
+heighted-finality model. It checks that fixed-sigma finality advances through
+consecutive BFT consensus heights while rejecting skipped consensus heights and
+fork decisions after a prefix is final.
+
 `CrosslinkBaselineFinality.qnt` composes that baseline Tenderlink behavior with
 Crosslink finality. It shows that the fixed-sigma/sticky protocol can finalize a
 tail-confirmed stable-stream decision, and records the Crosslink-level failure
@@ -286,6 +291,7 @@ Typecheck:
 ```sh
 $QUINT typecheck spec/quint/CrosslinkBaseline.qnt
 $QUINT typecheck spec/quint/CrosslinkBaselineAccountability.qnt
+$QUINT typecheck spec/quint/CrosslinkBaselineBftHeights.qnt
 $QUINT typecheck spec/quint/CrosslinkBaselineFinality.qnt
 $QUINT typecheck spec/quint/CrosslinkBaselinePowSampling.qnt
 $QUINT typecheck spec/quint/CrosslinkResampling.qnt
@@ -336,6 +342,19 @@ $QUINT test spec/quint/CrosslinkBaselineAccountability.qnt \
 This model checks that baseline nil precommit preserves same-round value-lock
 state and that conflicting value commits without nil-unlock evidence are
 accountable through the existing amnesia predicates.
+
+Witness baseline BFT-heighted finality:
+
+```sh
+$QUINT test spec/quint/CrosslinkBaselineBftHeights.qnt \
+  --main=CrosslinkBaselineBftHeightsModel \
+  --max-samples=100 \
+  --backend=rust
+```
+
+This model checks that fixed-sigma baseline finality advances at consecutive BFT
+heights, rejects skipped BFT heights, and rejects finalizing a fork after a
+prefix is final.
 
 Witness the named baseline finality behavior:
 
@@ -1151,6 +1170,12 @@ Tenderlink safety invariant. The named witnesses show that a nil-precommit
 certificate advances the round without clearing same-round `validValue` or
 `lockedValue`, and that conflicting value commits without nil-unlock evidence
 are attributable through amnesia evidence.
+
+The bounded baseline BFT-height checks report no violation for
+`BaselineBftHeightSafety`, which combines bounded consensus-height progression
+with finalized-prefix safety. The named witnesses show consecutive BFT
+decisions advancing finality, and reject skipped BFT heights or fork finality
+after a prefix is final.
 
 The bounded baseline-finality checks report no violation for `ComposedSafety`,
 which combines the current fixed-sigma/sticky Tenderlink safety invariant with
