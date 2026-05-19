@@ -56,7 +56,9 @@ shell: fixed-sigma sampling, normal decision, no double proposal, nil prevote
 quorum precommit-nil handling, timeout-driven nil votes and round advance,
 future-round catchup, deriving a fresh `head - sigma` value after a fork
 switch, and the sticky baseline witness that still carries the stale
-fixed-sigma sample.
+fixed-sigma sample. The forking baseline test also includes a `.fail()`
+witness for the false claim that every proposal remains the current
+fixed-sigma sample after a stream switch.
 
 `CrosslinkBaselineAccountability.qnt` makes the baseline accountability
 projection explicit. It checks that a nil-precommit certificate does not clear
@@ -79,7 +81,9 @@ accountability predicates are checked against known-bad assertions.
 `CrosslinkBaselineBftHeights.qnt` gives the baseline variant a named
 heighted-finality model. It checks that fixed-sigma finality advances through
 consecutive BFT consensus heights while rejecting skipped consensus heights and
-fork decisions after a prefix is final.
+fork decisions after a prefix is final, and includes a `.fail()` witness for
+the false claim that a fork-finality attempt remains valid after prefix
+finality.
 
 `CrosslinkBaselineFinality.qnt` composes that baseline Tenderlink behavior with
 Crosslink finality. It shows that the fixed-sigma/sticky protocol can finalize a
@@ -498,7 +502,8 @@ $QUINT test spec/quint/CrosslinkBaselineBftHeights.qnt \
 
 This model checks that fixed-sigma baseline finality advances at consecutive BFT
 heights, rejects skipped BFT heights, and rejects finalizing a fork after a
-prefix is final.
+prefix is final. It also includes a `.fail()` witness for the false claim that
+the fork-finality attempt is valid after prefix finality.
 
 Witness the named baseline finality behavior:
 

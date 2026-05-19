@@ -72,6 +72,8 @@ without clearing same-round value or proposal-cache state.
 | Normal decision test | `decisionTest`, `baselineStableStreamDecidesSampledSnapshotTest`, `n7F2DecisionPathTest` | Covered | Baseline decision values are stream snapshots. |
 | No double proposal test | `noProposeTwiceTest` | Covered | Checks a correct proposer cannot insert two proposals for the same round. |
 | Timeout progress test | `timeoutPrevotePathFormsNilPrecommitCertTest`, `timeoutPrecommitAdvancesWithoutPrecommitQuorumTest` | Covered | The baseline splits upstream timeout behavior into prevote-nil and precommit-timeout paths. |
+| Crosslink-specific stale-sample negative witness | `falseNoStaleFixedSigmaProposalInvariantFailsTest` | Covered as seeded witness | Shows the sticky baseline violates the false claim that proposals always equal the current `head - sigma` sample. |
+| Crosslink-specific fork-finality negative witness | `falseForkFinalityAttemptIsValidTest` | Covered as seeded witness | Shows a fork-finality attempt is invalid once the prefix has finalized on the other branch. |
 
 ## Proof Gate Crosswalk
 
@@ -118,8 +120,8 @@ The crosswalk leaves these concrete gaps:
    those larger instances.
 5. Decide whether the `n4_f2`, `n5_f2`, and `n7_f2` witnesses should become
    symbolic gates or remain quick witnesses with explicit scope.
-6. Add Crosslink-specific false-invariant witnesses for stale fixed-sigma
-   samples and fork finality attempts.
+6. Broaden Crosslink-specific false-invariant witnesses beyond hand-authored
+   stale-sample and fork-finality fixtures.
 7. Replace the single hand-authored fork-switch fixture with generated bounded
    PoW schedules, long-reorg fixtures, and a simple stochastic or adversarial
    block-production abstraction.

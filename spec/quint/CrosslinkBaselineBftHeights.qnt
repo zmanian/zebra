@@ -59,6 +59,9 @@ module CrosslinkBaselineBftHeightsModel {
   val BaselineBftHeightSafety =
     Safety
 
+  val ForkFinalityAttemptIsValid =
+    ValidHeightDecision("b3", "b4")
+
   run baselineConsecutiveBftHeightsAdvanceFinalityTest = {
     Init
       .then(ApplyScheduledDecision)
@@ -89,6 +92,16 @@ module CrosslinkBaselineBftHeightsModel {
     Init
       .then(ApplyDecisionAt(1, "a2", "a3"))
       .then(ApplyDecisionAt(2, "b3", "b4"))
+      .fail()
+  }
+
+  run falseForkFinalityAttemptIsValidTest = {
+    Init
+      .then(ApplyDecisionAt(1, "a2", "a3"))
+      .then(all {
+        ForkFinalityAttemptIsValid,
+        unchangedAll,
+      })
       .fail()
   }
 }

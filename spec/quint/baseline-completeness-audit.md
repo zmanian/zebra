@@ -76,6 +76,8 @@ The current branch has these baseline-specific files:
     no double proposal, nil prevote quorum handling, timeout-driven nil
     votes and round advance, future-round catchup, fork-derived stream change,
     and sticky stale-sample carryover
+  - adds a false-invariant witness for the Crosslink-specific stale
+    fixed-sigma proposal after a stream switch
   - adds `f = 2` boundary witnesses distinguishing `n4_f2` and `n5_f2`
     above-live-boundary behavior from a proper `n7_f2` decision path
 - `CrosslinkBaselinePowSampling.qnt`
@@ -97,6 +99,8 @@ The current branch has these baseline-specific files:
 - `CrosslinkBaselineBftHeights.qnt`
   - gives baseline finality explicit BFT consensus heights
   - rejects skipped consensus heights and fork finality after a finalized prefix
+  - adds a false-invariant witness for a fork-finality attempt after prefix
+    finality
 - `CrosslinkBaselineFinality.qnt`
   - composes the sticky Tenderlink baseline with finalized-prefix semantics
   - records stable finality and the stream-change finality stall
@@ -143,6 +147,7 @@ The current branch has these baseline-specific files:
 | Full Tendermint transition surface | Current model covers value prevote quorum, nil prevote quorum, propose/prevote/precommit timeout paths, stream-change nil precommit, round advance after precommit quorum, timeout round advance, future-round catchup, and decision | Covered for the focused baseline shell; still not a full upstream port |
 | Full agreement/validity/accountability invariant suite over arbitrary evidence | Current suite has bounded safety plus focused accountability witnesses | Partial |
 | False-invariant/counterexample harnesses for amnesia/equivocation/agreement | `CrosslinkBaselineCounterexampleModel`; `falseNoConflictingCommitsInvariantFailsTest`; `falseNoAmnesiaEvidenceInvariantFailsTest`; `falseNoEquivocationEvidenceInvariantFailsTest`; `falseAgreementInvariantFailsTest`; `falseAgreementOrAmnesiaInvariantFailsTest`; `falseAmnesiaImpliesEquivocationInvariantFailsTest`; `falseShowMeAmnesiaWithoutEquivocationInvariantFailsTest`; `falseNeverUndecidedInMaxRoundInvariantFailsTest` | Covered as seeded Rust witnesses; not yet an arbitrary-evidence symbolic suite |
+| Crosslink-specific false-invariant witnesses | `falseNoStaleFixedSigmaProposalInvariantFailsTest`; `falseForkFinalityAttemptIsValidTest` | Covered as seeded Rust witnesses |
 | Generated/adversarial PoW schedule for baseline long reorgs | Baseline uses a bounded fork-switch fixture | Partial |
 | Stochastic PoW block-production model | Not modeled in baseline | Missing |
 | Inductive or deeper multi-height finality argument | Current BFT-height model is bounded | Partial |
@@ -196,13 +201,16 @@ remaining upstream-quality gaps.
    - Check agreement, validity, and accountability over the parameterized model.
    - Keep Crosslink finalized-prefix safety separate from Tenderlink agreement
      so failures are easier to diagnose.
-6. Add remaining Crosslink-specific false-invariant/counterexample modules.
+6. Add deeper Crosslink-specific false-invariant/counterexample modules.
    - The upstream-shaped negative checks for amnesia, equivocation, agreement,
      agreement-or-amnesia, amnesia-implies-equivocation,
      amnesia-without-equivocation, and undecided max-round behavior now have
      seeded witnesses.
-   - Remaining work is Crosslink-specific negative checks for stale fixed-sigma
-     samples and fork finality attempts.
+   - Seeded witnesses now also cover the false claims that sticky baseline
+     proposals always match the current fixed-sigma sample and that
+     fork-finality attempts remain valid after prefix finality.
+   - Remaining work is to broaden those Crosslink-specific false invariants
+     beyond hand-authored fixtures.
 7. Expand the PoW environment.
    - Replace the baseline single fork-switch fixture with generated bounded PoW
      schedules.
@@ -229,15 +237,13 @@ remaining upstream-quality gaps.
      unusably large.
 2. Port the full Tendermint transition surface into the parameterized shell
    while preserving the baseline sticky nil-precommit rule.
-3. Add Crosslink-specific stale-sample and fork-finality false-invariant
-   witnesses.
-4. Decide whether the new `f = 2` boundary witnesses should be promoted into
+3. Decide whether the new `f = 2` boundary witnesses should be promoted into
    symbolic gates, or kept as quick Rust witnesses with documented scope.
-5. Add the full agreement/validity/accountability checks to
+4. Add the full agreement/validity/accountability checks to
    `symbolic-baseline`.
-6. Generalize baseline PoW schedules for long reorgs and repeated stream
+5. Generalize baseline PoW schedules for long reorgs and repeated stream
    changes.
-7. Revisit CI timeout and split symbolic jobs if the parameterized model makes
+6. Revisit CI timeout and split symbolic jobs if the parameterized model makes
    Apalache too heavy.
 
 ## Completion Standard

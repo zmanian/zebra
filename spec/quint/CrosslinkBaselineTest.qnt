@@ -166,6 +166,11 @@ module CrosslinkBaselineN4F1ForkingTest {
   val BaselineN4F1ForkingSafety =
     Safety and TestStreamMatchesFixedSigma
 
+  val NoStaleFixedSigmaProposal =
+    Rounds.forall(r =>
+      msgsPropose.get(r).forall(m => m.proposal == TestHeadMinusSigma(r))
+    )
+
   run streamChangeDerivesFreshHeadMinusSigmaTest = all {
     assert(TestHeadMinusSigma(0) == "a1"),
     assert(TestHeadMinusSigma(1) == "b1"),
@@ -189,6 +194,20 @@ module CrosslinkBaselineN4F1ForkingTest {
         assert(BaselineN4F1ForkingSafety),
         unchangedAll,
       })
+  }
+
+  run falseNoStaleFixedSigmaProposalInvariantFailsTest = {
+    Init
+      .then(SeedAbandonedRoundState("p1"))
+      .then(SeedAbandonedRoundState("p2"))
+      .then(SeedAbandonedRoundState("p3"))
+      .then(StartNextRoundAfterPrecommitQuorum("p2"))
+      .then(InsertProposal("p2"))
+      .then(all {
+        NoStaleFixedSigmaProposal,
+        unchangedAll,
+      })
+      .fail()
   }
 }
 
