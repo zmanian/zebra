@@ -83,7 +83,7 @@ without clearing same-round value or proposal-cache state.
 | Run witness tests | `check.sh quick-baseline` runs baseline, accountability, BFT-height, finality, PoW-sampling, and `f = 2` witness modules | Covered |
 | Bounded agreement/validity/accountability checks | `check.sh symbolic-baseline` verifies focused baseline safety invariants | Covered, bounded |
 | Faulty init symbolic checking | Tiny full-powerset faulty init plus bounded forking faulty init | Partial |
-| `f = 2` symbolic checking | `f = 2` witnesses are Rust-backed quick tests only | Partial |
+| `f = 2` symbolic checking | `symbolic-baseline` verifies `n4_f2`, `n5_f2`, and `n7_f2` safety invariants at depth 2 | Covered, shallow |
 | Full arbitrary-evidence accountability checking | Focused witnesses, upstream-shaped negative witnesses, and bounded faulty-init gates | Partial |
 | Full PoW environment checking | Fixed fork switch and fixed-sigma sampling fixtures | Partial |
 | Stochastic or adversarial block production | Not in baseline | Missing |
@@ -118,8 +118,8 @@ The crosswalk leaves these concrete gaps:
    parameterized instances, not only tiny and bounded harnesses.
 4. Add broader symbolic checks for agreement, validity, and accountability over
    those larger instances.
-5. Decide whether the `n4_f2`, `n5_f2`, and `n7_f2` witnesses should become
-   symbolic gates or remain quick witnesses with explicit scope.
+5. Decide whether the `n4_f2`, `n5_f2`, and `n7_f2` symbolic gates should be
+   deepened beyond max depth 2.
 6. Broaden Crosslink-specific false-invariant witnesses beyond hand-authored
    stale-sample and fork-finality fixtures.
 7. Replace the single hand-authored fork-switch fixture with generated bounded

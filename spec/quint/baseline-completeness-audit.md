@@ -138,10 +138,10 @@ The current branch has these baseline-specific files:
 | Automated local baseline symbolic gate | `check.sh symbolic-baseline` | Covered |
 | Automated CI baseline gates | `.github/workflows/quint-crosslink.yml` | Covered structurally; requires green run evidence per commit |
 | Parameterized `Corr/Faulty/N/T` validator model | `CrosslinkBaselineTenderlink.qnt` | Partial; parameter shell exists, full transition/faulty injection is still focused |
-| Upstream-style model instances (`n4_f1`, `n4_f2`, `n5_f2`) | `CrosslinkBaselineModels.qnt`; `n4_f1_stable`, `n4_f1_forking`, `n5_f1_forking`, `n4_f2_forking`, `n5_f2_forking`, `n7_f2_forking` | Covered as named focused instances; broader symbolic coverage is still partial |
+| Upstream-style model instances (`n4_f1`, `n4_f2`, `n5_f2`) | `CrosslinkBaselineModels.qnt`; `n4_f1_stable`, `n4_f1_forking`, `n5_f1_forking`, `n4_f2_forking`, `n5_f2_forking`, `n7_f2_forking` | Covered as named focused instances with shallow symbolic coverage for the `f = 2` safety gates |
 | Upstream-style normal decision/no-double-proposal/nil-prevote/timeout/catchup tests | `CrosslinkBaselineTest.qnt`; `decisionTest`; `noProposeTwiceTest`; `nilPrevoteQuorumPrecommitsNilTest`; `timeoutPrevotePathFormsNilPrecommitCertTest`; `timeoutPrecommitAdvancesWithoutPrecommitQuorumTest`; `roundCatchupStartsFutureRoundTest` | Covered for `n4_f1_stable` |
 | Upstream-style stream-change/sticky-sample test | `CrosslinkBaselineTest.qnt`; `streamChangeDerivesFreshHeadMinusSigmaTest`; `stickyBaselineCarriesStaleFixedSigmaSampleTest` | Covered for `n4_f1_forking` |
-| Fault-boundary behavior for `f = 2` | `CrosslinkBaselineTest.qnt`; `n4F2DocumentsAboveLiveFaultBoundaryTest`; `n5F2CatchupEvidenceButNoCorrectValueQuorumTest`; `n7F2DecisionPathTest` | Covered by Rust-backed witnesses |
+| Fault-boundary behavior for `f = 2` | `CrosslinkBaselineTest.qnt`; `n4F2DocumentsAboveLiveFaultBoundaryTest`; `n5F2CatchupEvidenceButNoCorrectValueQuorumTest`; `n7F2DecisionPathTest`; `symbolic-baseline` depth-2 checks for `BaselineN4F2ForkingSafety`, `BaselineN5F2ForkingSafety`, and `BaselineN7F2ForkingSafety` | Covered by Rust-backed witnesses and shallow symbolic gates |
 | Faulty proposal/prevote/precommit evidence reaches equivocation predicates | `CrosslinkBaselineAccountability.qnt`; `baselineFaultyProposalEvidenceFeedsEquivocationTest`; `baselineFaultyPrevoteEvidenceFeedsEquivocationTest`; `baselineFaultyNilValuePrecommitEvidenceFeedsEquivocationTest` | Covered as witnesses |
 | Nondeterministic faulty message injection in `Init` | `InitWithFaultyEvidence`; `CrosslinkBaselineFaultyInitTinyModel`; `CrosslinkBaselineFaultyInitForkingModel`; `BaselineFaultyInitSafety`; `BaselineForkingFaultyInitSafety` | Partial; covered by a tiny full-powerset instance and a larger fixed-sigma/forking instance with bounded faulty evidence, but not yet by the unbounded larger parameterized instances |
 | Full Tendermint transition surface | Current model covers value prevote quorum, nil prevote quorum, propose/prevote/precommit timeout paths, stream-change nil precommit, round advance after precommit quorum, timeout round advance, future-round catchup, and decision | Covered for the focused baseline shell; still not a full upstream port |
@@ -183,8 +183,8 @@ remaining upstream-quality gaps.
    - The `n4_f2` and `n5_f2` witnesses document why those smaller `f = 2`
      layouts are above the live fault boundary for correct-only value commits;
      `n7_f2` records the corresponding 2f+1 correct decision path.
-   - Remaining work is to decide which of these should become symbolic gates
-     rather than Rust-only quick witnesses.
+   - The `f = 2` safety invariants are now shallow `symbolic-baseline` gates at
+     max depth 2; deeper bounds remain a tractability question.
 3. Add upstream-style faulty message injection.
    - Nondeterministically seed faulty proposals, prevotes, and precommits in
      `Init`.
@@ -237,13 +237,11 @@ remaining upstream-quality gaps.
      unusably large.
 2. Port the full Tendermint transition surface into the parameterized shell
    while preserving the baseline sticky nil-precommit rule.
-3. Decide whether the new `f = 2` boundary witnesses should be promoted into
-   symbolic gates, or kept as quick Rust witnesses with documented scope.
-4. Add the full agreement/validity/accountability checks to
+3. Add the full agreement/validity/accountability checks to
    `symbolic-baseline`.
-5. Generalize baseline PoW schedules for long reorgs and repeated stream
+4. Generalize baseline PoW schedules for long reorgs and repeated stream
    changes.
-6. Revisit CI timeout and split symbolic jobs if the parameterized model makes
+5. Revisit CI timeout and split symbolic jobs if the parameterized model makes
    Apalache too heavy.
 
 ## Completion Standard

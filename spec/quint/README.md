@@ -450,7 +450,9 @@ shell derives the fresh `head - sigma` sample after a fork switch while the
 sticky baseline still carries the old sample into the next round. The `f = 2`
 tests record that `n4_f2` and `n5_f2` sit above the live fault boundary for
 correct-only value commits, while `n7_f2` still supports a 2f+1 correct
-decision path.
+decision path. These three `f = 2` safety invariants are also included in
+`symbolic-baseline` at max depth 2; the shallow bound is deliberate because
+`n7_f2` is materially more expensive than the smaller boundary instances.
 
 Witness the named baseline accountability behavior:
 
@@ -1330,7 +1332,8 @@ claims about conflicting commits, amnesia, equivocation, and agreement are
 rejected by the harness.
 
 The bounded upstream-shaped baseline checks report no violation for the
-`n4_f1`, `n4_f2`, `n5_f2`, or `n7_f2` Rust-backed safety witnesses. The stable
+`n4_f1` safety witnesses and the shallow `n4_f2`, `n5_f2`, and `n7_f2`
+symbolic safety gates. The stable
 `n4_f1` instance keeps the normal fixed-sigma decision path,
 no-double-proposal witness, nil-prevote quorum path, and timeout-driven nil
 vote/round-advance witnesses alive through the parameter shell. It also covers

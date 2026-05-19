@@ -263,6 +263,9 @@ symbolic_checks() {
   verify_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStreamChangeModel 3 Init Next BaselineSafety
   verify_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN4F1StableTest 3 Init Next BaselineN4F1StableSafety
   verify_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN4F1ForkingTest 3 Init Next BaselineN4F1ForkingSafety
+  verify_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN4F2ForkingTest 2 Init Next BaselineN4F2ForkingSafety
+  verify_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN5F2ForkingTest 2 Init Next BaselineN5F2ForkingSafety
+  verify_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN7F2ForkingTest 2 Init Next BaselineN7F2ForkingSafety
   verify_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineAccountabilityModel 3 Init Next BaselineAccountabilitySafety
   verify_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineFaultyInitTinyModel 2 InitWithFaultyEvidence Next BaselineFaultyInitSafety
   verify_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineFaultyInitForkingModel 2 InitWithBoundedForkingFaultyEvidence Next BaselineForkingFaultyInitSafety
@@ -298,6 +301,9 @@ baseline_symbolic_checks() {
   verify_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStreamChangeModel 3 Init Next BaselineSafety
   verify_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN4F1StableTest 3 Init Next BaselineN4F1StableSafety
   verify_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN4F1ForkingTest 3 Init Next BaselineN4F1ForkingSafety
+  verify_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN4F2ForkingTest 2 Init Next BaselineN4F2ForkingSafety
+  verify_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN5F2ForkingTest 2 Init Next BaselineN5F2ForkingSafety
+  verify_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN7F2ForkingTest 2 Init Next BaselineN7F2ForkingSafety
   verify_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineAccountabilityModel 3 Init Next BaselineAccountabilitySafety
   verify_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineFaultyInitTinyModel 2 InitWithFaultyEvidence Next BaselineFaultyInitSafety
   verify_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineFaultyInitForkingModel 2 InitWithBoundedForkingFaultyEvidence Next BaselineForkingFaultyInitSafety
