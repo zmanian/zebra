@@ -76,6 +76,13 @@ rate, block-interval variance, and observed reorg depth as measured windows,
 then checks that the selected risk weights and thresholds classify those
 windows into the expected sigma floors.
 
+`CrosslinkDynamicSigmaTelemetry.qnt` makes that calibration contract more
+production-shaped. It derives participation from Crosslink-participating PoW
+work over total observed PoW work, requires conservative coverage and
+round-failure estimates, and adds an explicit acceptable rollback-risk target
+that the selected sigma must satisfy whenever the configured ladder can satisfy
+it.
+
 `CrosslinkDynamicSigmaForkSchedule.qnt` composes the dynamic-sigma controller
 with the derived PoW fork schedule. In this model, dynamic sigma consumes
 rollback depth computed from best-tip transitions instead of a supplied
@@ -402,6 +409,36 @@ hash-power participation, and critical combined stochastic risk. The harness
 checks that the chosen weights and thresholds map each measured window to the
 expected sigma floor, while keeping each signal monotone and materially
 weighted.
+
+Witness production-shaped dynamic-sigma telemetry:
+
+```sh
+$QUINT test spec/quint/CrosslinkDynamicSigmaTelemetry.qnt \
+  --main=CrosslinkDynamicSigmaTelemetryModel \
+  --max-samples=100 \
+  --backend=rust
+```
+
+This runs:
+
+- `healthyTelemetryWindowKeepsBaseSigmaTest`
+- `hashWorkParticipationRaisesSigmaTest`
+- `combinedTelemetryRiskRaisesSigmaTest`
+- `economicTargetRaisesSigmaAboveSignalFloorTest`
+- `criticalParticipationForcesMaxSigmaTest`
+- `economicTargetCanForceMaxSigmaTest`
+- `unreachableEconomicTargetFallsBackToMaxSigmaTest`
+- `deepReorgTelemetryWindowForcesMaxSigmaTest`
+- `telemetryMatchesAllExpectedWindowsTest`
+
+The telemetry fixture covers eight windows: healthy baseline, marginal
+participating hash work, combined telemetry risk, an economic target that raises
+sigma above the hard-signal floor, critical participating hash work, an economic
+target that forces max sigma, an unreachable risk target that falls back to max
+sigma, and a deep reorg. It checks that conservative telemetry estimates
+upper-bound raw sampled work and round failures, rollback risk is monotone in
+sigma, and the selected sigma satisfies the configured rollback-risk target when
+the ladder can satisfy it.
 
 Witness dynamic sigma consuming derived PoW rollback depth:
 
@@ -735,6 +772,13 @@ $QUINT verify spec/quint/CrosslinkDynamicSigmaCalibration.qnt \
   --step=Next \
   --invariant=Safety
 
+$QUINT verify spec/quint/CrosslinkDynamicSigmaTelemetry.qnt \
+  --main=CrosslinkDynamicSigmaTelemetryModel \
+  --max-steps=8 \
+  --init=Init \
+  --step=Next \
+  --invariant=Safety
+
 $QUINT verify spec/quint/CrosslinkDynamicSigmaForkSchedule.qnt \
   --main=CrosslinkDynamicSigmaForkScheduleModel \
   --max-steps=4 \
@@ -868,6 +912,19 @@ combines:
 - round-failure, block-variance, and reorg-depth weights are all material
 - the observation-walk invariant preserves the calibrated label for each window
 
+The production-shaped dynamic-sigma telemetry harness reports no violation for
+`Safety`, which combines:
+
+- conservative coverage estimates upper-bound the raw gap between total PoW
+  work and Crosslink-participating PoW work
+- conservative round-failure estimates upper-bound raw failed Tenderlink rounds
+- rollback-risk estimates are monotone across the sigma ladder
+- selected sigma satisfies the explicit rollback-risk target when reachable
+- if the target is unreachable at max sigma, the controller falls back to max
+  sigma and exposes that status
+- sampled hash-work coverage maps to the expected participation floor
+- every telemetry window maps to its expected sigma floor
+
 The dynamic-sigma/fork-schedule composition reports no violation for
 `DerivedSafety`, which combines:
 
@@ -923,7 +980,7 @@ generated-work-competition obligations and run substantially faster.
 
 This model is intentionally narrow. The next useful extensions are:
 
-- replace the bounded dynamic-sigma calibration fixture with production
-  telemetry and an explicit economic target for acceptable rollback risk
+- connect the telemetry contract to production data sources and a real economic
+  model for rollback loss rather than the bounded fixture values used here
 - refine the split projection checks into smaller inductive lemmas if bounds
   beyond the checked depth-10 projections still need very large JVM/Z3 heaps
