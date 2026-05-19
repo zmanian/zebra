@@ -169,7 +169,13 @@ pub fn spawn_new_tfl_service(
     let force_feed_pos: ForceFeedPoSBlockProcedure = Arc::new(move |block, fat_pointer| {
         let handle: TFLServiceHandle = handle_mtx2.lock().unwrap().clone().unwrap();
         Box::pin(async move {
-            let confirmation_depth = crate::proposal_confirmation_depth(&handle.config);
+            let confirmation_depth = match crate::proposal_confirmation_depth(&handle.config) {
+                Ok(confirmation_depth) => confirmation_depth,
+                Err(err) => {
+                    error!("Failed to select forced BFT block confirmation depth: {err:?}");
+                    return false;
+                }
+            };
             let accepted = if fat_pointer.points_at_block_hash() == block.blake3_hash() {
                 crate::validate_bft_block_from_malachite(
                     &handle,

@@ -101,7 +101,8 @@ payload carries its selected confirmation depth into voting-time stale checks,
 so a prototype dynamic proposal is checked against `head - selected_sigma`. The
 prototype proposer now runs the dynamic-sigma controller over its fixture
 telemetry before selecting that sigma; production telemetry sources are still
-the missing deployment step.
+the missing deployment step. Invalid telemetry-to-evidence selection prevents
+prototype proposal emission instead of falling back to the base sigma.
 
 `CrosslinkDynamicSigmaForkSchedule.qnt` composes the dynamic-sigma controller
 with the derived PoW fork schedule. In this model, dynamic sigma consumes

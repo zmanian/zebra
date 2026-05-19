@@ -506,7 +506,13 @@ async fn propose_new_bft_block_with_confirmation_depth(
 async fn propose_new_tenderlink_payload(
     tfl_handle: &TFLServiceHandle,
 ) -> Option<tenderlink::BlockValue> {
-    let confirmation_depth = proposal_confirmation_depth(&tfl_handle.config);
+    let confirmation_depth = match proposal_confirmation_depth(&tfl_handle.config) {
+        Ok(confirmation_depth) => confirmation_depth,
+        Err(err) => {
+            warn!("Unable to select Tenderlink proposal depth: {:?}", err);
+            return None;
+        }
+    };
     let block =
         propose_new_bft_block_with_confirmation_depth(tfl_handle, confirmation_depth).await?;
 
@@ -649,14 +655,14 @@ fn prototype_dynamic_sigma_proposal_evidence(
     )
 }
 
-fn proposal_confirmation_depth(config: &config::Config) -> u64 {
+fn proposal_confirmation_depth(
+    config: &config::Config,
+) -> Result<u64, TenderlinkPayloadEncodeError> {
     let Some(params) = dynamic_sigma_params_from_config(config) else {
-        return PROTOTYPE_PARAMETERS.bc_confirmation_depth_sigma;
+        return Ok(PROTOTYPE_PARAMETERS.bc_confirmation_depth_sigma);
     };
 
-    prototype_dynamic_sigma_proposal_evidence(params)
-        .map(|evidence| evidence.selected_sigma)
-        .unwrap_or(params.base_sigma)
+    prototype_dynamic_sigma_proposal_evidence(params).map(|evidence| evidence.selected_sigma)
 }
 
 fn encode_proposed_tenderlink_payload(
@@ -2699,7 +2705,8 @@ mod tests {
     #[test]
     fn proposal_confirmation_depth_defaults_to_fixed_sigma() {
         assert_eq!(
-            proposal_confirmation_depth(&config::Config::default()),
+            proposal_confirmation_depth(&config::Config::default())
+                .expect("fixed proposal depth should be available"),
             PROTOTYPE_PARAMETERS.bc_confirmation_depth_sigma,
         );
     }
@@ -2710,8 +2717,24 @@ mod tests {
         config.dynamic_sigma_prototype = true;
 
         assert_eq!(
-            proposal_confirmation_depth(&config),
+            proposal_confirmation_depth(&config)
+                .expect("prototype dynamic proposal depth should be available"),
             PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS.base_sigma,
+        );
+    }
+
+    #[test]
+    fn dynamic_sigma_proposal_evidence_rejects_invalid_telemetry() {
+        let mut raw_telemetry = dynamic_sigma_raw_telemetry(90);
+        raw_telemetry.total_hash_work = 0;
+
+        assert_eq!(
+            dynamic_sigma_proposal_evidence_from_raw_telemetry(
+                PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS,
+                raw_telemetry,
+                dynamic_sigma_telemetry_margins(),
+            ),
+            Err(TenderlinkPayloadEncodeError::DynamicSigmaInvalid),
         );
     }
 

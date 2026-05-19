@@ -149,7 +149,8 @@ prototype dynamic proposals are compared against `head - selected_sigma` instead
 of the fixed-sigma sample. This preserves backward compatibility while
 preventing a dynamic-sigma payload from being silently treated as a fixed-sigma
 block, and it keeps the dynamic variant behind an explicit opt-in until
-production telemetry exists.
+production telemetry exists. If telemetry-to-evidence selection fails, the
+proposal path now fails closed instead of falling back to the base sigma.
 
 In that prototype-gated path, hash participation already affects payload
 validity through the carried evidence: if the Crosslink-participating work share
