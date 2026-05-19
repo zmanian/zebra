@@ -82,6 +82,9 @@ module CrosslinkResampling {
   var msgsPropose: Round_t -> Set[Propose_t]
   var msgsPrevote: Round_t -> Set[Vote_t]
   var msgsPrecommit: Round_t -> Set[Vote_t]
+  var evidencePropose: Set[Propose_t]
+  var evidencePrevote: Set[Vote_t]
+  var evidencePrecommit: Set[Vote_t]
   var firedAction: str
 
   pure def IsValidSnapshot(v: Snapshot_t): bool =
@@ -123,13 +126,13 @@ module CrosslinkResampling {
     )
 
   val EvidencePropose: Set[Propose_t] =
-    Rounds.map(r => msgsPropose.get(r)).flatten()
+    evidencePropose
 
   val EvidencePrevote: Set[Vote_t] =
-    Rounds.map(r => msgsPrevote.get(r)).flatten()
+    evidencePrevote
 
   val EvidencePrecommit: Set[Vote_t] =
-    Rounds.map(r => msgsPrecommit.get(r)).flatten()
+    evidencePrecommit
 
   def StickyOrStreamProposal(p: Proc_t): Snapshot_t =
     if (validValue.get(p) == NilSnapshot) {
@@ -155,30 +158,48 @@ module CrosslinkResampling {
     msgsPropose' = Rounds.mapBy(_ => Set()),
     msgsPrevote' = Rounds.mapBy(_ => Set()),
     msgsPrecommit' = Rounds.mapBy(_ => Set()),
+    evidencePropose' = Set(),
+    evidencePrevote' = Set(),
+    evidencePrecommit' = Set(),
     firedAction' = "Init",
   }
 
-  action BroadcastProposal(p: Proc_t, r: Round_t, v: Snapshot_t, vr: Round_t): bool =
-    msgsPropose' = msgsPropose.setBy(r, old => old.union(Set({
+  action BroadcastProposal(p: Proc_t, r: Round_t, v: Snapshot_t, vr: Round_t): bool = {
+    val m = {
       src: p,
       round: r,
       proposal: v,
       validRound: vr,
-    })))
+    }
+    all {
+      msgsPropose' = msgsPropose.setBy(r, old => old.union(Set(m))),
+      evidencePropose' = evidencePropose.union(Set(m)),
+    }
+  }
 
-  action BroadcastPrevote(p: Proc_t, r: Round_t, v: Snapshot_t): bool =
-    msgsPrevote' = msgsPrevote.setBy(r, old => old.union(Set({
+  action BroadcastPrevote(p: Proc_t, r: Round_t, v: Snapshot_t): bool = {
+    val m = {
       src: p,
       round: r,
       id: v,
-    })))
+    }
+    all {
+      msgsPrevote' = msgsPrevote.setBy(r, old => old.union(Set(m))),
+      evidencePrevote' = evidencePrevote.union(Set(m)),
+    }
+  }
 
-  action BroadcastPrecommit(p: Proc_t, r: Round_t, v: Snapshot_t): bool =
-    msgsPrecommit' = msgsPrecommit.setBy(r, old => old.union(Set({
+  action BroadcastPrecommit(p: Proc_t, r: Round_t, v: Snapshot_t): bool = {
+    val m = {
       src: p,
       round: r,
       id: v,
-    })))
+    }
+    all {
+      msgsPrecommit' = msgsPrecommit.setBy(r, old => old.union(Set(m))),
+      evidencePrecommit' = evidencePrecommit.union(Set(m)),
+    }
+  }
 
   action InsertProposal(p: Proc_t): bool = {
     val r = round.get(p)
@@ -200,6 +221,8 @@ module CrosslinkResampling {
       cachedProposalRound' = cachedProposalRound,
       msgsPrevote' = msgsPrevote,
       msgsPrecommit' = msgsPrecommit,
+      evidencePrevote' = evidencePrevote,
+      evidencePrecommit' = evidencePrecommit,
     }
   }
 
@@ -230,6 +253,8 @@ module CrosslinkResampling {
       cachedProposalRound' = cachedProposalRound,
       msgsPropose' = msgsPropose,
       msgsPrecommit' = msgsPrecommit,
+      evidencePropose' = evidencePropose,
+      evidencePrecommit' = evidencePrecommit,
     }
   }
 
@@ -255,6 +280,8 @@ module CrosslinkResampling {
       decision' = decision,
       msgsPropose' = msgsPropose,
       msgsPrevote' = msgsPrevote,
+      evidencePropose' = evidencePropose,
+      evidencePrevote' = evidencePrevote,
     }
   }
 
@@ -277,6 +304,8 @@ module CrosslinkResampling {
       cachedProposalRound' = cachedProposalRound,
       msgsPropose' = msgsPropose,
       msgsPrevote' = msgsPrevote,
+      evidencePropose' = evidencePropose,
+      evidencePrevote' = evidencePrevote,
     }
   }
 
@@ -330,6 +359,9 @@ module CrosslinkResampling {
       msgsPropose' = msgsPropose,
       msgsPrevote' = msgsPrevote,
       msgsPrecommit' = msgsPrecommit,
+      evidencePropose' = evidencePropose,
+      evidencePrevote' = evidencePrevote,
+      evidencePrecommit' = evidencePrecommit,
     }
   }
 
@@ -382,6 +414,9 @@ module CrosslinkResampling {
       msgsPropose' = msgsPropose,
       msgsPrevote' = msgsPrevote,
       msgsPrecommit' = msgsPrecommit,
+      evidencePropose' = evidencePropose,
+      evidencePrevote' = evidencePrevote,
+      evidencePrecommit' = evidencePrecommit,
     }
   }
 
@@ -404,6 +439,9 @@ module CrosslinkResampling {
     msgsPropose' = msgsPropose,
     msgsPrevote' = msgsPrevote,
     msgsPrecommit' = msgsPrecommit,
+    evidencePropose' = evidencePropose,
+    evidencePrevote' = evidencePrevote,
+    evidencePrecommit' = evidencePrecommit,
   }
 
   action SeedAbandonedRoundState(p: Proc_t): bool = {
@@ -425,6 +463,8 @@ module CrosslinkResampling {
       decision' = decision,
       msgsPropose' = msgsPropose,
       msgsPrevote' = msgsPrevote,
+      evidencePropose' = evidencePropose,
+      evidencePrevote' = evidencePrevote,
     }
   }
 
@@ -447,6 +487,8 @@ module CrosslinkResampling {
       decision' = decision,
       msgsPropose' = msgsPropose,
       msgsPrevote' = msgsPrevote,
+      evidencePropose' = evidencePropose,
+      evidencePrevote' = evidencePrevote,
     }
   }
 
@@ -469,6 +511,8 @@ module CrosslinkResampling {
       decision' = decision,
       msgsPropose' = msgsPropose,
       msgsPrevote' = msgsPrevote,
+      evidencePropose' = evidencePropose,
+      evidencePrevote' = evidencePrevote,
     }
   }
 
@@ -493,6 +537,8 @@ module CrosslinkResampling {
       decision' = decision,
       msgsPropose' = msgsPropose,
       msgsPrevote' = msgsPrevote,
+      evidencePropose' = evidencePropose,
+      evidencePrevote' = evidencePrevote,
     }
   }
 
@@ -514,6 +560,8 @@ module CrosslinkResampling {
       decision' = decision,
       msgsPropose' = msgsPropose,
       msgsPrevote' = msgsPrevote,
+      evidencePropose' = evidencePropose,
+      evidencePrevote' = evidencePrevote,
     }
   }
 
@@ -521,6 +569,16 @@ module CrosslinkResampling {
     val activeRound = 1
     val lockRound = 0
     val locked = Stream.get(lockRound)
+    val lockEvidence = {
+      src: p,
+      round: lockRound,
+      id: locked,
+    }
+    val nilEvidence = {
+      src: p,
+      round: activeRound,
+      id: NilSnapshot,
+    }
     all {
       activeRound.in(Rounds),
       lockRound.in(Rounds),
@@ -534,20 +592,15 @@ module CrosslinkResampling {
       cachedProposal' = cachedProposal,
       cachedProposalRound' = cachedProposalRound,
       msgsPrecommit' = msgsPrecommit
-        .setBy(lockRound, old => old.union(Set({
-          src: p,
-          round: lockRound,
-          id: locked,
-        })))
-        .setBy(activeRound, old => old.union(Set({
-          src: p,
-          round: activeRound,
-          id: NilSnapshot,
-        }))),
+        .setBy(lockRound, old => old.union(Set(lockEvidence)))
+        .setBy(activeRound, old => old.union(Set(nilEvidence))),
+      evidencePrecommit' = evidencePrecommit.union(Set(lockEvidence, nilEvidence)),
       firedAction' = "SeedOlderLockWithNilPrecommit",
       decision' = decision,
       msgsPropose' = msgsPropose,
       msgsPrevote' = msgsPrevote,
+      evidencePropose' = evidencePropose,
+      evidencePrevote' = evidencePrevote,
     }
   }
 
@@ -569,6 +622,8 @@ module CrosslinkResampling {
       cachedProposalRound' = cachedProposalRound,
       msgsPropose' = msgsPropose,
       msgsPrevote' = msgsPrevote,
+      evidencePropose' = evidencePropose,
+      evidencePrevote' = evidencePrevote,
     }
 
   action SeedFaultyPrecommitEvidence(p: Proc_t, r: Round_t, v: Snapshot_t): bool =
@@ -589,6 +644,8 @@ module CrosslinkResampling {
       cachedProposalRound' = cachedProposalRound,
       msgsPropose' = msgsPropose,
       msgsPrevote' = msgsPrevote,
+      evidencePropose' = evidencePropose,
+      evidencePrevote' = evidencePrevote,
     }
 
   action Next =
@@ -652,6 +709,13 @@ module CrosslinkResampling {
     Rounds.forall(r =>
       NilPrecommitCert(r) implies
         Snapshots.forall(v => size(CorrectValueLocks(r, v)) <= T)
+    )
+
+  val EvidenceCoversObservedMessages =
+    Rounds.forall(r =>
+      msgsPropose.get(r).subseteq(EvidencePropose) and
+      msgsPrevote.get(r).subseteq(EvidencePrevote) and
+      msgsPrecommit.get(r).subseteq(EvidencePrecommit)
     )
 
   def ConflictingValueCommits(
@@ -797,6 +861,7 @@ module CrosslinkResampling {
     LockedValueHasMatchingValidValue and
     CorrectValueLocksHavePrecommitEvidence and
     NilCertLeavesAtMostFCurrentRoundLocks and
+    EvidenceCoversObservedMessages and
     ConflictingCommitsAccountable
 }
 
@@ -819,6 +884,9 @@ module CrosslinkResamplingTest {
     msgsPropose' = msgsPropose,
     msgsPrevote' = msgsPrevote,
     msgsPrecommit' = msgsPrecommit,
+    evidencePropose' = evidencePropose,
+    evidencePrevote' = evidencePrevote,
+    evidencePrecommit' = evidencePrecommit,
     firedAction' = firedAction,
   }
 

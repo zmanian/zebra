@@ -23,9 +23,9 @@ argument explicit: retained locks must be backed by value precommit evidence,
 and a nil certificate can coexist with at most `f` correct same-round value
 locks, not with a commit-capable value-lock quorum. The model also ports the
 upstream Tendermint accountability shape over the Crosslink evidence surface:
-proposal, prevote, and precommit evidence feed equivocation and amnesia
-predicates, while a nil-precommit certificate for the abandoned round is treated
-as valid unlock evidence rather than amnesia.
+transition-carried proposal, prevote, and precommit evidence feed equivocation
+and amnesia predicates, while a nil-precommit certificate for the abandoned
+round is treated as valid unlock evidence rather than amnesia.
 
 `CrosslinkForkFinality.qnt` is a separate value-semantics model. It abstracts
 PoW snapshots as a finite fork tree, then checks that Crosslink finality can skip
@@ -784,6 +784,8 @@ combines:
 - any retained Tendermint lock is backed by value-precommit evidence
 - a nil certificate leaves at most `f` correct same-round value locks, so
   same-round unlock is not discarding a commit-capable value-lock quorum
+- observed proposal, prevote, and precommit messages are covered by
+  transition-carried evidence sets
 - every pair of conflicting value commit quorums has accountability evidence:
   either correct-validator precommit equivocation, nil/value equivocation in the
   purported unlock round, or a correct-validator value switch without a valid
@@ -895,6 +897,5 @@ This model is intentionally narrow. The next useful extensions are:
 
 - replace the bounded dynamic-sigma calibration fixture with production
   telemetry and an explicit economic target for acceptable rollback risk
-- make accountability evidence explicitly transition-carried, matching the
-  upstream Tendermint evidence variables exactly, instead of deriving global
-  evidence from the bounded model's observed message sets
+- split the heavier accountability/finality proof obligations so deeper
+  Apalache bounds remain tractable without relying on very large JVM/Z3 heaps
