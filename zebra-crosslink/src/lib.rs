@@ -40,6 +40,8 @@ use ed25519_zebra::VerificationKeyBytes as MalPublicKey;
 pub mod chain;
 use chain::*;
 
+pub mod dynamic_sigma;
+
 use std::sync::Mutex;
 use tokio::sync::Mutex as TokioMutex;
 

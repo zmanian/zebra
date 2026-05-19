@@ -86,6 +86,10 @@ configured ladder can satisfy both.
 `dynamic-sigma-telemetry-integration.md` maps those telemetry inputs to
 production data sources and documents the consensus-safety requirements before
 a deployed controller can replace the prototype's fixed sigma parameter.
+`zebra-crosslink/src/dynamic_sigma.rs` is the matching pure Rust controller
+prototype: it validates conservative telemetry windows and selects the same
+sigma floor as the Quint telemetry fixture, without yet changing consensus
+proposal or validation rules.
 
 `CrosslinkDynamicSigmaForkSchedule.qnt` composes the dynamic-sigma controller
 with the derived PoW fork schedule. In this model, dynamic sigma consumes
@@ -1011,7 +1015,7 @@ generated-work-competition obligations and run substantially faster.
 
 This model is intentionally narrow. The next useful extensions are:
 
-- implement the production telemetry sources in
+- wire the pure Rust dynamic-sigma controller to production telemetry sources in
   `dynamic-sigma-telemetry-integration.md`, including a consensus-safe
   Crosslink hash-participation metric and a validated economic exposure model
 - refine the split projection checks into smaller inductive lemmas if bounds

@@ -28,9 +28,15 @@ The Rust prototype still treats sigma as a fixed protocol parameter:
 - `zebra-crosslink/src/viz.rs` exposes chain, BFT, and finality state to the
   visualizer, but it is not a production telemetry source.
 
-So the Quint dynamic-sigma controller is a specification artifact today. A
-production implementation must replace the fixed parameter at proposal and
-validation time with a consensus-safe controller output.
+The branch now also includes `zebra-crosslink/src/dynamic_sigma.rs`, a pure
+Rust controller that validates a supplied telemetry window and selects the same
+sigma floor as the Quint telemetry fixture. That controller is executable
+scaffolding for the third Crosslink variant, but it is not wired into
+production proposal or validation logic yet.
+
+A production implementation must replace the fixed parameter at proposal and
+validation time with a consensus-safe controller output, and it must populate
+the controller input from consensus-visible or proposal-verifiable telemetry.
 
 ## Production Inputs
 
@@ -132,7 +138,9 @@ A production implementation of the dynamic-sigma variant should provide:
 - an explicit rollback-risk estimator for each allowed sigma
 - an economic exposure model or a clear decision that expected loss is
   service-local rather than consensus-critical
-- tests showing that lower hash participation never lowers sigma
+- tests showing that lower hash participation never lowers sigma; the pure Rust
+  controller now covers the bounded Quint telemetry fixture, but production
+  source integration still needs tests
 - tests showing that dynamic sigma changes do not make honest validators reject
   each other's otherwise valid proposals
 - Quint coverage connecting the implemented telemetry rules back to
