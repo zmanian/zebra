@@ -62,8 +62,8 @@ consensus-visible or proposal-verifiable telemetry.
 | `TotalHashWork` | Total PoW work observed in the calibration window. | Block headers and chain work can be derived from validated PoW headers; the Rust telemetry assembly boundary now requires explicit total-work evidence before raw telemetry can be built. | Define the exact window and whether competing side-branch work is included or only best-chain work. |
 | `CrosslinkParticipatingHashWork` | PoW work from blocks whose miners are participating in Crosslink. | No complete source in the current prototype; the Rust telemetry assembly boundary rejects missing participating-work evidence instead of assuming healthy participation. | Add an objectively verifiable participation marker or derive participation from valid Crosslink-finality content in blocks. |
 | `EstimatedCoverageRiskPct` | Conservative upper bound on the non-participating or unseen-work share. | Can be computed from total and participating work once both are defined. | Add safety margin for hidden work, delayed propagation, peer eclipse, and incomplete fork visibility. |
-| `TotalTenderlinkRounds` | Count of Tenderlink rounds in the measurement window. | `DynamicSigmaRoundCounters` can assemble started rounds into raw telemetry, but live Tenderlink event hooks are not wired yet. | Add durable round-start, timeout, nil-precommit, and decision counters. |
-| `FailedTenderlinkRounds` | Rounds that do not decide a value and require recovery. | `DynamicSigmaRoundCounters` can assemble failed rounds and validates nil-precommit/stale-proposal subcounters against the failed-round count. | Define failure labels for timeout, invalid proposal, or mixed evidence and wire them to live events. |
+| `TotalTenderlinkRounds` | Count of Tenderlink rounds in the measurement window. | `DynamicSigmaRoundEvent` can accumulate started rounds into `DynamicSigmaRoundCounters`, but live Tenderlink event hooks are not wired yet. | Wire durable round-start events from Tenderlink into the counter window. |
+| `FailedTenderlinkRounds` | Rounds that do not decide a value and require recovery. | `DynamicSigmaRoundEvent` can accumulate nil-precommit, stale-proposal, timeout, invalid-proposal, and mixed-evidence failure labels, and validation rejects reason counters that outnumber failed rounds. | Wire those labels to live Tenderlink recovery and timeout paths. |
 | `EstimatedRoundFailureRatePct` | Conservative upper bound on failed-round frequency. | Derived from assembled round counters, with conservative margins applied by the raw telemetry conversion. | Decide smoothing, hysteresis, and window size so transient jitter does not create unstable sigma changes. |
 | `MeasuredBlockIntervalVariancePct` | PoW timing instability over the same window. | Header times are available from validated blocks. | Define a robust estimator that handles timestamp manipulation and difficulty-adjustment lag. |
 | `MeasuredObservedReorgDepth` | Maximum rollback depth observed across best-tip changes in the window. | `DynamicSigmaBestTipTransition` can derive rollback depth from old-tip, new-tip, and common-ancestor heights, but live state hooks are not wired yet. | Add a metric that records replaced prefix depth for best-tip changes and side-branch releases. |
@@ -166,6 +166,14 @@ solve the source-of-truth problem by itself; it makes the next source-integratio
 step fail closed instead of letting unknown participation or contradictory round
 metrics look like a healthy calibration window.
 
+Round telemetry now has a matching event contract.
+`DynamicSigmaRoundEvent` records started rounds, decisions, nil-precommit
+recovery, stale proposals, timeouts, invalid proposals, and mixed evidence into
+`DynamicSigmaRoundCounters`. Assembly still accepts direct counters for future
+deterministic or proposal-carried evidence, but the event API gives live
+Tenderlink hooks a single place to accumulate the durable window. Validation
+rejects impossible totals and failure-reason overcounts.
+
 Rollback-depth telemetry has the same shape. `DynamicSigmaBestTipTransition`
 represents a best-tip change by its previous tip height, new tip height, and
 common ancestor height. The helper derives rollback depth as the replaced
@@ -210,9 +218,10 @@ A production implementation of the dynamic-sigma variant should provide:
   rejects dynamic payload evidence whose Crosslink-participating hash-power
   share requires a higher sigma than the proposer selected. The new pure
   telemetry assembly tests also reject missing participating-work evidence and
-  inconsistent round counters, and rollback-depth tests derive the observed
-  reorg-depth input from explicit best-tip transition evidence, but live
-  production source integration still needs tests
+  inconsistent round counters, the event-counter tests reject failure-reason
+  overcounts, and rollback-depth tests derive the observed reorg-depth input
+  from explicit best-tip transition evidence, but live production source
+  integration still needs tests
 - tests showing that dynamic sigma changes do not make honest validators reject
   each other's otherwise valid proposals; the pure Rust proposal-evidence
   verifier and BFT block-construction helper cover identical evidence

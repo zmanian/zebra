@@ -121,8 +121,33 @@ pub struct DynamicSigmaRoundCounters {
     pub nil_precommit_rounds: u64,
     /// Failed rounds caused by a stale proposal or stream change.
     pub stale_proposal_rounds: u64,
+    /// Failed rounds caused by a timeout.
+    pub timeout_rounds: u64,
+    /// Failed rounds caused by an invalid proposal.
+    pub invalid_proposal_rounds: u64,
+    /// Failed rounds caused by mixed or conflicting round evidence.
+    pub mixed_evidence_rounds: u64,
     /// Tenderlink rounds that decided a value.
     pub decided_rounds: u64,
+}
+
+/// Tenderlink round telemetry event used to build durable counters.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DynamicSigmaRoundEvent {
+    /// A Tenderlink round started.
+    StartedRound,
+    /// A Tenderlink round decided a value.
+    Decided,
+    /// A Tenderlink round failed through nil-precommit recovery.
+    NilPrecommitRecovery,
+    /// A Tenderlink round failed because its proposal became stale.
+    StaleProposal,
+    /// A Tenderlink round failed by timeout.
+    Timeout,
+    /// A Tenderlink round failed because the proposal was invalid.
+    InvalidProposal,
+    /// A Tenderlink round failed with mixed or conflicting evidence.
+    MixedEvidence,
 }
 
 /// Production-shaped telemetry inputs before raw controller telemetry assembly.
@@ -163,6 +188,8 @@ pub enum DynamicSigmaTelemetryAssemblyError {
     NilPrecommitRoundsExceedFailed,
     /// Stale-proposal rounds exceed failed rounds.
     StaleProposalRoundsExceedFailed,
+    /// Failure-reason counters collectively exceed failed rounds.
+    FailureReasonCountersExceedFailed,
     /// Assembled raw telemetry is invalid.
     InvalidRawTelemetry(DynamicSigmaError),
 }
@@ -495,7 +522,36 @@ impl DynamicSigmaTelemetryComponents {
 }
 
 impl DynamicSigmaRoundCounters {
-    fn validate(self) -> Result<(), DynamicSigmaTelemetryAssemblyError> {
+    /// Record one Tenderlink telemetry event into this counter window.
+    pub fn record_event(&mut self, event: DynamicSigmaRoundEvent) {
+        match event {
+            DynamicSigmaRoundEvent::StartedRound => increment_counter(&mut self.started_rounds),
+            DynamicSigmaRoundEvent::Decided => increment_counter(&mut self.decided_rounds),
+            DynamicSigmaRoundEvent::NilPrecommitRecovery => {
+                increment_counter(&mut self.failed_rounds);
+                increment_counter(&mut self.nil_precommit_rounds);
+            }
+            DynamicSigmaRoundEvent::StaleProposal => {
+                increment_counter(&mut self.failed_rounds);
+                increment_counter(&mut self.stale_proposal_rounds);
+            }
+            DynamicSigmaRoundEvent::Timeout => {
+                increment_counter(&mut self.failed_rounds);
+                increment_counter(&mut self.timeout_rounds);
+            }
+            DynamicSigmaRoundEvent::InvalidProposal => {
+                increment_counter(&mut self.failed_rounds);
+                increment_counter(&mut self.invalid_proposal_rounds);
+            }
+            DynamicSigmaRoundEvent::MixedEvidence => {
+                increment_counter(&mut self.failed_rounds);
+                increment_counter(&mut self.mixed_evidence_rounds);
+            }
+        }
+    }
+
+    /// Validate that the counter window is internally consistent.
+    pub fn validate(self) -> Result<(), DynamicSigmaTelemetryAssemblyError> {
         if self.failed_rounds > self.started_rounds {
             return Err(DynamicSigmaTelemetryAssemblyError::FailedRoundsExceedStarted);
         }
@@ -520,8 +576,29 @@ impl DynamicSigmaRoundCounters {
             return Err(DynamicSigmaTelemetryAssemblyError::StaleProposalRoundsExceedFailed);
         }
 
+        if failure_reason_rounds(self)
+            .is_none_or(|reason_rounds| reason_rounds > self.failed_rounds)
+        {
+            return Err(DynamicSigmaTelemetryAssemblyError::FailureReasonCountersExceedFailed);
+        }
+
         Ok(())
     }
+}
+
+fn increment_counter(counter: &mut u64) {
+    *counter = counter
+        .checked_add(1)
+        .expect("telemetry window counters should fit in u64");
+}
+
+fn failure_reason_rounds(counters: DynamicSigmaRoundCounters) -> Option<u64> {
+    counters
+        .nil_precommit_rounds
+        .checked_add(counters.stale_proposal_rounds)?
+        .checked_add(counters.timeout_rounds)?
+        .checked_add(counters.invalid_proposal_rounds)?
+        .checked_add(counters.mixed_evidence_rounds)
 }
 
 impl DynamicSigmaBestTipTransition {
@@ -917,6 +994,9 @@ mod tests {
                 failed_rounds: 2,
                 nil_precommit_rounds: 1,
                 stale_proposal_rounds: 1,
+                timeout_rounds: 0,
+                invalid_proposal_rounds: 0,
+                mixed_evidence_rounds: 0,
                 decided_rounds: 8,
             },
             measured_block_interval_variance_pct: 10,
@@ -1011,6 +1091,48 @@ mod tests {
         assert_eq!(
             components.try_into_raw_telemetry(),
             Err(DynamicSigmaTelemetryAssemblyError::DecidedAndFailedRoundsExceedStarted),
+        );
+    }
+
+    #[test]
+    fn round_counter_events_derive_failed_reason_counters() {
+        let mut counters = DynamicSigmaRoundCounters::default();
+
+        counters.record_event(DynamicSigmaRoundEvent::StartedRound);
+        counters.record_event(DynamicSigmaRoundEvent::StaleProposal);
+        counters.record_event(DynamicSigmaRoundEvent::StartedRound);
+        counters.record_event(DynamicSigmaRoundEvent::NilPrecommitRecovery);
+        counters.record_event(DynamicSigmaRoundEvent::StartedRound);
+        counters.record_event(DynamicSigmaRoundEvent::Timeout);
+        counters.record_event(DynamicSigmaRoundEvent::StartedRound);
+        counters.record_event(DynamicSigmaRoundEvent::Decided);
+
+        assert_eq!(
+            counters,
+            DynamicSigmaRoundCounters {
+                started_rounds: 4,
+                failed_rounds: 3,
+                nil_precommit_rounds: 1,
+                stale_proposal_rounds: 1,
+                timeout_rounds: 1,
+                invalid_proposal_rounds: 0,
+                mixed_evidence_rounds: 0,
+                decided_rounds: 1,
+            }
+        );
+        assert_eq!(counters.validate(), Ok(()));
+    }
+
+    #[test]
+    fn production_telemetry_rejects_failed_reason_overcount() {
+        let mut components = production_telemetry_components();
+        components.round_counters.failed_rounds = 1;
+        components.round_counters.nil_precommit_rounds = 1;
+        components.round_counters.stale_proposal_rounds = 1;
+
+        assert_eq!(
+            components.try_into_raw_telemetry(),
+            Err(DynamicSigmaTelemetryAssemblyError::FailureReasonCountersExceedFailed),
         );
     }
 
