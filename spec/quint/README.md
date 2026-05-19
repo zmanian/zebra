@@ -35,6 +35,11 @@ normal propose/prevote/precommit path, while a changed stream carries the stale
 sample and can block a fresh decision because same-round Tendermint state is not
 cleared.
 
+`CrosslinkBaselineAccountability.qnt` makes the baseline accountability
+projection explicit. It checks that a nil-precommit certificate does not clear
+same-round value locks in the sticky baseline, and that conflicting value
+commits without unlock evidence expose Tendermint-style amnesia evidence.
+
 `CrosslinkBaselineFinality.qnt` composes that baseline Tenderlink behavior with
 Crosslink finality. It shows that the fixed-sigma/sticky protocol can finalize a
 tail-confirmed stable-stream decision, and records the Crosslink-level failure
@@ -280,6 +285,7 @@ Typecheck:
 
 ```sh
 $QUINT typecheck spec/quint/CrosslinkBaseline.qnt
+$QUINT typecheck spec/quint/CrosslinkBaselineAccountability.qnt
 $QUINT typecheck spec/quint/CrosslinkBaselineFinality.qnt
 $QUINT typecheck spec/quint/CrosslinkBaselinePowSampling.qnt
 $QUINT typecheck spec/quint/CrosslinkResampling.qnt
@@ -317,6 +323,19 @@ snapshot when the PoW stream does not move. The stream-change model records the
 baseline limitation: after a nil-precommit quorum, the current protocol carries
 the stale sample into the next round and same-round Tendermint state can block a
 fresh decision.
+
+Witness the named baseline accountability behavior:
+
+```sh
+$QUINT test spec/quint/CrosslinkBaselineAccountability.qnt \
+  --main=CrosslinkBaselineAccountabilityModel \
+  --max-samples=100 \
+  --backend=rust
+```
+
+This model checks that baseline nil precommit preserves same-round value-lock
+state and that conflicting value commits without nil-unlock evidence are
+accountable through the existing amnesia predicates.
 
 Witness the named baseline finality behavior:
 
@@ -1125,6 +1144,13 @@ combines:
   either correct-validator precommit equivocation, nil/value equivocation in the
   purported unlock round, or a correct-validator value switch without a valid
   same-round nil unlock certificate
+
+The bounded baseline-accountability checks report no violation for
+`BaselineAccountabilitySafety`, which is the current fixed-sigma/sticky
+Tenderlink safety invariant. The named witnesses show that a nil-precommit
+certificate advances the round without clearing same-round `validValue` or
+`lockedValue`, and that conflicting value commits without nil-unlock evidence
+are attributable through amnesia evidence.
 
 The bounded baseline-finality checks report no violation for `ComposedSafety`,
 which combines the current fixed-sigma/sticky Tenderlink safety invariant with

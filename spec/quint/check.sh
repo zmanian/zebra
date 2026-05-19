@@ -40,6 +40,7 @@ run_quint() {
 typecheck_all() {
   local specs=(
     spec/quint/CrosslinkBaseline.qnt
+    spec/quint/CrosslinkBaselineAccountability.qnt
     spec/quint/CrosslinkBaselineFinality.qnt
     spec/quint/CrosslinkBaselinePowSampling.qnt
     spec/quint/CrosslinkResampling.qnt
@@ -109,6 +110,7 @@ quick_checks() {
   test_model spec/quint/CrosslinkResampling.qnt CrosslinkStickyModel
   test_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStableModel
   test_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStreamChangeModel
+  test_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineAccountabilityModel
   test_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStableModel
   test_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStreamChangeModel
   test_model spec/quint/CrosslinkBaselinePowSampling.qnt CrosslinkBaselinePowSamplingModel
@@ -130,6 +132,7 @@ quick_checks() {
   run_model spec/quint/CrosslinkResampling.qnt CrosslinkStickyModel Init Next 10 1000 Safety
   run_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStableModel Init Next 10 1000 BaselineSafety
   run_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStreamChangeModel Init Next 10 1000 BaselineSafety
+  run_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineAccountabilityModel Init Next 10 1000 BaselineAccountabilitySafety
   run_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStableModel ComposedInit ComposedNext 10 1000 ComposedSafety
   run_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStreamChangeModel ComposedInit ComposedNext 10 1000 ComposedSafety
   run_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityLivenessModel LivenessInit LivenessStep 9 1 LivenessSafety
@@ -156,6 +159,7 @@ symbolic_checks() {
   verify_model spec/quint/CrosslinkResampling.qnt CrosslinkStickyModel 3 Init Next Safety
   verify_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStableModel 3 Init Next BaselineSafety
   verify_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStreamChangeModel 3 Init Next BaselineSafety
+  verify_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineAccountabilityModel 3 Init Next BaselineAccountabilitySafety
   verify_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStableModel 5 ComposedInit ComposedNext ComposedSafety
   verify_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStreamChangeModel 5 ComposedInit ComposedNext ComposedSafety
   verify_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityLivenessModel 9 LivenessInit LivenessStep LivenessSafety
