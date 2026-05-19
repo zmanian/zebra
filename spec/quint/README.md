@@ -756,9 +756,9 @@ $QUINT verify spec/quint/CrosslinkDynamicSigmaResampling.qnt \
   --step=DynamicResamplingNext \
   --invariant=DynamicResamplingSafety
 
-$QUINT verify spec/quint/CrosslinkDynamicSigmaFinality.qnt \
+JVM_ARGS=-Xmx8192m $QUINT verify spec/quint/CrosslinkDynamicSigmaFinality.qnt \
   --main=CrosslinkDynamicSigmaFinalityModel \
-  --max-steps=3 \
+  --max-steps=8 \
   --init=FullComposedInit \
   --step=FullComposedNext \
   --invariant=FullComposedSafety
@@ -766,9 +766,8 @@ $QUINT verify spec/quint/CrosslinkDynamicSigmaFinality.qnt \
 
 The full dynamic-sigma finality composition is substantially heavier under
 Apalache once the resampling model includes accountability evidence. The checked
-symbolic bound above is intentionally shallower; use the Rust backend runs for
-deeper randomized coverage, or raise `JVM_ARGS` when experimenting with deeper
-Apalache bounds.
+symbolic bound above passes with an 8G JVM heap; deeper Apalache bounds may
+still require larger heaps or proof splitting.
 
 The bounded resampling checks currently report no violation for `Safety`, which
 combines:
@@ -897,5 +896,6 @@ This model is intentionally narrow. The next useful extensions are:
 
 - replace the bounded dynamic-sigma calibration fixture with production
   telemetry and an explicit economic target for acceptable rollback risk
-- split the heavier accountability/finality proof obligations so deeper
-  Apalache bounds remain tractable without relying on very large JVM/Z3 heaps
+- split the heavier accountability/finality proof obligations so bounds beyond
+  the checked depth-8 full-composition run remain tractable without relying on
+  very large JVM/Z3 heaps
