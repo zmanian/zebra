@@ -65,7 +65,7 @@ consensus-visible or proposal-verifiable telemetry.
 | `TotalTenderlinkRounds` | Count of Tenderlink rounds in the measurement window. | `DynamicSigmaRoundEvent` can accumulate started rounds into `DynamicSigmaRoundCounters`, but live Tenderlink event hooks are not wired yet. | Wire durable round-start events from Tenderlink into the counter window. |
 | `FailedTenderlinkRounds` | Rounds that do not decide a value and require recovery. | `DynamicSigmaRoundEvent` can accumulate nil-precommit, stale-proposal, timeout, invalid-proposal, and mixed-evidence failure labels, and validation rejects reason counters that outnumber failed rounds. | Wire those labels to live Tenderlink recovery and timeout paths. |
 | `EstimatedRoundFailureRatePct` | Conservative upper bound on failed-round frequency. | Derived from assembled round counters, with conservative margins applied by the raw telemetry conversion. | Decide smoothing, hysteresis, and window size so transient jitter does not create unstable sigma changes. |
-| `MeasuredBlockIntervalVariancePct` | PoW timing instability over the same window. | `measured_block_interval_variance_pct_from_headers` derives a conservative max adjacent-interval deviation from validated header times, and `DynamicSigmaTimedHeaderObservationWindow` composes that source with header-derived work participation. | Decide the exact production target spacing source and whether timestamp-manipulation handling should become stricter or be replaced by a calibrated model. |
+| `MeasuredBlockIntervalVariancePct` | PoW timing instability over the same window. | `measured_block_interval_variance_pct_from_headers` derives a conservative max adjacent-interval deviation from validated header times, and `DynamicSigmaTimedHeaderObservationWindow` composes that source with header-derived work participation. The policy-aware timed helper applies the same recent-window/minimum-work guardrail to the participation side. | Decide the exact production target spacing source and whether timestamp-manipulation handling should become stricter or be replaced by a calibrated model. |
 | `MeasuredObservedReorgDepth` | Maximum rollback depth observed across best-tip changes in the window. | `DynamicSigmaBestTipTransition` can derive rollback depth from old-tip, new-tip, and common-ancestor heights, but live state hooks are not wired yet. | Add a metric that records replaced prefix depth for best-tip changes and side-branch releases. |
 | `RollbackRiskPpmAtSigma` | Modelled rollback probability for each candidate sigma. | `rollback_risk_curve_from_observed_rollback_depths` can derive an empirical ppm exceedance curve from observed rollback-depth windows plus a conservative margin. | Define the production window/history policy and decide whether the empirical estimator is sufficient or should be replaced by a calibrated offline model. |
 | `ValueAtRiskUnits` | Economic value exposed to rollback if a finalized point is wrong or delayed. | The pure Rust controller now has an explicit `DynamicSigmaEconomicExposurePolicy` that distinguishes consensus-critical exposure from service-local exposure. | Wire a production source if exposure is consensus-critical, or keep service-local exposure outside proposal validity. |
@@ -251,6 +251,10 @@ maximum adjacent-interval deviation from header timestamps, rounded up and
 capped at 100%. The estimator rejects windows with fewer than two headers,
 zero target spacing, or non-increasing adjacent timestamps rather than turning
 malformed timing evidence into a healthy variance reading.
+`telemetry_components_from_timed_header_observation_window_with_hash_work_policy`
+applies the recent-window/minimum-work participation policy in that same timed
+header path, so deriving timestamp variance from headers does not require
+bypassing the hash-work participation guardrail.
 
 The source contracts are now composed by
 `telemetry_components_from_observation_window`. It accepts hash-work
@@ -384,8 +388,9 @@ A production implementation of the dynamic-sigma variant should provide:
   and may need a calibrated model
 - a block-interval variance source; the pure controller now derives a
   conservative max adjacent-interval deviation from header timestamps and offers
-  a timed header observation-window adapter, while production still needs the
-  exact target-spacing source and any stricter calibrated timestamp policy
+  a timed header observation-window adapter with the same hash-work policy
+  guardrail, while production still needs the exact target-spacing source and
+  any stricter calibrated timestamp policy
 - an economic exposure model or a clear decision that expected loss is
   service-local rather than consensus-critical; the pure controller now has an
   explicit policy split and tests for both paths, while production still needs a

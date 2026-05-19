@@ -490,6 +490,15 @@ pub enum DynamicSigmaTimedHeaderObservationWindowError {
     InvalidHeaderObservationWindow(DynamicSigmaHeaderObservationWindowError),
 }
 
+/// Invalid source-side timed header observation window with a hash-work policy.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DynamicSigmaTimedHeaderObservationPolicyError {
+    /// Header timestamp intervals could not derive conservative variance.
+    InvalidBlockIntervalVariance(DynamicSigmaBlockIntervalVarianceError),
+    /// Header work, participation policy, rounds, or rollback evidence was invalid.
+    InvalidHeaderObservationPolicy(DynamicSigmaHeaderObservationPolicyError),
+}
+
 /// Hash-participation health status.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HashParticipationStatus {
@@ -1576,6 +1585,51 @@ where
         marker_verifier,
     )
     .map_err(DynamicSigmaTimedHeaderObservationWindowError::InvalidHeaderObservationWindow)
+}
+
+/// Assemble timed header observations after applying a hash-work window policy.
+pub fn telemetry_components_from_timed_header_observation_window_with_hash_work_policy(
+    window: DynamicSigmaTimedHeaderObservationWindow<'_>,
+    hash_work_policy: DynamicSigmaHashWorkObservationWindowPolicy,
+) -> Result<DynamicSigmaTelemetryComponents, DynamicSigmaTimedHeaderObservationPolicyError> {
+    telemetry_components_from_timed_header_observation_window_with_hash_work_policy_and_verifier(
+        window,
+        hash_work_policy,
+        default_header_participation_marker_verifier,
+    )
+}
+
+/// Assemble policy-filtered timed header observations with custom marker validation.
+pub fn telemetry_components_from_timed_header_observation_window_with_hash_work_policy_and_verifier<
+    F,
+>(
+    window: DynamicSigmaTimedHeaderObservationWindow<'_>,
+    hash_work_policy: DynamicSigmaHashWorkObservationWindowPolicy,
+    marker_verifier: F,
+) -> Result<DynamicSigmaTelemetryComponents, DynamicSigmaTimedHeaderObservationPolicyError>
+where
+    F: Fn(&FatPointerToBftBlock) -> bool,
+{
+    let measured_block_interval_variance_pct = measured_block_interval_variance_pct_from_headers(
+        window.pow_headers,
+        window.target_block_spacing_seconds,
+    )
+    .map_err(DynamicSigmaTimedHeaderObservationPolicyError::InvalidBlockIntervalVariance)?;
+
+    telemetry_components_from_header_observation_window_with_hash_work_policy_and_verifier(
+        DynamicSigmaHeaderObservationWindow {
+            pow_headers: window.pow_headers,
+            round_counters: window.round_counters,
+            best_tip_transitions: window.best_tip_transitions,
+            measured_block_interval_variance_pct,
+            rollback_risk: window.rollback_risk,
+            value_at_risk_units: window.value_at_risk_units,
+            max_acceptable_expected_loss_units: window.max_acceptable_expected_loss_units,
+        },
+        hash_work_policy,
+        marker_verifier,
+    )
+    .map_err(DynamicSigmaTimedHeaderObservationPolicyError::InvalidHeaderObservationPolicy)
 }
 
 /// Select proposal-carried dynamic-sigma evidence from raw telemetry.
@@ -3299,6 +3353,92 @@ mod tests {
 
         assert_eq!(decision.risk_score_floor, params().raised_sigma);
         assert_eq!(decision.sigma, params().raised_sigma);
+    }
+
+    #[test]
+    fn timed_header_observation_window_policy_uses_recent_header_work() {
+        let headers = [
+            header_at_time(0, participating_fat_pointer()),
+            header_at_time(160, FatPointerToBftBlock::null()),
+            header_at_time(320, FatPointerToBftBlock::null()),
+        ];
+        let expected_header_work = valid_header_difficulty()
+            .to_work()
+            .expect("fixture difficulty should produce work")
+            .as_u128();
+
+        let components =
+            telemetry_components_from_timed_header_observation_window_with_hash_work_policy(
+                DynamicSigmaTimedHeaderObservationWindow {
+                    pow_headers: &headers,
+                    target_block_spacing_seconds: 80,
+                    round_counters: decided_round_counters(10),
+                    best_tip_transitions: &[],
+                    rollback_risk: low_risk_curve(),
+                    value_at_risk_units: 1000,
+                    max_acceptable_expected_loss_units: 100,
+                },
+                DynamicSigmaHashWorkObservationWindowPolicy {
+                    min_observations: 2,
+                    max_observations: 2,
+                    min_total_hash_work: expected_header_work * 2,
+                },
+            )
+            .expect("timed header policy should assemble telemetry components");
+
+        assert_eq!(components.total_hash_work, Some(expected_header_work * 2));
+        assert_eq!(components.crosslink_participating_hash_work, Some(0));
+        assert_eq!(components.measured_block_interval_variance_pct, 100);
+
+        let raw = components
+            .try_into_raw_telemetry()
+            .expect("policy timed header components should build raw telemetry");
+        let decision = select_dynamic_sigma(
+            params(),
+            raw.into_window(TelemetryEstimateMargins::default())
+                .expect("policy timed header telemetry should build a window"),
+        )
+        .expect("policy timed header telemetry should feed the controller");
+
+        assert_eq!(decision.hash_participation_floor, params().max_sigma);
+        assert_eq!(decision.sigma, params().max_sigma);
+    }
+
+    #[test]
+    fn timed_header_observation_window_policy_rejects_insufficient_recent_header_work() {
+        let headers = [
+            header_at_time(0, participating_fat_pointer()),
+            header_at_time(80, participating_fat_pointer()),
+        ];
+
+        assert_eq!(
+            telemetry_components_from_timed_header_observation_window_with_hash_work_policy(
+                DynamicSigmaTimedHeaderObservationWindow {
+                    pow_headers: &headers,
+                    target_block_spacing_seconds: 80,
+                    round_counters: decided_round_counters(10),
+                    best_tip_transitions: &[],
+                    rollback_risk: low_risk_curve(),
+                    value_at_risk_units: 1000,
+                    max_acceptable_expected_loss_units: 100,
+                },
+                DynamicSigmaHashWorkObservationWindowPolicy {
+                    min_observations: 3,
+                    max_observations: 3,
+                    min_total_hash_work: 1,
+                },
+            ),
+            Err(
+                DynamicSigmaTimedHeaderObservationPolicyError::InvalidHeaderObservationPolicy(
+                    DynamicSigmaHeaderObservationPolicyError::InvalidHashWorkWindow(
+                        DynamicSigmaHashWorkObservationWindowPolicyError::InsufficientObservationHistory {
+                            observed_observations: 2,
+                            min_observations: 3,
+                        },
+                    ),
+                ),
+            ),
+        );
     }
 
     #[test]

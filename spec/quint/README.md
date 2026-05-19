@@ -134,7 +134,8 @@ source signal is PoW headers.
 `DynamicSigmaTimedHeaderObservationWindow` derives the variance input from the
 same header window by comparing adjacent header timestamps against an expected
 target spacing, rejecting too-short or non-increasing windows and capping the
-conservative deviation percentage at 100.
+conservative deviation percentage at 100. Its hash-work-policy helper composes
+that timestamp-derived variance with the same guarded header participation path.
 `DynamicSigmaEconomicExposurePolicy` makes the economic-risk boundary explicit:
 consensus-critical exposure carries value-at-risk and loss-budget units into
 proposal evidence, while service-local exposure maps to zero consensus exposure
@@ -1195,7 +1196,8 @@ This model is intentionally narrow. The next useful extensions are:
   production validation, the header
   observation-window assembler composes those headers with round and fork
   evidence into telemetry components, the timed header-window adapter derives
-  conservative block-interval variance from adjacent header timestamps, and the
+  conservative block-interval variance from adjacent header timestamps and can
+  apply the same hash-work window policy in that timed path, and
   pure rollback-depth helpers record best-tip transitions, derive the current
   observed reorg-depth input, and produce one rollback-depth history sample per
   transition window from explicit best-tip transition evidence. The
