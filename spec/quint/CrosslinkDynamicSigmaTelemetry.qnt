@@ -25,14 +25,25 @@ module CrosslinkDynamicSigmaTelemetry {
   const MaxSigma: Sigma_t
   const TargetHashParticipationPct: Pct_t
   const CriticalHashParticipationPct: Pct_t
+  const VerifiedHashWorkSample: Observation_t -> int
+  const UnverifiedHashWorkSample: Observation_t -> int
   const TotalHashWork: Observation_t -> int
   const CrosslinkParticipatingHashWork: Observation_t -> int
   const TotalTenderlinkRounds: Observation_t -> int
   const FailedTenderlinkRounds: Observation_t -> int
+  const NilPrecommitRecoveryRounds: Observation_t -> int
+  const StaleProposalRounds: Observation_t -> int
+  const TimeoutRounds: Observation_t -> int
+  const InvalidProposalRounds: Observation_t -> int
+  const MixedEvidenceRounds: Observation_t -> int
+  const DecidedTenderlinkRounds: Observation_t -> int
   const EstimatedCoverageRiskPct: Observation_t -> Pct_t
   const EstimatedRoundFailureRatePct: Observation_t -> Pct_t
   const MeasuredBlockIntervalVariancePct: Observation_t -> Pct_t
   const MeasuredObservedReorgDepth: Observation_t -> int
+  const PreviousBestTipHeight: Observation_t -> int
+  const NewBestTipHeight: Observation_t -> int
+  const CommonAncestorHeight: Observation_t -> int
   const RollbackRiskPpmAtSigma: Observation_t -> Sigma_t -> int
   const MaxAcceptableRollbackRiskPpm: int
   const ValueAtRiskUnits: Observation_t -> int
@@ -60,6 +71,11 @@ module CrosslinkDynamicSigmaTelemetry {
     0 <= CriticalHashParticipationPct and
     CriticalHashParticipationPct < TargetHashParticipationPct and
     TargetHashParticipationPct <= 100
+  assume hash_work_source_samples_are_well_formed =
+    Observations.forall(o =>
+      VerifiedHashWorkSample.get(o) >= 0 and UnverifiedHashWorkSample.get(o) >= 0 and
+        VerifiedHashWorkSample.get(o) + UnverifiedHashWorkSample.get(o) > 0
+    )
   assume work_samples_are_well_formed =
     Observations.forall(o =>
       TotalHashWork.get(o) > 0 and
@@ -70,7 +86,20 @@ module CrosslinkDynamicSigmaTelemetry {
     Observations.forall(o =>
       TotalTenderlinkRounds.get(o) > 0 and
         0 <= FailedTenderlinkRounds.get(o) and
-        FailedTenderlinkRounds.get(o) <= TotalTenderlinkRounds.get(o)
+        0 <= DecidedTenderlinkRounds.get(o) and
+        FailedTenderlinkRounds.get(o) + DecidedTenderlinkRounds.get(o) <=
+          TotalTenderlinkRounds.get(o) and
+        0 <= NilPrecommitRecoveryRounds.get(o) and
+        0 <= StaleProposalRounds.get(o) and
+        0 <= TimeoutRounds.get(o) and
+        0 <= InvalidProposalRounds.get(o) and
+        0 <= MixedEvidenceRounds.get(o)
+    )
+  assume best_tip_transition_samples_are_well_formed =
+    Observations.forall(o =>
+      0 <= CommonAncestorHeight.get(o) and
+        CommonAncestorHeight.get(o) <= PreviousBestTipHeight.get(o) and
+        CommonAncestorHeight.get(o) <= NewBestTipHeight.get(o)
     )
   assume estimated_percentages_are_percentages =
     Observations.forall(o =>
@@ -108,6 +137,22 @@ module CrosslinkDynamicSigmaTelemetry {
 
   pure def MaxInt(a: int, b: int): int =
     if (a >= b) { a } else { b }
+
+  pure def SourceTotalHashWork(o: Observation_t): int =
+    VerifiedHashWorkSample.get(o) + UnverifiedHashWorkSample.get(o)
+
+  pure def SourceCrosslinkParticipatingHashWork(o: Observation_t): int =
+    VerifiedHashWorkSample.get(o)
+
+  pure def FailureReasonRounds(o: Observation_t): int =
+    NilPrecommitRecoveryRounds.get(o) +
+      StaleProposalRounds.get(o) +
+      TimeoutRounds.get(o) +
+      InvalidProposalRounds.get(o) +
+      MixedEvidenceRounds.get(o)
+
+  pure def SourceRollbackDepth(o: Observation_t): int =
+    PreviousBestTipHeight.get(o) - CommonAncestorHeight.get(o)
 
   pure def WorkCoverageAtLeast(o: Observation_t, pct: Pct_t): bool =
     CrosslinkParticipatingHashWork.get(o) * 100 >= TotalHashWork.get(o) * pct
@@ -178,6 +223,24 @@ module CrosslinkDynamicSigmaTelemetry {
       "target-unreachable-at-max"
     }
 
+  val SourceHashWorkMatchesTelemetryComponents =
+    Observations.forall(o =>
+      TotalHashWork.get(o) == SourceTotalHashWork(o) and
+        CrosslinkParticipatingHashWork.get(o) == SourceCrosslinkParticipatingHashWork(o)
+    )
+
+  val RoundCountersAreInternallyConsistent =
+    Observations.forall(o =>
+      FailureReasonRounds(o) <= FailedTenderlinkRounds.get(o) and
+        FailedTenderlinkRounds.get(o) + DecidedTenderlinkRounds.get(o) <=
+          TotalTenderlinkRounds.get(o)
+    )
+
+  val SourceRollbackDepthMatchesTelemetryComponents =
+    Observations.forall(o =>
+      MeasuredObservedReorgDepth.get(o) == SourceRollbackDepth(o)
+    )
+
   val CoverageEstimateUpperBoundsRawWorkGap =
     Observations.forall(o =>
       TotalHashWork.get(o) * EstimatedCoverageRiskPct.get(o) >=
@@ -225,6 +288,9 @@ module CrosslinkDynamicSigmaTelemetry {
     )
 
   val TelemetryCalibrationSafety =
+    SourceHashWorkMatchesTelemetryComponents and
+    RoundCountersAreInternallyConsistent and
+    SourceRollbackDepthMatchesTelemetryComponents and
     CoverageEstimateUpperBoundsRawWorkGap and
     RoundFailureEstimateUpperBoundsRawFailures and
     RollbackRiskCurveIsMonotoneAcrossSigma and
@@ -270,6 +336,24 @@ module CrosslinkDynamicSigmaTelemetryTest {
   run healthyTelemetryWindowKeepsBaseSigmaTest = all {
     assert(TelemetrySigmaFloorForObservation(0) == BaseSigma),
     assert(EconomicTargetStatusForObservation(0) == "target-satisfied"),
+  }
+
+  run sourceHashWorkDerivesTelemetryComponentsTest = all {
+    assert(SourceHashWorkMatchesTelemetryComponents),
+    assert(SourceTotalHashWork(1) == 100),
+    assert(SourceCrosslinkParticipatingHashWork(1) == 63),
+    assert(TelemetrySigmaFloorForObservation(1) == RaisedSigma),
+  }
+
+  run sourceRoundCountersAreConsistentTest = all {
+    assert(RoundCountersAreInternallyConsistent),
+    assert(FailureReasonRounds(2) == FailedTenderlinkRounds.get(2)),
+  }
+
+  run sourceRollbackDepthDerivesTelemetryComponentsTest = all {
+    assert(SourceRollbackDepthMatchesTelemetryComponents),
+    assert(SourceRollbackDepth(7) == 3),
+    assert(TelemetrySigmaFloorForObservation(7) == MaxSigma),
   }
 
   run hashWorkParticipationRaisesSigmaTest = all {
@@ -336,6 +420,28 @@ module CrosslinkDynamicSigmaTelemetryModel {
     MaxSigma = 6,
     TargetHashParticipationPct = 67,
     CriticalHashParticipationPct = 50,
+    VerifiedHashWorkSample = Map(
+      0 -> 90,
+      1 -> 63,
+      2 -> 75,
+      3 -> 90,
+      4 -> 45,
+      5 -> 90,
+      6 -> 90,
+      7 -> 90,
+      8 -> 90,
+    ),
+    UnverifiedHashWorkSample = Map(
+      0 -> 10,
+      1 -> 37,
+      2 -> 25,
+      3 -> 10,
+      4 -> 55,
+      5 -> 10,
+      6 -> 10,
+      7 -> 10,
+      8 -> 10,
+    ),
     TotalHashWork = Map(
       0 -> 100,
       1 -> 100,
@@ -380,6 +486,72 @@ module CrosslinkDynamicSigmaTelemetryModel {
       7 -> 0,
       8 -> 0,
     ),
+    NilPrecommitRecoveryRounds = Map(
+      0 -> 0,
+      1 -> 0,
+      2 -> 5,
+      3 -> 0,
+      4 -> 0,
+      5 -> 0,
+      6 -> 0,
+      7 -> 0,
+      8 -> 0,
+    ),
+    StaleProposalRounds = Map(
+      0 -> 0,
+      1 -> 0,
+      2 -> 10,
+      3 -> 0,
+      4 -> 0,
+      5 -> 0,
+      6 -> 0,
+      7 -> 0,
+      8 -> 0,
+    ),
+    TimeoutRounds = Map(
+      0 -> 0,
+      1 -> 0,
+      2 -> 0,
+      3 -> 0,
+      4 -> 0,
+      5 -> 0,
+      6 -> 0,
+      7 -> 0,
+      8 -> 0,
+    ),
+    InvalidProposalRounds = Map(
+      0 -> 0,
+      1 -> 0,
+      2 -> 0,
+      3 -> 0,
+      4 -> 0,
+      5 -> 0,
+      6 -> 0,
+      7 -> 0,
+      8 -> 0,
+    ),
+    MixedEvidenceRounds = Map(
+      0 -> 0,
+      1 -> 0,
+      2 -> 0,
+      3 -> 0,
+      4 -> 0,
+      5 -> 0,
+      6 -> 0,
+      7 -> 0,
+      8 -> 0,
+    ),
+    DecidedTenderlinkRounds = Map(
+      0 -> 100,
+      1 -> 100,
+      2 -> 85,
+      3 -> 100,
+      4 -> 100,
+      5 -> 100,
+      6 -> 100,
+      7 -> 100,
+      8 -> 100,
+    ),
     EstimatedCoverageRiskPct = Map(
       0 -> 10,
       1 -> 37,
@@ -423,6 +595,39 @@ module CrosslinkDynamicSigmaTelemetryModel {
       6 -> 0,
       7 -> 3,
       8 -> 0,
+    ),
+    PreviousBestTipHeight = Map(
+      0 -> 100,
+      1 -> 100,
+      2 -> 100,
+      3 -> 100,
+      4 -> 100,
+      5 -> 100,
+      6 -> 100,
+      7 -> 105,
+      8 -> 100,
+    ),
+    NewBestTipHeight = Map(
+      0 -> 101,
+      1 -> 101,
+      2 -> 101,
+      3 -> 101,
+      4 -> 101,
+      5 -> 101,
+      6 -> 101,
+      7 -> 107,
+      8 -> 101,
+    ),
+    CommonAncestorHeight = Map(
+      0 -> 100,
+      1 -> 100,
+      2 -> 100,
+      3 -> 100,
+      4 -> 100,
+      5 -> 100,
+      6 -> 100,
+      7 -> 102,
+      8 -> 100,
     ),
     RollbackRiskPpmAtSigma = Map(
       0 -> Map(1 -> 40, 3 -> 10, 6 -> 1),

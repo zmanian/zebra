@@ -473,6 +473,9 @@ $QUINT test spec/quint/CrosslinkDynamicSigmaTelemetry.qnt \
 This runs:
 
 - `healthyTelemetryWindowKeepsBaseSigmaTest`
+- `sourceHashWorkDerivesTelemetryComponentsTest`
+- `sourceRoundCountersAreConsistentTest`
+- `sourceRollbackDepthDerivesTelemetryComponentsTest`
 - `hashWorkParticipationRaisesSigmaTest`
 - `combinedTelemetryRiskRaisesSigmaTest`
 - `economicTargetRaisesSigmaAboveSignalFloorTest`
@@ -492,7 +495,9 @@ probability is within the PPM cap but the expected-loss budget still forces a
 deeper sigma. It checks that conservative telemetry estimates upper-bound raw
 sampled work and round failures, rollback risk is monotone in sigma, and the
 selected sigma satisfies the configured rollback-risk and expected-loss targets
-when the ladder can satisfy them.
+when the ladder can satisfy them. It also now derives the telemetry component
+inputs from source-shaped hash-work samples, round counters, and best-tip
+transition heights, matching the Rust source observation-window boundary.
 
 Witness dynamic sigma consuming derived PoW rollback depth:
 
@@ -979,6 +984,10 @@ combines:
 The production-shaped dynamic-sigma telemetry harness reports no violation for
 `Safety`, which combines:
 
+- source hash-work samples derive the total-work denominator and
+  Crosslink-participating numerator
+- source round counters remain internally consistent
+- source best-tip transition heights derive observed rollback depth
 - conservative coverage estimates upper-bound the raw gap between total PoW
   work and Crosslink-participating PoW work
 - conservative round-failure estimates upper-bound raw failed Tenderlink rounds
