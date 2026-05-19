@@ -167,6 +167,17 @@ module CrosslinkBaselineN4F1StableTest {
         unchangedAll,
       })
   }
+
+  run correctValuePrevotesRequireJustifiedProposalTest = {
+    Init
+      .then(InsertProposal("p1"))
+      .then(UponProposalPrevote("p1", "a1"))
+      .then(all {
+        assert(CorrectValuePrevotesHaveJustifiedProposal),
+        assert(BaselineN4F1StableSafety),
+        unchangedAll,
+      })
+  }
 }
 
 module CrosslinkBaselineN4F1ForkingTest {

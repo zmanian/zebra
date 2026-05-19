@@ -1051,6 +1051,13 @@ module CrosslinkResampling {
       )
     )
 
+  val CorrectValuePrevotesHaveJustifiedProposal =
+    Rounds.forall(r =>
+      msgsPrevote.get(r)
+        .filter(m => m.src.in(Corr) and m.id != NilSnapshot)
+        .forall(m => HasPrevoteJustifiedProposal(r, m.id))
+    )
+
   val SameRoundNilAndValueCommitExcluded =
     Rounds.forall(r =>
       NilPrecommitCert(r) implies
@@ -1227,6 +1234,7 @@ module CrosslinkResampling {
     Accountability and
     NoCorrectPrevoteEquivocation and
     NoCorrectPrecommitEquivocation and
+    CorrectValuePrevotesHaveJustifiedProposal and
     SameRoundNilAndValueCommitExcluded and
     LockedValueHasMatchingValidValue and
     CorrectValueLocksHavePrecommitEvidence and

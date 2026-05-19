@@ -55,8 +55,8 @@ without clearing same-round value or proposal-cache state.
 | `StartRound` | `StartNextRoundAfterPrecommitQuorum`, `TimeoutPrecommitStartNextRound`, `CatchUpToRound` | Partial | Baseline models the externally visible round advance paths, but does not expose an upstream-identical `StartRound` helper. |
 | `BroadcastProposal`, `BroadcastPrevote`, `BroadcastPrecommit` | Same named broadcast actions | Covered | Message evidence is updated alongside observed messages. |
 | `InsertProposal(p, v)` | `InsertProposal(p)` using `StickyOrStreamProposal(p)` | Intentional Crosslink deviation | A correct Crosslink proposer samples `Stream(round)` or reuses sticky cached/valid state; it does not choose arbitrary `v`. |
-| Proposal handling in propose step | `UponProposalPrevote`; `HasPrevoteJustifiedProposal` | Partial | Covers proposal-to-prevote behavior with freshness, lock checks, and validRound justification. It does not fully port the upstream split between proposal-only and proposal-plus-prevote-valid-round handlers. |
-| Upstream valid-round proposal path | `validValue`, `validRound`, `StickyOrStreamProposal`, `HasPrevoteJustifiedProposal`, `validRoundProposalWithoutPrevoteQuorumIsRejectedTest`, `validRoundProposalWithPrevoteQuorumIsAcceptedTest` | Partial | Baseline preserves lock/valid state and now requires validRound proposals to be backed by an earlier prevote quorum, but the complete upstream `validRound` proof surface is not yet ported. |
+| Proposal handling in propose step | `UponProposalPrevote`; `HasPrevoteJustifiedProposal`; `CorrectValuePrevotesHaveJustifiedProposal` | Partial | Covers proposal-to-prevote behavior with freshness, lock checks, validRound justification, and a safety invariant that every correct value prevote has a justified proposal. It does not fully port the upstream split between proposal-only and proposal-plus-prevote-valid-round handlers. |
+| Upstream valid-round proposal path | `validValue`, `validRound`, `StickyOrStreamProposal`, `HasPrevoteJustifiedProposal`, `CorrectValuePrevotesHaveJustifiedProposal`, `validRoundProposalWithoutPrevoteQuorumIsRejectedTest`, `validRoundProposalWithPrevoteQuorumIsAcceptedTest`, `correctValuePrevotesRequireJustifiedProposalTest` | Partial | Baseline preserves lock/valid state and requires validRound proposals to be backed by an earlier prevote quorum; the Crosslink-equivalent safety lemma is now part of `Safety`, while the complete upstream helper split is still not ported. |
 | Any prevote quorum handling | `UponValuePrevoteQuorum`, `UponNilPrevoteQuorum`, `TimeoutPrevotePrecommitNil` | Covered for focused baseline shell | Value prevote quorums lock and precommit; nil prevote quorums precommit nil. |
 | Any precommit quorum handling | `StartNextRoundAfterPrecommitQuorum`, `Decide` | Partial | Baseline distinguishes value commit decision from nil/any-precommit round advance, but does not take arbitrary evidence-set parameters like upstream. |
 | Timeout propose | `TimeoutProposePrevoteNil` | Covered | Correct processes can prevote nil when the proposal step times out. |
@@ -111,9 +111,10 @@ The crosswalk leaves these concrete gaps:
 
 1. Lift the focused baseline shell into a fuller parameterized transition model
    without losing the Crosslink `head - sigma` value rule.
-2. Port the complete upstream `validRound` proposal-handling surface, or
-   document a smaller Crosslink-equivalent lemma if the full upstream shape is
-   intentionally unnecessary.
+2. Decide whether to port the complete upstream `validRound`
+   proposal-handling helper split. The baseline now documents and checks the
+   smaller Crosslink-equivalent lemma that every correct non-nil prevote has a
+   `HasPrevoteJustifiedProposal` witness.
 3. Broaden the tractable symbolic shape for faulty proposal, prevote, and
    precommit injection beyond the tiny, bounded `n4_f1`, and representative
    `n4_f2`/`n5_f2` harnesses. The fixed-sigma/forking `n4_f1`, `n4_f2`,
