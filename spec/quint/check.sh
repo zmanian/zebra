@@ -175,6 +175,7 @@ quick_checks() {
   test_model spec/quint/CrosslinkBaselinePowSampling.qnt CrosslinkBaselinePowLongReorgModel
   test_model spec/quint/CrosslinkBaselinePowSampling.qnt CrosslinkBaselinePowGeneratedScheduleModel
   test_model spec/quint/CrosslinkBaselinePowSampling.qnt CrosslinkBaselinePowRepeatedGeneratedScheduleModel
+  test_model spec/quint/CrosslinkBaselinePowSampling.qnt CrosslinkBaselinePowStochasticProductionModel
   test_model spec/quint/CrosslinkResampling.qnt CrosslinkNilResamplingModel
   test_model spec/quint/CrosslinkForkFinality.qnt CrosslinkForkFinalityModel
   test_model spec/quint/CrosslinkPowForkSchedule.qnt CrosslinkPowForkScheduleModel
@@ -211,6 +212,7 @@ quick_checks() {
   run_model spec/quint/CrosslinkBaselinePowSampling.qnt CrosslinkBaselinePowLongReorgModel Init Next 10 1000 BaselinePowLongReorgSafety
   run_model spec/quint/CrosslinkBaselinePowSampling.qnt CrosslinkBaselinePowGeneratedScheduleModel Init Next 10 1000 BaselinePowGeneratedScheduleSafety
   run_model spec/quint/CrosslinkBaselinePowSampling.qnt CrosslinkBaselinePowRepeatedGeneratedScheduleModel Init Next 10 1000 BaselinePowRepeatedGeneratedScheduleSafety
+  run_model spec/quint/CrosslinkBaselinePowSampling.qnt CrosslinkBaselinePowStochasticProductionModel Init Next 10 1000 BaselinePowStochasticProductionSafety
   run_model spec/quint/CrosslinkResampling.qnt CrosslinkNilResamplingModel Init Next 10 1000 Safety
   run_model spec/quint/CrosslinkForkFinality.qnt CrosslinkForkFinalityModel Init Next 6 1000 Safety
   run_model spec/quint/CrosslinkPowForkSchedule.qnt CrosslinkPowForkScheduleModel Init Next 4 1000 Safety
@@ -253,6 +255,7 @@ baseline_quick_checks() {
   test_model spec/quint/CrosslinkBaselinePowSampling.qnt CrosslinkBaselinePowLongReorgModel
   test_model spec/quint/CrosslinkBaselinePowSampling.qnt CrosslinkBaselinePowGeneratedScheduleModel
   test_model spec/quint/CrosslinkBaselinePowSampling.qnt CrosslinkBaselinePowRepeatedGeneratedScheduleModel
+  test_model spec/quint/CrosslinkBaselinePowSampling.qnt CrosslinkBaselinePowStochasticProductionModel
 
   run_model spec/quint/CrosslinkResampling.qnt CrosslinkStickyModel Init Next 10 1000 Safety
   run_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStableModel Init Next 10 1000 BaselineSafety
@@ -275,6 +278,7 @@ baseline_quick_checks() {
   run_model spec/quint/CrosslinkBaselinePowSampling.qnt CrosslinkBaselinePowLongReorgModel Init Next 10 1000 BaselinePowLongReorgSafety
   run_model spec/quint/CrosslinkBaselinePowSampling.qnt CrosslinkBaselinePowGeneratedScheduleModel Init Next 10 1000 BaselinePowGeneratedScheduleSafety
   run_model spec/quint/CrosslinkBaselinePowSampling.qnt CrosslinkBaselinePowRepeatedGeneratedScheduleModel Init Next 10 1000 BaselinePowRepeatedGeneratedScheduleSafety
+  run_model spec/quint/CrosslinkBaselinePowSampling.qnt CrosslinkBaselinePowStochasticProductionModel Init Next 10 1000 BaselinePowStochasticProductionSafety
 }
 
 symbolic_checks() {
@@ -297,6 +301,7 @@ symbolic_checks() {
   verify_model spec/quint/CrosslinkBaselinePowSampling.qnt CrosslinkBaselinePowLongReorgModel 3 Init Next BaselinePowLongReorgSafety
   verify_model spec/quint/CrosslinkBaselinePowSampling.qnt CrosslinkBaselinePowGeneratedScheduleModel 3 Init Next BaselinePowGeneratedScheduleSafety
   verify_model spec/quint/CrosslinkBaselinePowSampling.qnt CrosslinkBaselinePowRepeatedGeneratedScheduleModel 3 Init Next BaselinePowRepeatedGeneratedScheduleSafety
+  verify_model spec/quint/CrosslinkBaselinePowSampling.qnt CrosslinkBaselinePowStochasticProductionModel 3 Init Next BaselinePowStochasticProductionSafety
   verify_model spec/quint/CrosslinkResampling.qnt CrosslinkNilResamplingModel 3 Init Next Safety
   verify_model spec/quint/CrosslinkForkFinality.qnt CrosslinkForkFinalityModel 4 Init Next Safety
   verify_model spec/quint/CrosslinkPowForkSchedule.qnt CrosslinkPowForkScheduleModel 4 Init Next Safety
@@ -338,6 +343,7 @@ baseline_symbolic_checks() {
   verify_model spec/quint/CrosslinkBaselinePowSampling.qnt CrosslinkBaselinePowLongReorgModel 3 Init Next BaselinePowLongReorgSafety
   verify_model spec/quint/CrosslinkBaselinePowSampling.qnt CrosslinkBaselinePowGeneratedScheduleModel 3 Init Next BaselinePowGeneratedScheduleSafety
   verify_model spec/quint/CrosslinkBaselinePowSampling.qnt CrosslinkBaselinePowRepeatedGeneratedScheduleModel 3 Init Next BaselinePowRepeatedGeneratedScheduleSafety
+  verify_model spec/quint/CrosslinkBaselinePowSampling.qnt CrosslinkBaselinePowStochasticProductionModel 3 Init Next BaselinePowStochasticProductionSafety
 }
 
 case "${mode}" in

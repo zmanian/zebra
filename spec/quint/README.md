@@ -570,6 +570,11 @@ $QUINT test spec/quint/CrosslinkBaselinePowSampling.qnt \
   --main=CrosslinkBaselinePowRepeatedGeneratedScheduleModel \
   --max-samples=100 \
   --backend=rust
+
+$QUINT test spec/quint/CrosslinkBaselinePowSampling.qnt \
+  --main=CrosslinkBaselinePowStochasticProductionModel \
+  --max-samples=100 \
+  --backend=rust
 ```
 
 This model makes `Stream(round)` equal to the explicit fixed `head - sigma`
@@ -585,7 +590,11 @@ checks that the sticky protocol carries round-1 sample `a3` into round 2
 instead of the fresh fork sample `b3`. The repeated generated-schedule fixture
 extends that shape with another adversarial release from `b4` to `c4`, deriving
 stream samples `a2`, `a3`, `b3`, and `c3`, and checking sticky carryover across
-both fork switches.
+both fork switches. The stochastic-production fixture adds a finite bucketed
+environment for observed hash-power participation, hidden-work risk, and block
+variance. It derives low-risk honest extension rounds followed by critical-risk
+hidden-work releases, then checks the same sticky carryover behavior against
+the resulting `a3`, `b3`, and `c3` samples.
 
 Witness the current sticky behavior:
 
@@ -1412,16 +1421,19 @@ instead of finalizing the fresh stream value.
 The bounded baseline PoW-sampling checks report no violation for
 `BaselinePowSamplingSafety`, `BaselinePowLongReorgSafety`, and
 `BaselinePowGeneratedScheduleSafety`, and
-`BaselinePowRepeatedGeneratedScheduleSafety`, which combine the current
+`BaselinePowRepeatedGeneratedScheduleSafety`, and
+`BaselinePowStochasticProductionSafety`, which combine the current
 fixed-sigma/sticky Tenderlink safety invariant with an explicit
 `Stream(round) = head - sigma` condition. The fork-switch witness records a
 rollback from `a4` to `b4` where the round-0 fixed-sigma sample `a3` no longer
 survives. The long-reorg witness records a deeper rollback from `a5` to `c5`
 where rollback depth 3 exceeds sigma 2. The generated-schedule witnesses derive
 fork switches from published work competition, including repeated releases
-where `b4` outworks `a4` and then `c4` outworks `b4`. In all cases, the sticky
-baseline still carries the old sample into the next round instead of sampling
-the fresh fork.
+where `b4` outworks `a4` and then `c4` outworks `b4`. The stochastic-production
+witness derives those release windows from finite risk buckets over hash-power
+participation, hidden-work risk, and observed block variance. In all cases, the
+sticky baseline still carries the old sample into the next round instead of
+sampling the fresh fork.
 
 The bounded fork-finality check reports no violation for its `Safety`, which
 combines:
