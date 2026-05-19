@@ -11,6 +11,7 @@ module CrosslinkDynamicSigmaTelemetry {
      total observed PoW work
    - rate estimates conservatively upper-bound raw coverage and round-failure
      samples
+   - block interval variance is derived from adjacent header timestamps
    - selected sigma meets explicit rollback-probability and expected-loss
      targets whenever the bounded sigma ladder can meet them
    */
@@ -40,6 +41,10 @@ module CrosslinkDynamicSigmaTelemetry {
   const EstimatedCoverageRiskPct: Observation_t -> Pct_t
   const EstimatedRoundFailureRatePct: Observation_t -> Pct_t
   const MeasuredBlockIntervalVariancePct: Observation_t -> Pct_t
+  const TargetBlockSpacingSeconds: int
+  const FirstHeaderTimestamp: Observation_t -> int
+  const SecondHeaderTimestamp: Observation_t -> int
+  const ThirdHeaderTimestamp: Observation_t -> int
   const MeasuredObservedReorgDepth: Observation_t -> int
   const PreviousBestTipHeight: Observation_t -> int
   const NewBestTipHeight: Observation_t -> int
@@ -108,6 +113,12 @@ module CrosslinkDynamicSigmaTelemetry {
         0 <= MeasuredBlockIntervalVariancePct.get(o) and
         MeasuredBlockIntervalVariancePct.get(o) <= 100
     )
+  assume header_timestamp_samples_are_well_formed =
+    TargetBlockSpacingSeconds > 0 and
+      Observations.forall(o =>
+        FirstHeaderTimestamp.get(o) < SecondHeaderTimestamp.get(o) and
+          SecondHeaderTimestamp.get(o) < ThirdHeaderTimestamp.get(o)
+      )
   assume measured_reorg_depth_is_bounded =
     Observations.forall(o =>
       0 <= MeasuredObservedReorgDepth.get(o) and
@@ -138,6 +149,9 @@ module CrosslinkDynamicSigmaTelemetry {
   pure def MaxInt(a: int, b: int): int =
     if (a >= b) { a } else { b }
 
+  pure def AbsDiff(a: int, b: int): int =
+    if (a >= b) { a - b } else { b - a }
+
   pure def SourceTotalHashWork(o: Observation_t): int =
     VerifiedHashWorkSample.get(o) + UnverifiedHashWorkSample.get(o)
 
@@ -153,6 +167,18 @@ module CrosslinkDynamicSigmaTelemetry {
 
   pure def SourceRollbackDepth(o: Observation_t): int =
     PreviousBestTipHeight.get(o) - CommonAncestorHeight.get(o)
+
+  pure def FirstHeaderIntervalSeconds(o: Observation_t): int =
+    SecondHeaderTimestamp.get(o) - FirstHeaderTimestamp.get(o)
+
+  pure def SecondHeaderIntervalSeconds(o: Observation_t): int =
+    ThirdHeaderTimestamp.get(o) - SecondHeaderTimestamp.get(o)
+
+  pure def SourceMaxBlockIntervalDeviationSeconds(o: Observation_t): int =
+    MaxInt(
+      AbsDiff(FirstHeaderIntervalSeconds(o), TargetBlockSpacingSeconds),
+      AbsDiff(SecondHeaderIntervalSeconds(o), TargetBlockSpacingSeconds)
+    )
 
   pure def WorkCoverageAtLeast(o: Observation_t, pct: Pct_t): bool =
     CrosslinkParticipatingHashWork.get(o) * 100 >= TotalHashWork.get(o) * pct
@@ -241,6 +267,20 @@ module CrosslinkDynamicSigmaTelemetry {
       MeasuredObservedReorgDepth.get(o) == SourceRollbackDepth(o)
     )
 
+  val SourceBlockIntervalVarianceMatchesTelemetryComponents =
+    Observations.forall(o =>
+      TargetBlockSpacingSeconds * MeasuredBlockIntervalVariancePct.get(o) >=
+        SourceMaxBlockIntervalDeviationSeconds(o) * 100 and
+        if (MeasuredBlockIntervalVariancePct.get(o) == 0) {
+          SourceMaxBlockIntervalDeviationSeconds(o) == 0
+        } else if (MeasuredBlockIntervalVariancePct.get(o) < 100) {
+          TargetBlockSpacingSeconds * (MeasuredBlockIntervalVariancePct.get(o) - 1) <
+            SourceMaxBlockIntervalDeviationSeconds(o) * 100
+        } else {
+          true
+        }
+    )
+
   val CoverageEstimateUpperBoundsRawWorkGap =
     Observations.forall(o =>
       TotalHashWork.get(o) * EstimatedCoverageRiskPct.get(o) >=
@@ -291,6 +331,7 @@ module CrosslinkDynamicSigmaTelemetry {
     SourceHashWorkMatchesTelemetryComponents and
     RoundCountersAreInternallyConsistent and
     SourceRollbackDepthMatchesTelemetryComponents and
+    SourceBlockIntervalVarianceMatchesTelemetryComponents and
     CoverageEstimateUpperBoundsRawWorkGap and
     RoundFailureEstimateUpperBoundsRawFailures and
     RollbackRiskCurveIsMonotoneAcrossSigma and
@@ -354,6 +395,14 @@ module CrosslinkDynamicSigmaTelemetryTest {
     assert(SourceRollbackDepthMatchesTelemetryComponents),
     assert(SourceRollbackDepth(7) == 3),
     assert(TelemetrySigmaFloorForObservation(7) == MaxSigma),
+  }
+
+  run sourceBlockIntervalVarianceDerivesTelemetryComponentsTest = all {
+    assert(SourceBlockIntervalVarianceMatchesTelemetryComponents),
+    assert(SourceMaxBlockIntervalDeviationSeconds(2) == 15),
+    assert(MeasuredBlockIntervalVariancePct.get(2) == 15),
+    assert(CalibratedRiskScoreForObservation(2) >= RiskScoreRaisedThreshold),
+    assert(TelemetrySigmaFloorForObservation(2) == RaisedSigma),
   }
 
   run hashWorkParticipationRaisesSigmaTest = all {
@@ -573,6 +622,40 @@ module CrosslinkDynamicSigmaTelemetryModel {
       6 -> 0,
       7 -> 0,
       8 -> 0,
+    ),
+    TargetBlockSpacingSeconds = 100,
+    FirstHeaderTimestamp = Map(
+      0 -> 0,
+      1 -> 0,
+      2 -> 0,
+      3 -> 0,
+      4 -> 0,
+      5 -> 0,
+      6 -> 0,
+      7 -> 0,
+      8 -> 0,
+    ),
+    SecondHeaderTimestamp = Map(
+      0 -> 100,
+      1 -> 100,
+      2 -> 100,
+      3 -> 100,
+      4 -> 100,
+      5 -> 100,
+      6 -> 100,
+      7 -> 100,
+      8 -> 100,
+    ),
+    ThirdHeaderTimestamp = Map(
+      0 -> 205,
+      1 -> 210,
+      2 -> 215,
+      3 -> 205,
+      4 -> 200,
+      5 -> 205,
+      6 -> 205,
+      7 -> 205,
+      8 -> 205,
     ),
     MeasuredBlockIntervalVariancePct = Map(
       0 -> 5,

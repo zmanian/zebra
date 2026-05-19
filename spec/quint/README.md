@@ -522,6 +522,7 @@ This runs:
 - `sourceHashWorkDerivesTelemetryComponentsTest`
 - `sourceRoundCountersAreConsistentTest`
 - `sourceRollbackDepthDerivesTelemetryComponentsTest`
+- `sourceBlockIntervalVarianceDerivesTelemetryComponentsTest`
 - `hashWorkParticipationRaisesSigmaTest`
 - `combinedTelemetryRiskRaisesSigmaTest`
 - `economicTargetRaisesSigmaAboveSignalFloorTest`
@@ -542,8 +543,9 @@ deeper sigma. It checks that conservative telemetry estimates upper-bound raw
 sampled work and round failures, rollback risk is monotone in sigma, and the
 selected sigma satisfies the configured rollback-risk and expected-loss targets
 when the ladder can satisfy them. It also now derives the telemetry component
-inputs from source-shaped hash-work samples, round counters, and best-tip
-transition heights, matching the Rust source observation-window boundary.
+inputs from source-shaped hash-work samples, round counters, best-tip
+transition heights, and adjacent header timestamps, matching the Rust source
+observation-window boundary.
 `apply_dynamic_sigma_hysteresis` is a pure Rust policy helper for applying those
 required sigma floors across windows: it raises immediately on worse evidence
 and only lowers one ladder step after enough stable lower-risk windows. It is
@@ -1094,6 +1096,7 @@ The production-shaped dynamic-sigma telemetry harness reports no violation for
   Crosslink-participating numerator
 - source round counters remain internally consistent
 - source best-tip transition heights derive observed rollback depth
+- source header timestamps derive a conservative block-interval variance input
 - conservative coverage estimates upper-bound the raw gap between total PoW
   work and Crosslink-participating PoW work
 - conservative round-failure estimates upper-bound raw failed Tenderlink rounds

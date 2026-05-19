@@ -276,8 +276,9 @@ model should override or augment this baseline.
 `CrosslinkDynamicSigmaTelemetry.qnt` now mirrors that source boundary in the
 production-shaped telemetry harness: source hash-work samples derive the
 total-work denominator and participating numerator, source round counters are
-checked for consistency, and source best-tip transition heights derive observed
-rollback depth before the controller checks the sigma floor.
+checked for consistency, source best-tip transition heights derive observed
+rollback depth, and adjacent header timestamps derive conservative
+block-interval variance before the controller checks the sigma floor.
 
 Round telemetry now has a matching event contract.
 `DynamicSigmaRoundEvent` records started rounds, decisions, nil-precommit
