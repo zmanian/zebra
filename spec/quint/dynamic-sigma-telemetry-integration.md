@@ -252,9 +252,13 @@ The production controller needs guardrails for adversarial telemetry:
 The Rust controller now has a pure hysteresis helper for the short-window
 oscillation case. `apply_dynamic_sigma_hysteresis` raises immediately when a new
 window requires a larger sigma, but only lowers one ladder level after a
-configured number of stable lower-risk windows. This is not wired into live
-proposal validity yet; it is a policy boundary for the dynamic-sigma variant to
-use once the source windows are production-backed.
+configured number of stable lower-risk windows. The prototype evidence builder
+can now apply that helper from an explicit hysteresis state before carrying
+`selected_sigma` in proposal evidence. Proposal validation remains floor-based:
+validators reject selected sigma below the telemetry-required floor, while a
+hysteresis-selected sigma above that floor remains valid. Production still needs
+a durable, consensus-safe or proposal-verifiable source for the hysteresis state
+before this becomes a deployed controller rule.
 
 `CrosslinkDynamicSigmaHysteresis.qnt` mirrors that policy with bounded witnesses:
 participation-driven or reorg-driven sigma increases apply immediately, while
@@ -273,6 +277,9 @@ A production implementation of the dynamic-sigma variant should provide:
 - an explicit rollback-risk estimator for each allowed sigma
 - an economic exposure model or a clear decision that expected loss is
   service-local rather than consensus-critical
+- a durable hysteresis state source if the dynamic variant should smooth sigma
+  decreases across windows rather than selecting the raw required floor each
+  time
 - tests showing that lower hash participation never lowers sigma; the pure Rust
   controller now covers the bounded Quint telemetry fixture and raw-counter
   estimate construction, and the prototype-gated Tenderlink payload decoder now

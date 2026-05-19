@@ -509,7 +509,13 @@ transition heights, matching the Rust source observation-window boundary.
 `apply_dynamic_sigma_hysteresis` is a pure Rust policy helper for applying those
 required sigma floors across windows: it raises immediately on worse evidence
 and only lowers one ladder step after enough stable lower-risk windows. It is
-not wired into live proposal validity yet.
+also composed into the prototype dynamic-sigma proposal-evidence builder with an
+explicit initial hysteresis state. Proposal validation still only requires that
+the carried `selected_sigma` is at least the telemetry-required floor, so a
+hysteresis-selected value above the floor remains valid without validators
+reconstructing private proposer state. Production still needs a durable,
+consensus-safe source for the hysteresis state before this becomes a deployed
+controller rule.
 
 Witness dynamic-sigma hysteresis:
 
@@ -1129,8 +1135,9 @@ This model is intentionally narrow. The next useful extensions are:
   explicit best-tip transition evidence. The observation-window assembler now
   composes those source-shaped inputs into telemetry components, and the
   prototype proposal path uses it. The pure hysteresis helper covers bounded
-  sigma decreases for short-window stability, but it is not a live consensus
-  rule yet. The remaining work is replacing the fixture with consensus-safe or
-  proposal-verifiable input producers
+  sigma decreases for short-window stability, and the prototype evidence builder
+  now applies an explicit hysteresis state before carrying `selected_sigma`.
+  The remaining work is replacing the fixture with consensus-safe or
+  proposal-verifiable input producers and a durable hysteresis state source
 - refine the split projection checks into smaller inductive lemmas if bounds
   beyond the checked depth-10 projections still need very large JVM/Z3 heaps

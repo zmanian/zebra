@@ -42,11 +42,12 @@ use chain::*;
 
 pub mod dynamic_sigma;
 use crate::dynamic_sigma::{
-    select_dynamic_sigma, telemetry_components_from_observation_window,
-    DynamicSigmaHashParticipation, DynamicSigmaHashWorkObservation, DynamicSigmaProposalEvidence,
-    DynamicSigmaRawTelemetry, DynamicSigmaRoundCounters, DynamicSigmaRoundEvent,
-    DynamicSigmaTelemetryComponents, DynamicSigmaTelemetryObservationWindow, RollbackRiskCurve,
-    TelemetryEstimateMargins,
+    select_dynamic_sigma, select_dynamic_sigma_with_hysteresis,
+    telemetry_components_from_observation_window, DynamicSigmaHashParticipation,
+    DynamicSigmaHashWorkObservation, DynamicSigmaHysteresisParameters, DynamicSigmaHysteresisState,
+    DynamicSigmaProposalEvidence, DynamicSigmaRawTelemetry, DynamicSigmaRoundCounters,
+    DynamicSigmaRoundEvent, DynamicSigmaTelemetryComponents,
+    DynamicSigmaTelemetryObservationWindow, RollbackRiskCurve, TelemetryEstimateMargins,
 };
 
 use std::sync::Mutex;
@@ -620,6 +621,32 @@ fn dynamic_sigma_proposal_evidence_from_raw_telemetry(
     })
 }
 
+fn dynamic_sigma_proposal_evidence_from_raw_telemetry_with_hysteresis(
+    params: dynamic_sigma::DynamicSigmaParameters,
+    raw_telemetry: DynamicSigmaRawTelemetry,
+    margins: TelemetryEstimateMargins,
+    hysteresis_policy: DynamicSigmaHysteresisParameters,
+    hysteresis_state: DynamicSigmaHysteresisState,
+) -> Result<(DynamicSigmaProposalEvidence, DynamicSigmaHysteresisState), TenderlinkPayloadEncodeError>
+{
+    let window = raw_telemetry
+        .into_window(margins)
+        .map_err(|_| TenderlinkPayloadEncodeError::DynamicSigmaInvalid)?;
+    let selection =
+        select_dynamic_sigma_with_hysteresis(params, window, hysteresis_policy, hysteresis_state)
+            .map_err(|_| TenderlinkPayloadEncodeError::DynamicSigmaInvalid)?;
+    let next_hysteresis_state = selection.applied_state;
+
+    Ok((
+        DynamicSigmaProposalEvidence {
+            raw_telemetry,
+            margins,
+            selected_sigma: next_hysteresis_state.current_sigma,
+        },
+        next_hysteresis_state,
+    ))
+}
+
 fn dynamic_sigma_proposal_evidence_from_telemetry_components(
     params: dynamic_sigma::DynamicSigmaParameters,
     telemetry_components: DynamicSigmaTelemetryComponents,
@@ -630,6 +657,27 @@ fn dynamic_sigma_proposal_evidence_from_telemetry_components(
         .map_err(|_| TenderlinkPayloadEncodeError::DynamicSigmaInvalid)?;
 
     dynamic_sigma_proposal_evidence_from_raw_telemetry(params, raw_telemetry, margins)
+}
+
+fn dynamic_sigma_proposal_evidence_from_telemetry_components_with_hysteresis(
+    params: dynamic_sigma::DynamicSigmaParameters,
+    telemetry_components: DynamicSigmaTelemetryComponents,
+    margins: TelemetryEstimateMargins,
+    hysteresis_policy: DynamicSigmaHysteresisParameters,
+    hysteresis_state: DynamicSigmaHysteresisState,
+) -> Result<(DynamicSigmaProposalEvidence, DynamicSigmaHysteresisState), TenderlinkPayloadEncodeError>
+{
+    let raw_telemetry = telemetry_components
+        .try_into_raw_telemetry()
+        .map_err(|_| TenderlinkPayloadEncodeError::DynamicSigmaInvalid)?;
+
+    dynamic_sigma_proposal_evidence_from_raw_telemetry_with_hysteresis(
+        params,
+        raw_telemetry,
+        margins,
+        hysteresis_policy,
+        hysteresis_state,
+    )
 }
 
 fn prototype_dynamic_sigma_round_counters() -> DynamicSigmaRoundCounters {
@@ -682,17 +730,51 @@ fn prototype_dynamic_sigma_telemetry_margins() -> TelemetryEstimateMargins {
     }
 }
 
+fn prototype_dynamic_sigma_hysteresis_policy() -> DynamicSigmaHysteresisParameters {
+    DynamicSigmaHysteresisParameters {
+        decrease_confirmation_windows: 2,
+    }
+}
+
+fn prototype_dynamic_sigma_hysteresis_state(
+    params: dynamic_sigma::DynamicSigmaParameters,
+) -> DynamicSigmaHysteresisState {
+    DynamicSigmaHysteresisState {
+        current_sigma: params.base_sigma,
+        stable_windows_below_current: 0,
+    }
+}
+
 // Prototype-only evidence fixture for exercising the tagged dynamic-sigma wire
 // path. Production must replace this with consensus-visible or proposal-
-// verifiable telemetry before enabling the dynamic variant by default.
+// verifiable telemetry and persistent hysteresis state before enabling the
+// dynamic variant by default.
 fn prototype_dynamic_sigma_proposal_evidence(
     params: dynamic_sigma::DynamicSigmaParameters,
 ) -> Result<DynamicSigmaProposalEvidence, TenderlinkPayloadEncodeError> {
-    dynamic_sigma_proposal_evidence_from_telemetry_components(
+    let (evidence, _next_hysteresis_state) =
+        dynamic_sigma_proposal_evidence_from_telemetry_components_with_hysteresis(
+            params,
+            prototype_dynamic_sigma_telemetry_components()?,
+            prototype_dynamic_sigma_telemetry_margins(),
+            prototype_dynamic_sigma_hysteresis_policy(),
+            prototype_dynamic_sigma_hysteresis_state(params),
+        )?;
+
+    Ok(evidence)
+}
+
+fn prototype_dynamic_sigma_next_hysteresis_state(
+    params: dynamic_sigma::DynamicSigmaParameters,
+) -> Result<DynamicSigmaHysteresisState, TenderlinkPayloadEncodeError> {
+    dynamic_sigma_proposal_evidence_from_telemetry_components_with_hysteresis(
         params,
         prototype_dynamic_sigma_telemetry_components()?,
         prototype_dynamic_sigma_telemetry_margins(),
+        prototype_dynamic_sigma_hysteresis_policy(),
+        prototype_dynamic_sigma_hysteresis_state(params),
     )
+    .map(|(_, state)| state)
 }
 
 fn proposal_confirmation_depth(
@@ -2856,6 +2938,72 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_sigma_proposal_evidence_with_hysteresis_raises_immediately() {
+        let (evidence, next_state) =
+            dynamic_sigma_proposal_evidence_from_raw_telemetry_with_hysteresis(
+                PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS,
+                dynamic_sigma_raw_telemetry(45),
+                dynamic_sigma_telemetry_margins(),
+                prototype_dynamic_sigma_hysteresis_policy(),
+                DynamicSigmaHysteresisState {
+                    current_sigma: PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS.base_sigma,
+                    stable_windows_below_current: 3,
+                },
+            )
+            .expect("critical participation should raise sigma immediately");
+
+        assert_eq!(
+            evidence.selected_sigma,
+            PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS.max_sigma,
+        );
+        assert_eq!(
+            next_state,
+            DynamicSigmaHysteresisState {
+                current_sigma: PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS.max_sigma,
+                stable_windows_below_current: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn dynamic_sigma_proposal_evidence_with_hysteresis_delays_decrease() {
+        let (evidence, next_state) =
+            dynamic_sigma_proposal_evidence_from_raw_telemetry_with_hysteresis(
+                PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS,
+                dynamic_sigma_raw_telemetry(90),
+                dynamic_sigma_telemetry_margins(),
+                prototype_dynamic_sigma_hysteresis_policy(),
+                DynamicSigmaHysteresisState {
+                    current_sigma: PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS.max_sigma,
+                    stable_windows_below_current: 0,
+                },
+            )
+            .expect("healthy telemetry should still honor hysteresis");
+
+        assert_eq!(
+            evidence.selected_sigma,
+            PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS.max_sigma,
+        );
+        assert_eq!(
+            next_state,
+            DynamicSigmaHysteresisState {
+                current_sigma: PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS.max_sigma,
+                stable_windows_below_current: 1,
+            }
+        );
+
+        let required_decision = crate::dynamic_sigma::validate_dynamic_sigma_evidence(
+            PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS,
+            evidence,
+        )
+        .expect("higher-than-required hysteresis sigma should validate");
+        assert_eq!(
+            required_decision.sigma,
+            PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS.base_sigma,
+        );
+    }
+
+    #[test]
     fn dynamic_sigma_proposal_evidence_from_components_selects_sigma_from_event_counters() {
         let round_counters = round_counters_from_events(&[
             DynamicSigmaRoundEvent::StartedRound,
@@ -2919,6 +3067,21 @@ mod tests {
                 dynamic_sigma_telemetry_margins(),
             ),
             Err(TenderlinkPayloadEncodeError::DynamicSigmaInvalid),
+        );
+    }
+
+    #[test]
+    fn prototype_dynamic_sigma_fixture_exercises_hysteresis_bridge() {
+        let next_state =
+            prototype_dynamic_sigma_next_hysteresis_state(PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS)
+                .expect("prototype fixture should select with hysteresis");
+
+        assert_eq!(
+            next_state,
+            DynamicSigmaHysteresisState {
+                current_sigma: PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS.base_sigma,
+                stable_windows_below_current: 0,
+            }
         );
     }
 

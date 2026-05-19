@@ -1,8 +1,9 @@
 //! Dynamic sigma controller prototype.
 //!
-//! This module is deliberately pure: it does not change proposal or validation
-//! rules yet. It turns a production-shaped telemetry window into the same sigma
-//! floor described by the Quint dynamic-sigma telemetry contract.
+//! This module is deliberately pure. It turns a production-shaped telemetry
+//! window into the same sigma floor described by the Quint dynamic-sigma
+//! telemetry contract, and provides the hysteresis policy that proposal
+//! construction can apply before carrying a selected sigma in evidence.
 
 use std::io::{Read, Write};
 
@@ -337,6 +338,15 @@ pub struct DynamicSigmaHysteresisState {
     pub stable_windows_below_current: u64,
 }
 
+/// Dynamic-sigma selection after applying hysteresis to the required floor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DynamicSigmaHysteresisSelection {
+    /// Controller decision before hysteresis is applied.
+    pub required_decision: DynamicSigmaDecision,
+    /// Hysteresis state to apply to the current proposal/window.
+    pub applied_state: DynamicSigmaHysteresisState,
+}
+
 /// Invalid dynamic-sigma hysteresis input.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DynamicSigmaHysteresisError {
@@ -352,6 +362,15 @@ pub enum DynamicSigmaHysteresisError {
         /// Sigma required by the current telemetry window.
         required_sigma: u64,
     },
+}
+
+/// Invalid dynamic-sigma selection with hysteresis.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DynamicSigmaHysteresisSelectionError {
+    /// The telemetry window or controller parameters were invalid.
+    InvalidTelemetry(DynamicSigmaError),
+    /// The hysteresis policy or state was invalid.
+    InvalidHysteresis(DynamicSigmaHysteresisError),
 }
 
 /// Proposal-carried evidence for a dynamic-sigma decision.
@@ -854,6 +873,29 @@ pub fn select_dynamic_sigma(
     })
 }
 
+/// Select dynamic sigma and apply hysteresis to the required floor.
+///
+/// Validators can still validate proposals by checking that the selected sigma
+/// is at least the required floor. Hysteresis is a proposal-selection policy:
+/// it may keep sigma higher than required while lower-risk windows stabilize.
+pub fn select_dynamic_sigma_with_hysteresis(
+    params: DynamicSigmaParameters,
+    window: DynamicSigmaTelemetryWindow,
+    policy: DynamicSigmaHysteresisParameters,
+    state: DynamicSigmaHysteresisState,
+) -> Result<DynamicSigmaHysteresisSelection, DynamicSigmaHysteresisSelectionError> {
+    let required_decision = select_dynamic_sigma(params, window)
+        .map_err(DynamicSigmaHysteresisSelectionError::InvalidTelemetry)?;
+    let applied_state =
+        apply_dynamic_sigma_hysteresis(params, policy, state, required_decision.sigma)
+            .map_err(DynamicSigmaHysteresisSelectionError::InvalidHysteresis)?;
+
+    Ok(DynamicSigmaHysteresisSelection {
+        required_decision,
+        applied_state,
+    })
+}
+
 /// Apply hysteresis to a required dynamic-sigma floor.
 ///
 /// Worse telemetry raises sigma immediately. Better telemetry must remain
@@ -1216,6 +1258,14 @@ mod tests {
         }
     }
 
+    fn low_risk_curve() -> RollbackRiskCurve {
+        RollbackRiskCurve {
+            base_sigma_ppm: 1,
+            raised_sigma_ppm: 1,
+            max_sigma_ppm: 1,
+        }
+    }
+
     fn production_telemetry_components() -> DynamicSigmaTelemetryComponents {
         DynamicSigmaTelemetryComponents {
             total_hash_work: Some(100),
@@ -1445,6 +1495,46 @@ mod tests {
                 2,
             ),
             Err(DynamicSigmaHysteresisError::RequiredSigmaOutsideLadder { required_sigma: 2 }),
+        );
+    }
+
+    #[test]
+    fn hysteresis_selection_raises_immediately_on_low_participation() {
+        let selection = select_dynamic_sigma_with_hysteresis(
+            params(),
+            window(45, 0, 55, 0, 0, 0, low_risk_curve(), 1000, 100),
+            hysteresis_policy(),
+            hysteresis_state(params().base_sigma, 3),
+        )
+        .expect("critical participation should produce a valid hysteresis selection");
+
+        assert_eq!(selection.required_decision.sigma, params().max_sigma);
+        assert_eq!(
+            selection.applied_state,
+            DynamicSigmaHysteresisState {
+                current_sigma: params().max_sigma,
+                stable_windows_below_current: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn hysteresis_selection_delays_lowering_selected_sigma() {
+        let selection = select_dynamic_sigma_with_hysteresis(
+            params(),
+            window(100, 0, 0, 0, 0, 0, low_risk_curve(), 1000, 100),
+            hysteresis_policy(),
+            hysteresis_state(params().max_sigma, 0),
+        )
+        .expect("healthy participation should produce a valid hysteresis selection");
+
+        assert_eq!(selection.required_decision.sigma, params().base_sigma);
+        assert_eq!(
+            selection.applied_state,
+            DynamicSigmaHysteresisState {
+                current_sigma: params().max_sigma,
+                stable_windows_below_current: 1,
+            }
         );
     }
 
