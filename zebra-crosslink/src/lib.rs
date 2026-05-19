@@ -229,6 +229,18 @@ fn proposal_candidate_height_matches_declared_height(
     declared_candidate_height == observed_candidate_height.0
 }
 
+fn finality_candidate_height_at_depth(
+    tip_height: BlockHeight,
+    confirmation_depth: u64,
+) -> Option<BlockHeight> {
+    use std::ops::Sub;
+    use zebra_chain::block::HeightDiff as BlockHeightDiff;
+
+    let confirmation_depth = i64::try_from(confirmation_depth).ok()?;
+
+    tip_height.sub(BlockHeightDiff::from(confirmation_depth))
+}
+
 async fn _block_header_from_hash(
     call: &TFLServiceCalls,
     hash: BlockHash,
@@ -393,12 +405,8 @@ async fn propose_new_bft_block(tfl_handle: &TFLServiceHandle) -> Option<BftBlock
             return None;
         };
 
-    use std::ops::Sub;
-    use zebra_chain::block::HeightDiff as BlockHeightDiff;
-
-    let finality_candidate_height = tip_height.sub(BlockHeightDiff::from(
-        params.bc_confirmation_depth_sigma as i64,
-    ));
+    let finality_candidate_height =
+        finality_candidate_height_at_depth(tip_height, params.bc_confirmation_depth_sigma);
 
     let finality_candidate_height = if let Some(h) = finality_candidate_height {
         h
@@ -902,13 +910,10 @@ async fn validate_bft_block_from_malachite_already_locked(
     }
 
     if matches!(mode, BftValidationMode::Voting) {
-        use std::ops::Sub;
-        use zebra_chain::block::HeightDiff as BlockHeightDiff;
-
         let current_candidate_height = match (call.state)(StateRequest::Tip).await {
-            Ok(StateResponse::Tip(Some((tip_height, _tip_hash)))) => tip_height.sub(
-                BlockHeightDiff::from(params.bc_confirmation_depth_sigma as i64),
-            ),
+            Ok(StateResponse::Tip(Some((tip_height, _tip_hash)))) => {
+                finality_candidate_height_at_depth(tip_height, params.bc_confirmation_depth_sigma)
+            }
             Ok(StateResponse::Tip(None)) => None,
             _ => return tenderlink::TMStatus::Indeterminate,
         };
@@ -2247,5 +2252,18 @@ mod tests {
             9,
             BlockHeight(10)
         ));
+    }
+
+    #[test]
+    fn finality_candidate_height_at_depth_subtracts_selected_sigma() {
+        assert_eq!(
+            finality_candidate_height_at_depth(BlockHeight(10), 3),
+            Some(BlockHeight(7))
+        );
+    }
+
+    #[test]
+    fn finality_candidate_height_at_depth_rejects_underflow() {
+        assert_eq!(finality_candidate_height_at_depth(BlockHeight(2), 3), None);
     }
 }
