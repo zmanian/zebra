@@ -42,9 +42,11 @@ use chain::*;
 
 pub mod dynamic_sigma;
 use crate::dynamic_sigma::{
-    select_dynamic_sigma, DynamicSigmaProposalEvidence, DynamicSigmaRawTelemetry,
-    DynamicSigmaRoundCounters, DynamicSigmaRoundEvent, DynamicSigmaTelemetryComponents,
-    RollbackRiskCurve, TelemetryEstimateMargins,
+    select_dynamic_sigma, telemetry_components_from_observation_window,
+    DynamicSigmaHashParticipation, DynamicSigmaHashWorkObservation, DynamicSigmaProposalEvidence,
+    DynamicSigmaRawTelemetry, DynamicSigmaRoundCounters, DynamicSigmaRoundEvent,
+    DynamicSigmaTelemetryComponents, DynamicSigmaTelemetryObservationWindow, RollbackRiskCurve,
+    TelemetryEstimateMargins,
 };
 
 use std::sync::Mutex;
@@ -640,13 +642,28 @@ fn prototype_dynamic_sigma_round_counters() -> DynamicSigmaRoundCounters {
     round_counters
 }
 
-fn prototype_dynamic_sigma_telemetry_components() -> DynamicSigmaTelemetryComponents {
-    DynamicSigmaTelemetryComponents {
-        total_hash_work: Some(100),
-        crosslink_participating_hash_work: Some(90),
+fn prototype_dynamic_sigma_hash_work_observations() -> [DynamicSigmaHashWorkObservation; 2] {
+    [
+        DynamicSigmaHashWorkObservation {
+            hash_work: 90,
+            participation: DynamicSigmaHashParticipation::VerifiedParticipating,
+        },
+        DynamicSigmaHashWorkObservation {
+            hash_work: 10,
+            participation: DynamicSigmaHashParticipation::NotVerifiedParticipating,
+        },
+    ]
+}
+
+fn prototype_dynamic_sigma_telemetry_components(
+) -> Result<DynamicSigmaTelemetryComponents, TenderlinkPayloadEncodeError> {
+    let hash_work_observations = prototype_dynamic_sigma_hash_work_observations();
+
+    telemetry_components_from_observation_window(DynamicSigmaTelemetryObservationWindow {
+        hash_work_observations: &hash_work_observations,
         round_counters: prototype_dynamic_sigma_round_counters(),
+        best_tip_transitions: &[],
         measured_block_interval_variance_pct: 0,
-        measured_observed_reorg_depth: 0,
         rollback_risk: RollbackRiskCurve {
             base_sigma_ppm: 20,
             raised_sigma_ppm: 10,
@@ -654,7 +671,8 @@ fn prototype_dynamic_sigma_telemetry_components() -> DynamicSigmaTelemetryCompon
         },
         value_at_risk_units: 1_000,
         max_acceptable_expected_loss_units: 1,
-    }
+    })
+    .map_err(|_| TenderlinkPayloadEncodeError::DynamicSigmaInvalid)
 }
 
 fn prototype_dynamic_sigma_telemetry_margins() -> TelemetryEstimateMargins {
@@ -672,7 +690,7 @@ fn prototype_dynamic_sigma_proposal_evidence(
 ) -> Result<DynamicSigmaProposalEvidence, TenderlinkPayloadEncodeError> {
     dynamic_sigma_proposal_evidence_from_telemetry_components(
         params,
-        prototype_dynamic_sigma_telemetry_components(),
+        prototype_dynamic_sigma_telemetry_components()?,
         prototype_dynamic_sigma_telemetry_margins(),
     )
 }
@@ -2528,6 +2546,24 @@ mod tests {
             counters.record_event(*event);
         }
         counters
+    }
+
+    #[test]
+    fn prototype_dynamic_sigma_components_assemble_from_source_observations() {
+        let components = prototype_dynamic_sigma_telemetry_components()
+            .expect("prototype source observations should assemble");
+
+        assert_eq!(components.total_hash_work, Some(100));
+        assert_eq!(components.crosslink_participating_hash_work, Some(90));
+        assert_eq!(components.measured_observed_reorg_depth, 0);
+        assert_eq!(
+            components.round_counters,
+            DynamicSigmaRoundCounters {
+                started_rounds: 10,
+                decided_rounds: 10,
+                ..DynamicSigmaRoundCounters::default()
+            }
+        );
     }
 
     #[test]

@@ -215,6 +215,14 @@ the proposal carries the selected value in its evidence. This keeps prototype
 fixtures aligned with the production-shaped contract while leaving the actual
 source producers as explicit remaining work.
 
+The fixture itself now enters through the same source-observation shape:
+prototype hash-work observations are aggregated into total and verified
+participating work, an empty best-tip transition window derives rollback depth
+0, round events derive decided-round counters, and
+`telemetry_components_from_observation_window` builds the components consumed by
+proposal evidence selection. Live producers still need to replace those fixture
+observations.
+
 Rollback-depth telemetry has the same shape. `DynamicSigmaBestTipTransition`
 represents a best-tip change by its previous tip height, new tip height, and
 common ancestor height. The helper derives rollback depth as the replaced
