@@ -43,6 +43,11 @@ rollback-depth signal used by dynamic sigma.
 resampled PoW snapshot becomes the input to Crosslink finality, which can then
 advance to a tail-confirmed snapshot while preserving the finalized prefix.
 
+`CrosslinkBftHeights.qnt` adds the missing BFT-height dimension for finality.
+It checks that successive Tenderlink decisions at consecutive consensus heights
+can update Crosslink finality directly, while rejecting skipped consensus
+heights and fork decisions after a prefix is final.
+
 `CrosslinkDynamicSigma.qnt` sketches the third Crosslink variant: a
 dynamic-sigma controller. It treats the percentage of total PoW hash power that
 is participating in Crosslink as an explicit controller input. Low hash-power
@@ -130,6 +135,7 @@ $QUINT typecheck spec/quint/CrosslinkForkFinality.qnt
 $QUINT typecheck spec/quint/CrosslinkPowForkSchedule.qnt
 $QUINT typecheck spec/quint/CrosslinkPowBranchCompetition.qnt
 $QUINT typecheck spec/quint/CrosslinkComposed.qnt
+$QUINT typecheck spec/quint/CrosslinkBftHeights.qnt
 $QUINT typecheck spec/quint/CrosslinkDynamicSigma.qnt
 $QUINT typecheck spec/quint/CrosslinkDynamicSigmaForkSchedule.qnt
 $QUINT typecheck spec/quint/CrosslinkDynamicSigmaBranchCompetition.qnt
@@ -292,6 +298,26 @@ minority same-round value lock, advances all correct validators to round 1,
 resamples `a2`, decides it, and finalizes `a2` using `a3` as the tail-confirming
 PoW tip. This also demonstrates height skipping in the composed flow: finality
 moves from genesis `g` directly to `a2`.
+
+Witness BFT-heighted Crosslink finality:
+
+```sh
+$QUINT test spec/quint/CrosslinkBftHeights.qnt \
+  --main=CrosslinkBftHeightsModel \
+  --max-samples=100 \
+  --backend=rust
+```
+
+This runs:
+
+- `successiveBftDecisionsAdvanceCrosslinkFinalityTest`
+- `rejectsForkDecisionAfterPrefixFinalityTest`
+- `rejectsSkippingConsensusHeightTest`
+
+The fixture applies scheduled consensus-height-1 decision `a2` and
+consensus-height-2 decision `a3`, advancing Crosslink finality twice. The
+negative witnesses reject finalizing a later fork after `a2` is final and reject
+skipping directly from consensus height 0 to height 2.
 
 Witness the dynamic-sigma hash-participation controller:
 
@@ -500,6 +526,16 @@ $QUINT run spec/quint/CrosslinkComposed.qnt \
   --backend=rust \
   --verbosity=0
 
+$QUINT run spec/quint/CrosslinkBftHeights.qnt \
+  --main=CrosslinkBftHeightsModel \
+  --init=Init \
+  --step=Next \
+  --max-steps=5 \
+  --max-samples=1000 \
+  --invariant=Safety \
+  --backend=rust \
+  --verbosity=0
+
 $QUINT run spec/quint/CrosslinkDynamicSigma.qnt \
   --main=CrosslinkDynamicSigmaHashParticipationModel \
   --init=Init \
@@ -610,6 +646,13 @@ $QUINT verify spec/quint/CrosslinkComposed.qnt \
   --step=LivenessStep \
   --invariant=LivenessSafety
 
+$QUINT verify spec/quint/CrosslinkBftHeights.qnt \
+  --main=CrosslinkBftHeightsModel \
+  --max-steps=5 \
+  --init=Init \
+  --step=Next \
+  --invariant=Safety
+
 $QUINT verify spec/quint/CrosslinkDynamicSigma.qnt \
   --main=CrosslinkDynamicSigmaHashParticipationModel \
   --max-steps=7 \
@@ -696,6 +739,11 @@ to `a2`, resampling reaches a fresh `a2` Tenderlink decision and then a fresh
 `a2` finality update by phase 16 while preserving both the Tenderlink lock
 safety invariants and the finalized-prefix safety invariants.
 
+The BFT-heighted finality harness checks that consecutive BFT decisions advance
+Crosslink finality in height order while preserving finalized-prefix safety.
+It also gives negative witnesses for two invalid transitions: skipping a
+consensus height and finalizing a fork after a prefix is final.
+
 The dynamic-sigma harness checks a bounded controller invariant: live sigma
 remains within the configured ladder, never falls below the floor implied by
 observed hash-power participation, observed reorg depth, or the calibrated
@@ -753,8 +801,8 @@ This model is intentionally narrow. The next useful extensions are:
   observed reorg distributions
 - feed generated PoW branch competition into the resampling and finality
   compositions, replacing the remaining fixed best-tip fixtures
-- add BFT heights so successive Tenderlink decisions update Crosslink finality
-  directly
+- integrate BFT heights into the full dynamic-sigma/resampling/finality
+  composition, rather than keeping heighted finality as a focused model
 - port the full upstream Tendermint accountability evidence model into the
   composed model; the current resampling model only adds the conflict/evidence
   witnesses needed for nil-precommit unlocks
