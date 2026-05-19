@@ -39,6 +39,7 @@ run_quint() {
 
 typecheck_all() {
   local specs=(
+    spec/quint/CrosslinkBaseline.qnt
     spec/quint/CrosslinkResampling.qnt
     spec/quint/CrosslinkForkFinality.qnt
     spec/quint/CrosslinkPowForkSchedule.qnt
@@ -104,6 +105,8 @@ quick_checks() {
   typecheck_all
 
   test_model spec/quint/CrosslinkResampling.qnt CrosslinkStickyModel
+  test_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStableModel
+  test_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStreamChangeModel
   test_model spec/quint/CrosslinkResampling.qnt CrosslinkNilResamplingModel
   test_model spec/quint/CrosslinkForkFinality.qnt CrosslinkForkFinalityModel
   test_model spec/quint/CrosslinkPowForkSchedule.qnt CrosslinkPowForkScheduleModel
@@ -120,6 +123,8 @@ quick_checks() {
   test_model spec/quint/CrosslinkDynamicSigmaFinality.qnt CrosslinkDynamicSigmaFinalityModel
 
   run_model spec/quint/CrosslinkResampling.qnt CrosslinkStickyModel Init Next 10 1000 Safety
+  run_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStableModel Init Next 10 1000 BaselineSafety
+  run_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStreamChangeModel Init Next 10 1000 BaselineSafety
   run_model spec/quint/CrosslinkResampling.qnt CrosslinkNilResamplingModel Init Next 10 1000 Safety
   run_model spec/quint/CrosslinkForkFinality.qnt CrosslinkForkFinalityModel Init Next 6 1000 Safety
   run_model spec/quint/CrosslinkPowForkSchedule.qnt CrosslinkPowForkScheduleModel Init Next 4 1000 Safety
@@ -140,6 +145,8 @@ quick_checks() {
 
 symbolic_checks() {
   verify_model spec/quint/CrosslinkResampling.qnt CrosslinkStickyModel 3 Init Next Safety
+  verify_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStableModel 3 Init Next BaselineSafety
+  verify_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStreamChangeModel 3 Init Next BaselineSafety
   verify_model spec/quint/CrosslinkResampling.qnt CrosslinkNilResamplingModel 3 Init Next Safety
   verify_model spec/quint/CrosslinkForkFinality.qnt CrosslinkForkFinalityModel 4 Init Next Safety
   verify_model spec/quint/CrosslinkPowForkSchedule.qnt CrosslinkPowForkScheduleModel 4 Init Next Safety

@@ -27,6 +27,14 @@ transition-carried proposal, prevote, and precommit evidence feed equivocation
 and amnesia predicates, while a nil-precommit certificate for the abandoned
 round is treated as valid unlock evidence rather than amnesia.
 
+`CrosslinkBaseline.qnt` packages the current fixed-sigma/sticky behavior as a
+named baseline variant. It reuses the focused Tenderlink model with
+`ResampleOnNilPrecommit = false`, then separates the positive baseline witness
+from the known stream-change limitation: a stable stream decides through the
+normal propose/prevote/precommit path, while a changed stream carries the stale
+sample and can block a fresh decision because same-round Tendermint state is not
+cleared.
+
 `CrosslinkForkFinality.qnt` is a separate value-semantics model. It abstracts
 PoW snapshots as a finite fork tree, then checks that Crosslink finality can skip
 heights on one branch while rejecting finalization of a fork after a block is
@@ -259,6 +267,7 @@ QUINT="$QUINT" JVM_ARGS=-Xmx8192m spec/quint/check.sh symbolic
 Typecheck:
 
 ```sh
+$QUINT typecheck spec/quint/CrosslinkBaseline.qnt
 $QUINT typecheck spec/quint/CrosslinkResampling.qnt
 $QUINT typecheck spec/quint/CrosslinkForkFinality.qnt
 $QUINT typecheck spec/quint/CrosslinkPowForkSchedule.qnt
@@ -274,6 +283,26 @@ $QUINT typecheck spec/quint/CrosslinkDynamicSigmaBranchCompetition.qnt
 $QUINT typecheck spec/quint/CrosslinkDynamicSigmaResampling.qnt
 $QUINT typecheck spec/quint/CrosslinkDynamicSigmaFinality.qnt
 ```
+
+Witness the named baseline behavior:
+
+```sh
+$QUINT test spec/quint/CrosslinkBaseline.qnt \
+  --main=CrosslinkBaselineStableModel \
+  --max-samples=100 \
+  --backend=rust
+
+$QUINT test spec/quint/CrosslinkBaseline.qnt \
+  --main=CrosslinkBaselineStreamChangeModel \
+  --max-samples=100 \
+  --backend=rust
+```
+
+The stable model checks the fixed-sigma/sticky protocol can decide its sampled
+snapshot when the PoW stream does not move. The stream-change model records the
+baseline limitation: after a nil-precommit quorum, the current protocol carries
+the stale sample into the next round and same-round Tendermint state can block a
+fresh decision.
 
 Witness the current sticky behavior:
 
