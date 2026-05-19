@@ -114,6 +114,11 @@ pub mod config {
         pub malachite_peers: Vec<String>,
         /// Do not manipulate config
         pub do_not_manipulate_config: bool,
+        /// Enables prototype-only dynamic-sigma Tenderlink payload decoding.
+        ///
+        /// This must remain disabled by default until the dynamic-sigma variant
+        /// has production telemetry and shared parameter plumbing.
+        pub dynamic_sigma_prototype: bool,
     }
     impl Default for Config {
         fn default() -> Self {
@@ -123,6 +128,7 @@ pub mod config {
                 insecure_user_name: None,
                 malachite_peers: Vec::new(),
                 do_not_manipulate_config: false,
+                dynamic_sigma_prototype: false,
             }
         }
     }
@@ -533,23 +539,48 @@ enum BftValidationMode {
 #[derive(Debug, Eq, PartialEq)]
 enum TenderlinkPayloadDecodeError {
     DynamicSigmaUnsupported,
+    DynamicSigmaInvalid,
     Invalid,
 }
 
-fn decode_fixed_sigma_tenderlink_payload(
+fn dynamic_sigma_params_from_config(
+    config: &config::Config,
+) -> Option<dynamic_sigma::DynamicSigmaParameters> {
+    config
+        .dynamic_sigma_prototype
+        .then_some(PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS)
+}
+
+fn decode_tenderlink_payload(
+    config: &config::Config,
     bytes: &[u8],
 ) -> Result<BftBlock, TenderlinkPayloadDecodeError> {
-    if bytes.starts_with(&DYNAMIC_SIGMA_BFT_BLOCK_PAYLOAD_MAGIC) {
+    if bytes.starts_with(&DYNAMIC_SIGMA_BFT_BLOCK_PAYLOAD_MAGIC) && !config.dynamic_sigma_prototype
+    {
         return Err(TenderlinkPayloadDecodeError::DynamicSigmaUnsupported);
     }
 
     match BftBlockPayload::zcash_deserialize_from_slice(bytes) {
         Ok(BftBlockPayload::FixedSigma(block)) => Ok(block),
-        Ok(BftBlockPayload::DynamicSigma(_)) => {
-            Err(TenderlinkPayloadDecodeError::DynamicSigmaUnsupported)
+        Ok(BftBlockPayload::DynamicSigma(payload)) => {
+            let Some(params) = dynamic_sigma_params_from_config(config) else {
+                return Err(TenderlinkPayloadDecodeError::DynamicSigmaUnsupported);
+            };
+
+            payload
+                .validate(params)
+                .map_err(|_| TenderlinkPayloadDecodeError::DynamicSigmaInvalid)?;
+
+            Ok(payload.block)
         }
         Err(_) => Err(TenderlinkPayloadDecodeError::Invalid),
     }
+}
+
+fn decode_fixed_sigma_tenderlink_payload(
+    bytes: &[u8],
+) -> Result<BftBlock, TenderlinkPayloadDecodeError> {
+    decode_tenderlink_payload(&config::Config::default(), bytes)
 }
 
 fn fat_pointer_has_roster_quorum(
@@ -1369,12 +1400,16 @@ async fn tfl_service_main_loop(internal_handle: TFLServiceHandle) -> Result<(), 
             tenderlink::ClosureToValidateProposedBlock(Arc::new(move |block| {
                 let tfl_handle2 = tfl_handle2.clone();
                 Box::pin(async move {
-                    match decode_fixed_sigma_tenderlink_payload(block.0.as_slice()) {
+                    match decode_tenderlink_payload(&tfl_handle2.config, block.0.as_slice()) {
                         Ok(bft_block) => {
                             validate_bft_block_from_malachite(&tfl_handle2, &bft_block).await
                         }
                         Err(TenderlinkPayloadDecodeError::DynamicSigmaUnsupported) => {
-                            error!("Dynamic-sigma Tenderlink payload rejected: dynamic params and telemetry are not wired yet.");
+                            error!("Dynamic-sigma Tenderlink payload rejected: prototype dynamic sigma is not enabled.");
+                            tenderlink::TMStatus::Fail
+                        }
+                        Err(TenderlinkPayloadDecodeError::DynamicSigmaInvalid) => {
+                            error!("Invalid dynamic-sigma Tenderlink payload.");
                             tenderlink::TMStatus::Fail
                         }
                         Err(TenderlinkPayloadDecodeError::Invalid) => {
@@ -1387,7 +1422,7 @@ async fn tfl_service_main_loop(internal_handle: TFLServiceHandle) -> Result<(), 
             tenderlink::ClosureToPushDecidedBlock(Arc::new(move |block, fat_pointer| {
                 let tfl_handle3 = tfl_handle3.clone();
                 Box::pin(async move {
-                    match decode_fixed_sigma_tenderlink_payload(block.0.as_slice()) {
+                    match decode_tenderlink_payload(&tfl_handle3.config, block.0.as_slice()) {
                         Ok(bft_block) => {
                             new_decided_bft_block_from_malachite(
                                 &tfl_handle3,
@@ -2230,6 +2265,58 @@ impl MalVote {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dynamic_sigma::{
+        DynamicSigmaProposalEvidence, DynamicSigmaRawTelemetry, RollbackRiskCurve,
+        TelemetryEstimateMargins,
+    };
+    use chrono::Utc;
+    use zebra_chain::{
+        block::{merkle::Root, FatPointerToBftBlock, Header},
+        fmt::HexDebug,
+        work::{difficulty::INVALID_COMPACT_DIFFICULTY, equihash::Solution},
+    };
+
+    fn test_header(previous_block_hash: BlockHash) -> Header {
+        Header {
+            version: 4,
+            previous_block_hash,
+            merkle_root: Root([0; 32]),
+            commitment_bytes: HexDebug([0; 32]),
+            time: Utc::now(),
+            difficulty_threshold: INVALID_COMPACT_DIFFICULTY,
+            nonce: HexDebug([0; 32]),
+            solution: Solution::for_proposal(),
+            fat_pointer_to_bft_block: FatPointerToBftBlock::null(),
+        }
+    }
+
+    fn dynamic_sigma_evidence(
+        participating_hash_work: u128,
+        selected_sigma: u64,
+    ) -> DynamicSigmaProposalEvidence {
+        DynamicSigmaProposalEvidence {
+            raw_telemetry: DynamicSigmaRawTelemetry {
+                total_hash_work: 100,
+                crosslink_participating_hash_work: participating_hash_work,
+                total_tenderlink_rounds: 10,
+                failed_tenderlink_rounds: 0,
+                measured_block_interval_variance_pct: 0,
+                measured_observed_reorg_depth: 0,
+                rollback_risk: RollbackRiskCurve {
+                    base_sigma_ppm: 20,
+                    raised_sigma_ppm: 10,
+                    max_sigma_ppm: 2,
+                },
+                value_at_risk_units: 1_000,
+                max_acceptable_expected_loss_units: 1,
+            },
+            margins: TelemetryEstimateMargins {
+                coverage_risk_margin_pct: 2,
+                round_failure_margin_pct: 0,
+            },
+            selected_sigma,
+        }
+    }
 
     #[test]
     fn proposal_status_against_current_stream_reports_stale_on_stream_change() {
@@ -2327,6 +2414,84 @@ mod tests {
         assert_eq!(
             decode_fixed_sigma_tenderlink_payload(&DYNAMIC_SIGMA_BFT_BLOCK_PAYLOAD_MAGIC),
             Err(TenderlinkPayloadDecodeError::DynamicSigmaUnsupported)
+        );
+    }
+
+    #[test]
+    fn tenderlink_payload_decoder_rejects_dynamic_payload_by_default() {
+        let headers = vec![test_header(BlockHash([0; 32]))];
+        let payload = DynamicSigmaBftBlockPayload::try_from_with_evidence(
+            PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS,
+            dynamic_sigma_evidence(90, 1),
+            1,
+            FatPointerToBftBlock2::null(),
+            10,
+            headers,
+        )
+        .expect("valid dynamic-sigma evidence should build a payload");
+        let encoded = payload
+            .zcash_serialize_to_vec()
+            .expect("payload serialization should succeed");
+
+        assert_eq!(
+            decode_tenderlink_payload(&config::Config::default(), encoded.as_slice()),
+            Err(TenderlinkPayloadDecodeError::DynamicSigmaUnsupported)
+        );
+    }
+
+    #[test]
+    fn tenderlink_payload_decoder_accepts_dynamic_payload_when_prototype_enabled() {
+        let mut config = config::Config::default();
+        config.dynamic_sigma_prototype = true;
+        let headers = vec![test_header(BlockHash([0; 32]))];
+        let payload = DynamicSigmaBftBlockPayload::try_from_with_evidence(
+            PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS,
+            dynamic_sigma_evidence(90, 1),
+            1,
+            FatPointerToBftBlock2::null(),
+            10,
+            headers,
+        )
+        .expect("valid dynamic-sigma evidence should build a payload");
+        let encoded = payload
+            .zcash_serialize_to_vec()
+            .expect("payload serialization should succeed");
+
+        let decoded = decode_tenderlink_payload(&config, encoded.as_slice())
+            .expect("dynamic payload should decode when prototype mode is enabled");
+
+        assert_eq!(
+            decoded
+                .zcash_serialize_to_vec()
+                .expect("decoded block serialization should succeed"),
+            payload
+                .block
+                .zcash_serialize_to_vec()
+                .expect("payload block serialization should succeed"),
+        );
+    }
+
+    #[test]
+    fn tenderlink_payload_decoder_rejects_hash_participation_below_selected_sigma() {
+        let mut config = config::Config::default();
+        config.dynamic_sigma_prototype = true;
+        let payload = DynamicSigmaBftBlockPayload {
+            evidence: dynamic_sigma_evidence(63, 1),
+            block: BftBlock {
+                version: 1,
+                height: 1,
+                previous_block_fat_ptr: FatPointerToBftBlock2::null(),
+                finalization_candidate_height: 10,
+                headers: vec![test_header(BlockHash([0; 32]))],
+            },
+        };
+        let encoded = payload
+            .zcash_serialize_to_vec()
+            .expect("payload serialization should succeed");
+
+        assert_eq!(
+            decode_tenderlink_payload(&config, encoded.as_slice()),
+            Err(TenderlinkPayloadDecodeError::DynamicSigmaInvalid)
         );
     }
 }

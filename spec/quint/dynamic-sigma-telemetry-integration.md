@@ -4,7 +4,8 @@ This note maps the dynamic-sigma Quint model inputs to production telemetry and
 calls out the pieces that are not present in the current prototype.
 
 The core rule is that the controller should select a sigma at least as large as
-each independently required floor:
+each independently required floor. One of those floors is the percentage of PoW
+hash power that is observably participating in Crosslink:
 
 - a hash-participation floor
 - a recent Tenderlink round-failure floor
@@ -129,11 +130,19 @@ block.
 
 The live Tenderlink callbacks now decode proposal bytes through an explicit
 payload router. Legacy fixed-sigma `BftBlock` bytes are still accepted by the
-current prototype path. Tagged dynamic-sigma payloads are recognized but
-rejected until shared dynamic-sigma parameters and proposal-verifiable telemetry
-are wired into the callback path. This preserves backward compatibility while
-preventing a dynamic-sigma payload from being silently treated as a fixed-sigma
-block.
+current prototype path. Tagged dynamic-sigma payloads are rejected by default,
+but a prototype-only config flag enables the callbacks to validate the tagged
+payload against shared prototype dynamic-sigma parameters before accepting the
+carried BFT block. This preserves backward compatibility while preventing a
+dynamic-sigma payload from being silently treated as a fixed-sigma block, and it
+keeps the dynamic variant behind an explicit opt-in until production telemetry
+exists.
+
+In that prototype-gated path, hash participation already affects payload
+validity through the carried evidence: if the Crosslink-participating work share
+is below the configured target, the selected sigma must be at least the degraded
+floor; if it is below the critical threshold, the selected sigma must be the max
+floor.
 
 ## Failure Modes
 
@@ -167,7 +176,10 @@ A production implementation of the dynamic-sigma variant should provide:
   service-local rather than consensus-critical
 - tests showing that lower hash participation never lowers sigma; the pure Rust
   controller now covers the bounded Quint telemetry fixture and raw-counter
-  estimate construction, but production source integration still needs tests
+  estimate construction, and the prototype-gated Tenderlink payload decoder now
+  rejects dynamic payload evidence whose Crosslink-participating hash-power
+  share requires a higher sigma than the proposer selected, but production
+  source integration still needs tests
 - tests showing that dynamic sigma changes do not make honest validators reject
   each other's otherwise valid proposals; the pure Rust proposal-evidence
   verifier and BFT block-construction helper cover identical evidence

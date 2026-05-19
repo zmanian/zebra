@@ -425,6 +425,24 @@ pub const PROTOTYPE_PARAMETERS: ZcashCrosslinkParameters = ZcashCrosslinkParamet
     finalization_gap_bound: 7,
 };
 
+/// Dynamic sigma parameters chosen for prototype-gated payload validation.
+///
+/// <div class="warning">No verification has been done on the security or performance of these parameters.</div>
+pub const PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS: DynamicSigmaParameters = DynamicSigmaParameters {
+    base_sigma: 1,
+    raised_sigma: 3,
+    max_sigma: 6,
+    target_hash_participation_pct: 67,
+    critical_hash_participation_pct: 50,
+    max_acceptable_rollback_risk_ppm: 25,
+    coverage_risk_weight: 2,
+    round_failure_risk_weight: 3,
+    block_interval_variance_risk_weight: 1,
+    reorg_depth_risk_weight: 5,
+    risk_score_raised_threshold: 60,
+    risk_score_max_threshold: 100,
+};
+
 /// A BLAKE3 hash.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Copy, Serialize, Deserialize)]
 pub struct Blake3Hash(pub [u8; 32]);
