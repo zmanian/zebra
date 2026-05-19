@@ -288,6 +288,98 @@ module CrosslinkBaselineFaultyInitForkingModel {
   }
 }
 
+module CrosslinkBaselineFullFaultyInitForkingModel {
+  /*
+   A full-domain fixed-sigma/forking faulty-init harness for the upstream-shaped
+   n4/f1 baseline instance. This keeps the larger parameter surface usable in
+   quick checks while leaving the bounded faulty-init harness as the symbolic
+   gate.
+   */
+
+  import CrosslinkBaselineModels.* from "./CrosslinkBaselineModels"
+
+  pure val TestRounds = 0.to(4)
+
+  pure def TestHeadMinusSigma(r: int): str =
+    AncestorByHeight
+      .get(ForkingBestTip.get(r))
+      .get(HeightBySnapshot.get(ForkingBestTip.get(r)) - 1)
+
+  pure val TestStream: int -> str =
+    TestRounds.mapBy(r => TestHeadMinusSigma(r))
+
+  pure val TestStreamMatchesFixedSigma =
+    TestRounds.forall(r => TestStream.get(r) == TestHeadMinusSigma(r))
+
+  import CrosslinkResamplingTest(
+    Corr = Set("p1", "p2", "p3"),
+    Faulty = Set("p4"),
+    N = 4,
+    T = 1,
+    MaxRound = 4,
+    Proposer = ProposerSchedule,
+    Stream = TestStream,
+    Snapshots = ValidSnapshots,
+    ResampleOnNilPrecommit = false,
+    ExpectedRound1Proposal = TestStream.get(0),
+  ).* from "./CrosslinkResampling"
+
+  pure val FullFaultyInitDomainWellFormed =
+    AllFaultyProposals.forall(m =>
+      m.src.in(Faulty) and
+      m.round.in(Rounds) and
+      m.proposal.in(Snapshots) and
+      m.validRound.in(RoundsOrNil)
+    ) and
+    AllFaultyPrevotes.forall(m =>
+      m.src.in(Faulty) and m.round.in(Rounds) and m.id.in(SnapshotsOrNil)
+    ) and
+    AllFaultyPrecommits.forall(m =>
+      m.src.in(Faulty) and m.round.in(Rounds) and m.id.in(SnapshotsOrNil)
+    )
+
+  pure val FullFaultyInitUsesWholeForkingDomain =
+    AllFaultyProposals.exists(m =>
+      m.src == "p4" and
+      m.round == 4 and
+      m.proposal == "b2" and
+      m.validRound == 4
+    ) and
+    AllFaultyPrevotes.exists(m =>
+      m.src == "p4" and m.round == 4 and m.id == NilSnapshot
+    ) and
+    AllFaultyPrecommits.exists(m =>
+      m.src == "p4" and m.round == 4 and m.id == "a1"
+    )
+
+  val BaselineFullForkingFaultyInitSafety =
+    Safety and
+    TestStreamMatchesFixedSigma and
+    FullFaultyInitDomainWellFormed
+
+  run baselineFullForkingFaultyInitCoversEvidenceTest = {
+    InitWithFaultyEvidence.then(all {
+      assert(TestHeadMinusSigma(0) == "a1"),
+      assert(TestHeadMinusSigma(1) == "b1"),
+      assert(FullFaultyInitUsesWholeForkingDomain),
+      assert(EvidenceCoversObservedMessages),
+      assert(BaselineFullForkingFaultyInitSafety),
+      unchangedAll,
+    })
+  }
+
+  run baselineFullForkingFaultyInitAllowsCorrectProposalTest = {
+    InitWithFaultyEvidence
+      .then(InsertProposal("p1"))
+      .then(all {
+        assert(HasProposal(0, "a1")),
+        assert(EvidenceCoversObservedMessages),
+        assert(BaselineFullForkingFaultyInitSafety),
+        unchangedAll,
+      })
+  }
+}
+
 module CrosslinkBaselineCounterexampleModel {
   /*
    False-invariant harnesses. These are intentionally bad claims that should
