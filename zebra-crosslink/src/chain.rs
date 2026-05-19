@@ -7,7 +7,10 @@
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use serde::{Deserialize, Serialize};
-use std::fmt::Debug;
+use std::{
+    fmt::Debug,
+    io::{Read, Write},
+};
 use thiserror::Error;
 use tracing::error;
 use zebra_chain::block::Header as BcBlockHeader;
@@ -76,6 +79,76 @@ pub struct BftBlock {
     /// The PoW Headers
     // @Zooko: PoPoW?
     pub headers: Vec<BcBlockHeader>,
+}
+
+/// Magic prefix for serialized dynamic-sigma BFT block payloads.
+pub const DYNAMIC_SIGMA_BFT_BLOCK_PAYLOAD_MAGIC: [u8; 8] = *b"CLDSIG01";
+
+/// A dynamic-sigma BFT payload carrying proposal evidence and the BFT block.
+///
+/// This is a transport envelope for the dynamic-sigma variant. It is distinct
+/// from the fixed-sigma [BftBlock] serialization so a dynamic-sigma payload
+/// cannot be accidentally parsed as a fixed-sigma block value.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DynamicSigmaBftBlockPayload {
+    /// Proposal-carried evidence used to validate the selected sigma.
+    pub evidence: DynamicSigmaProposalEvidence,
+    /// The BFT block constructed using the evidence-selected sigma.
+    pub block: BftBlock,
+}
+
+impl DynamicSigmaBftBlockPayload {
+    /// Attempt to construct a dynamic-sigma payload from proposal-carried
+    /// evidence and BFT block fields.
+    pub fn try_from_with_evidence(
+        dynamic_sigma_params: DynamicSigmaParameters,
+        dynamic_sigma_evidence: DynamicSigmaProposalEvidence,
+        height: u32,
+        previous_block_fat_ptr: FatPointerToBftBlock2,
+        finalization_candidate_height: u32,
+        headers: Vec<BcBlockHeader>,
+    ) -> Result<Self, InvalidDynamicSigmaBftBlock> {
+        let block = BftBlock::try_from_with_dynamic_sigma_evidence(
+            dynamic_sigma_params,
+            dynamic_sigma_evidence,
+            height,
+            previous_block_fat_ptr,
+            finalization_candidate_height,
+            headers,
+        )?;
+
+        Ok(Self {
+            evidence: dynamic_sigma_evidence,
+            block,
+        })
+    }
+}
+
+impl ZcashSerialize for DynamicSigmaBftBlockPayload {
+    fn zcash_serialize<W: Write>(&self, mut writer: W) -> Result<(), std::io::Error> {
+        writer.write_all(&DYNAMIC_SIGMA_BFT_BLOCK_PAYLOAD_MAGIC)?;
+        self.evidence.zcash_serialize(&mut writer)?;
+        self.block.zcash_serialize(&mut writer)?;
+
+        Ok(())
+    }
+}
+
+impl ZcashDeserialize for DynamicSigmaBftBlockPayload {
+    fn zcash_deserialize<R: Read>(mut reader: R) -> Result<Self, SerializationError> {
+        let mut magic = [0u8; DYNAMIC_SIGMA_BFT_BLOCK_PAYLOAD_MAGIC.len()];
+        reader.read_exact(&mut magic)?;
+        if magic != DYNAMIC_SIGMA_BFT_BLOCK_PAYLOAD_MAGIC {
+            return Err(SerializationError::Parse(
+                "invalid dynamic sigma BFT payload magic",
+            ));
+        }
+
+        Ok(Self {
+            evidence: DynamicSigmaProposalEvidence::zcash_deserialize(&mut reader)?,
+            block: BftBlock::zcash_deserialize(&mut reader)?,
+        })
+    }
 }
 
 impl ZcashSerialize for BftBlock {
@@ -548,6 +621,71 @@ mod tests {
                 expected: 6,
                 actual: 3,
             })
+        ));
+    }
+
+    #[test]
+    fn dynamic_sigma_bft_block_payload_constructs_and_serializes() {
+        let headers = vec![
+            test_header(BlockHash([0; 32])),
+            test_header(BlockHash([1; 32])),
+            test_header(BlockHash([2; 32])),
+        ];
+        let evidence = dynamic_sigma_evidence(63, 3);
+
+        let payload = DynamicSigmaBftBlockPayload::try_from_with_evidence(
+            dynamic_sigma_params(),
+            evidence,
+            1,
+            FatPointerToBftBlock2::null(),
+            10,
+            headers,
+        )
+        .expect("valid dynamic-sigma evidence should build a payload");
+
+        let encoded = payload
+            .zcash_serialize_to_vec()
+            .expect("payload serialization should succeed");
+        let decoded = DynamicSigmaBftBlockPayload::zcash_deserialize(encoded.as_slice())
+            .expect("payload deserialization should succeed");
+
+        assert!(encoded.starts_with(&DYNAMIC_SIGMA_BFT_BLOCK_PAYLOAD_MAGIC));
+        assert_eq!(
+            decoded
+                .zcash_serialize_to_vec()
+                .expect("decoded payload serialization should succeed"),
+            encoded,
+        );
+        assert_eq!(decoded.evidence, evidence);
+        assert_eq!(decoded.block.headers.len(), 3);
+    }
+
+    #[test]
+    fn dynamic_sigma_bft_block_payload_rejects_wrong_magic() {
+        let headers = vec![
+            test_header(BlockHash([0; 32])),
+            test_header(BlockHash([1; 32])),
+            test_header(BlockHash([2; 32])),
+        ];
+        let payload = DynamicSigmaBftBlockPayload::try_from_with_evidence(
+            dynamic_sigma_params(),
+            dynamic_sigma_evidence(63, 3),
+            1,
+            FatPointerToBftBlock2::null(),
+            10,
+            headers,
+        )
+        .expect("valid dynamic-sigma evidence should build a payload");
+        let mut encoded = payload
+            .zcash_serialize_to_vec()
+            .expect("payload serialization should succeed");
+        encoded[0] ^= 0xff;
+
+        assert!(matches!(
+            DynamicSigmaBftBlockPayload::zcash_deserialize(encoded.as_slice()),
+            Err(SerializationError::Parse(
+                "invalid dynamic sigma BFT payload magic"
+            ))
         ));
     }
 }

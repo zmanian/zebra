@@ -119,9 +119,11 @@ sigma values below the required floor, and can be composed with `BftBlock`
 construction so the selected sigma controls header depth. A production
 deployment still needs precise validity rules for the source of each raw
 measurement and live proposal plumbing for carrying or committing the evidence.
-The proposal evidence structs now have deterministic Zcash serialization, so the
-remaining wire-format decision is where that serialized evidence sits relative
-to the Malachite value/proposal encoding.
+The proposal evidence structs now have deterministic Zcash serialization, and
+`DynamicSigmaBftBlockPayload` defines a tagged payload envelope containing the
+evidence followed by the BFT block. The remaining live-wiring step is adopting
+that envelope in the Tenderlink proposal, validation, and decided-block
+callbacks.
 
 ## Failure Modes
 
@@ -159,7 +161,8 @@ A production implementation of the dynamic-sigma variant should provide:
 - tests showing that dynamic sigma changes do not make honest validators reject
   each other's otherwise valid proposals; the pure Rust proposal-evidence
   verifier and BFT block-construction helper cover identical evidence
-  determinism, evidence serialization, below-floor rejection, and selected-sigma
-  header depth, but live consensus proposal integration still needs tests
+  determinism, evidence serialization, tagged payload encoding, below-floor
+  rejection, and selected-sigma header depth, but live consensus proposal
+  integration still needs tests
 - Quint coverage connecting the implemented telemetry rules back to
   `CrosslinkDynamicSigmaTelemetry.qnt`
