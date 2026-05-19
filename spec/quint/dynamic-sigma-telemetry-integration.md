@@ -239,6 +239,11 @@ derives rollback depth, and returns the same `DynamicSigmaTelemetryComponents`
 used by proposal evidence selection. Its `_with_verifier` variant threads the
 same custom fat-pointer verifier through the whole header window, so rejected
 markers still contribute to total work but not to Crosslink-participating work.
+`telemetry_components_from_header_observation_window_with_hash_work_policy`
+then composes that header-derived numerator/denominator pair with
+`DynamicSigmaHashWorkObservationWindowPolicy`, allowing a production source to
+require enough recent headers and enough total observed work before the
+participation percentage can influence sigma.
 `DynamicSigmaTimedHeaderObservationWindow` removes one more manual source input:
 callers provide the expected target block spacing, and
 `measured_block_interval_variance_pct_from_headers` computes a conservative

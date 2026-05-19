@@ -127,6 +127,10 @@ enough total observed work before deriving the numerator/denominator pair.
 directly alongside Tenderlink round counters, best-tip transitions, variance
 telemetry, rollback-risk estimates, and economic exposure inputs, then builds
 the same telemetry components as the lower-level hash-work observation path.
+`telemetry_components_from_header_observation_window_with_hash_work_policy`
+applies the same recent-window and minimum-work guardrail to header-derived
+participation, so production callers do not have to bypass the policy when the
+source signal is PoW headers.
 `DynamicSigmaTimedHeaderObservationWindow` derives the variance input from the
 same header window by comparing adjacent header timestamps against an expected
 target spacing, rejecting too-short or non-increasing windows and capping the
