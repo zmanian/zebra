@@ -161,6 +161,9 @@ pub fn spawn_new_tfl_service(
         validators_at_current_height,
         validators_keys_to_names,
         current_bc_final: None,
+        prototype_dynamic_sigma_hysteresis_state: crate::prototype_dynamic_sigma_hysteresis_state(
+            crate::PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS,
+        ),
     }));
 
     let handle_mtx = Arc::new(std::sync::Mutex::new(None));

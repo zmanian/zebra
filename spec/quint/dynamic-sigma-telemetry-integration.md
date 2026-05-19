@@ -256,11 +256,13 @@ configured number of stable lower-risk windows. The prototype evidence builder
 can now apply that helper from an explicit hysteresis state before carrying
 `selected_sigma` in proposal evidence. Proposal validation remains floor-based:
 validators reject selected sigma below the telemetry-required floor, while a
-hysteresis-selected sigma above that floor remains valid. Production still needs
-a durable, consensus-safe or proposal-verifiable source for the hysteresis state
-before this becomes a deployed controller rule. The prototype proposal callback
-now uses one proposal plan for both candidate-depth selection and payload
-encoding, which is the shape needed before that state can be made persistent.
+hysteresis-selected sigma above that floor remains valid. The prototype service
+now stores in-process hysteresis state and advances it after a dynamic proposal
+payload is successfully encoded. Production still needs a durable,
+consensus-safe or proposal-verifiable source for the hysteresis state before
+this becomes a deployed controller rule. The prototype proposal callback uses
+one proposal plan for both candidate-depth selection and payload encoding, which
+is the shape needed before that state is promoted beyond the prototype.
 
 `CrosslinkDynamicSigmaHysteresis.qnt` mirrors that policy with bounded witnesses:
 participation-driven or reorg-driven sigma increases apply immediately, while

@@ -513,11 +513,13 @@ also composed into the prototype dynamic-sigma proposal-evidence builder with an
 explicit initial hysteresis state. Proposal validation still only requires that
 the carried `selected_sigma` is at least the telemetry-required floor, so a
 hysteresis-selected value above the floor remains valid without validators
-reconstructing private proposer state. Production still needs a durable,
-consensus-safe source for the hysteresis state before this becomes a deployed
-controller rule. The live proposal callback now builds a single proposal plan,
-so the same dynamic-sigma evidence supplies both the BFT block construction
-depth and the encoded payload instead of running selection twice.
+reconstructing private proposer state. The prototype service now owns an
+in-process hysteresis state and advances it after successfully encoding a
+dynamic proposal. Production still needs a durable, consensus-safe or
+proposal-verifiable source for that state before this becomes a deployed
+controller rule. The live proposal callback builds a single proposal plan, so
+the same dynamic-sigma evidence supplies both the BFT block construction depth
+and the encoded payload instead of running selection twice.
 
 Witness dynamic-sigma hysteresis:
 
@@ -1140,8 +1142,9 @@ This model is intentionally narrow. The next useful extensions are:
   sigma decreases for short-window stability, and the prototype evidence builder
   now applies an explicit hysteresis state before carrying `selected_sigma`. The
   proposal callback reuses that planned evidence for both depth selection and
-  payload encoding. The remaining work is replacing the fixture with
-  consensus-safe or proposal-verifiable input producers and a durable hysteresis
-  state source
+  payload encoding, then advances the prototype service's in-process hysteresis
+  state after successful encoding. The remaining work is replacing the fixture
+  with consensus-safe or proposal-verifiable input producers and a durable
+  production hysteresis state source
 - refine the split projection checks into smaller inductive lemmas if bounds
   beyond the checked depth-10 projections still need very large JVM/Z3 heaps

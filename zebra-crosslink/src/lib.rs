@@ -195,6 +195,11 @@ pub(crate) struct TFLServiceInternal {
     validators_at_current_height: Vec<MalValidator>,
 
     current_bc_final: Option<(BlockHeight, BlockHash)>,
+
+    // Prototype-only dynamic-sigma state. Production must replace this with a
+    // consensus-safe or proposal-verifiable state source before enabling the
+    // dynamic variant by default.
+    prototype_dynamic_sigma_hysteresis_state: DynamicSigmaHysteresisState,
 }
 
 // TODO: Result?
@@ -510,7 +515,21 @@ async fn propose_new_bft_block_with_confirmation_depth(
 async fn propose_new_tenderlink_payload(
     tfl_handle: &TFLServiceHandle,
 ) -> Option<tenderlink::BlockValue> {
-    let proposal_plan = match tenderlink_proposal_plan(&tfl_handle.config) {
+    let prototype_hysteresis_state = if tfl_handle.config.dynamic_sigma_prototype {
+        Some(
+            tfl_handle
+                .internal
+                .lock()
+                .await
+                .prototype_dynamic_sigma_hysteresis_state,
+        )
+    } else {
+        None
+    };
+    let proposal_plan = match tenderlink_proposal_plan_from_hysteresis_state(
+        &tfl_handle.config,
+        prototype_hysteresis_state,
+    ) {
         Ok(proposal_plan) => proposal_plan,
         Err(err) => {
             warn!("Unable to select Tenderlink proposal depth: {:?}", err);
@@ -521,13 +540,31 @@ async fn propose_new_tenderlink_payload(
     let block =
         propose_new_bft_block_with_confirmation_depth(tfl_handle, confirmation_depth).await?;
 
-    match encode_proposed_tenderlink_payload_with_plan(&tfl_handle.config, block, proposal_plan) {
-        Ok(bytes) => Some(tenderlink::BlockValue(bytes)),
+    match encode_proposed_tenderlink_payload_with_plan(&tfl_handle.config, block, &proposal_plan) {
+        Ok(bytes) => {
+            store_prototype_dynamic_sigma_hysteresis_state(tfl_handle, &proposal_plan).await;
+            Some(tenderlink::BlockValue(bytes))
+        }
         Err(err) => {
             warn!("Unable to encode Tenderlink proposal payload: {:?}", err);
             None
         }
     }
+}
+
+async fn store_prototype_dynamic_sigma_hysteresis_state(
+    tfl_handle: &TFLServiceHandle,
+    proposal_plan: &TenderlinkProposalPlan,
+) {
+    let Some(next_hysteresis_state) = proposal_plan.next_dynamic_hysteresis_state() else {
+        return;
+    };
+
+    tfl_handle
+        .internal
+        .lock()
+        .await
+        .prototype_dynamic_sigma_hysteresis_state = next_hysteresis_state;
 }
 
 async fn malachite_wants_to_know_what_the_current_validator_set_is(
@@ -603,6 +640,7 @@ enum TenderlinkProposalPlan {
     },
     DynamicSigma {
         evidence: DynamicSigmaProposalEvidence,
+        next_hysteresis_state: DynamicSigmaHysteresisState,
     },
 }
 
@@ -610,7 +648,17 @@ impl TenderlinkProposalPlan {
     fn confirmation_depth(&self) -> u64 {
         match self {
             Self::FixedSigma { confirmation_depth } => *confirmation_depth,
-            Self::DynamicSigma { evidence } => evidence.selected_sigma,
+            Self::DynamicSigma { evidence, .. } => evidence.selected_sigma,
+        }
+    }
+
+    fn next_dynamic_hysteresis_state(&self) -> Option<DynamicSigmaHysteresisState> {
+        match self {
+            Self::FixedSigma { .. } => None,
+            Self::DynamicSigma {
+                next_hysteresis_state,
+                ..
+            } => Some(*next_hysteresis_state),
         }
     }
 }
@@ -772,26 +820,35 @@ fn prototype_dynamic_sigma_hysteresis_state(
 fn prototype_dynamic_sigma_proposal_evidence(
     params: dynamic_sigma::DynamicSigmaParameters,
 ) -> Result<DynamicSigmaProposalEvidence, TenderlinkPayloadEncodeError> {
+    prototype_dynamic_sigma_proposal_evidence_from_hysteresis_state(
+        params,
+        prototype_dynamic_sigma_hysteresis_state(params),
+    )
+    .map(|(evidence, _)| evidence)
+}
+
+fn prototype_dynamic_sigma_proposal_evidence_from_hysteresis_state(
+    params: dynamic_sigma::DynamicSigmaParameters,
+    hysteresis_state: DynamicSigmaHysteresisState,
+) -> Result<(DynamicSigmaProposalEvidence, DynamicSigmaHysteresisState), TenderlinkPayloadEncodeError>
+{
     let (evidence, _next_hysteresis_state) =
         dynamic_sigma_proposal_evidence_from_telemetry_components_with_hysteresis(
             params,
             prototype_dynamic_sigma_telemetry_components()?,
             prototype_dynamic_sigma_telemetry_margins(),
             prototype_dynamic_sigma_hysteresis_policy(),
-            prototype_dynamic_sigma_hysteresis_state(params),
+            hysteresis_state,
         )?;
 
-    Ok(evidence)
+    Ok((evidence, _next_hysteresis_state))
 }
 
 fn prototype_dynamic_sigma_next_hysteresis_state(
     params: dynamic_sigma::DynamicSigmaParameters,
 ) -> Result<DynamicSigmaHysteresisState, TenderlinkPayloadEncodeError> {
-    dynamic_sigma_proposal_evidence_from_telemetry_components_with_hysteresis(
+    prototype_dynamic_sigma_proposal_evidence_from_hysteresis_state(
         params,
-        prototype_dynamic_sigma_telemetry_components()?,
-        prototype_dynamic_sigma_telemetry_margins(),
-        prototype_dynamic_sigma_hysteresis_policy(),
         prototype_dynamic_sigma_hysteresis_state(params),
     )
     .map(|(_, state)| state)
@@ -806,14 +863,29 @@ fn proposal_confirmation_depth(
 fn tenderlink_proposal_plan(
     config: &config::Config,
 ) -> Result<TenderlinkProposalPlan, TenderlinkPayloadEncodeError> {
+    tenderlink_proposal_plan_from_hysteresis_state(config, None)
+}
+
+fn tenderlink_proposal_plan_from_hysteresis_state(
+    config: &config::Config,
+    hysteresis_state: Option<DynamicSigmaHysteresisState>,
+) -> Result<TenderlinkProposalPlan, TenderlinkPayloadEncodeError> {
     let Some(params) = dynamic_sigma_params_from_config(config) else {
         return Ok(TenderlinkProposalPlan::FixedSigma {
             confirmation_depth: PROTOTYPE_PARAMETERS.bc_confirmation_depth_sigma,
         });
     };
 
-    prototype_dynamic_sigma_proposal_evidence(params)
-        .map(|evidence| TenderlinkProposalPlan::DynamicSigma { evidence })
+    let (evidence, next_hysteresis_state) =
+        prototype_dynamic_sigma_proposal_evidence_from_hysteresis_state(
+            params,
+            hysteresis_state.unwrap_or_else(|| prototype_dynamic_sigma_hysteresis_state(params)),
+        )?;
+
+    Ok(TenderlinkProposalPlan::DynamicSigma {
+        evidence,
+        next_hysteresis_state,
+    })
 }
 
 fn encode_proposed_tenderlink_payload(
@@ -821,25 +893,25 @@ fn encode_proposed_tenderlink_payload(
     block: BftBlock,
 ) -> Result<Vec<u8>, TenderlinkPayloadEncodeError> {
     let proposal_plan = tenderlink_proposal_plan(config)?;
-    encode_proposed_tenderlink_payload_with_plan(config, block, proposal_plan)
+    encode_proposed_tenderlink_payload_with_plan(config, block, &proposal_plan)
 }
 
 fn encode_proposed_tenderlink_payload_with_plan(
     config: &config::Config,
     block: BftBlock,
-    proposal_plan: TenderlinkProposalPlan,
+    proposal_plan: &TenderlinkProposalPlan,
 ) -> Result<Vec<u8>, TenderlinkPayloadEncodeError> {
     match proposal_plan {
         TenderlinkProposalPlan::FixedSigma { .. } => block
             .zcash_serialize_to_vec()
             .map_err(|_| TenderlinkPayloadEncodeError::Serialization),
-        TenderlinkProposalPlan::DynamicSigma { evidence } => {
+        TenderlinkProposalPlan::DynamicSigma { evidence, .. } => {
             let Some(params) = dynamic_sigma_params_from_config(config) else {
                 return Err(TenderlinkPayloadEncodeError::DynamicSigmaInvalid);
             };
             let payload = DynamicSigmaBftBlockPayload::try_from_with_evidence(
                 params,
-                evidence,
+                *evidence,
                 block.height,
                 block.previous_block_fat_ptr,
                 block.finalization_candidate_height,
@@ -2942,10 +3014,17 @@ mod tests {
             tenderlink_proposal_plan(&config).expect("dynamic proposal plan should be available");
 
         match proposal_plan {
-            TenderlinkProposalPlan::DynamicSigma { evidence } => {
+            TenderlinkProposalPlan::DynamicSigma {
+                evidence,
+                next_hysteresis_state,
+            } => {
                 assert_eq!(
                     evidence.selected_sigma,
                     PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS.base_sigma,
+                );
+                assert_eq!(
+                    next_hysteresis_state,
+                    prototype_dynamic_sigma_hysteresis_state(PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS),
                 );
                 assert_eq!(
                     crate::dynamic_sigma::validate_dynamic_sigma_evidence(
@@ -2955,6 +3034,43 @@ mod tests {
                     .expect("proposal plan evidence should validate")
                     .sigma,
                     PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS.base_sigma,
+                );
+            }
+            TenderlinkProposalPlan::FixedSigma { .. } => {
+                panic!("dynamic prototype config should build a dynamic proposal plan")
+            }
+        }
+    }
+
+    #[test]
+    fn tenderlink_proposal_plan_uses_supplied_hysteresis_state() {
+        let mut config = config::Config::default();
+        config.dynamic_sigma_prototype = true;
+
+        let proposal_plan = tenderlink_proposal_plan_from_hysteresis_state(
+            &config,
+            Some(DynamicSigmaHysteresisState {
+                current_sigma: PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS.max_sigma,
+                stable_windows_below_current: 0,
+            }),
+        )
+        .expect("dynamic proposal plan should apply supplied hysteresis state");
+
+        match proposal_plan {
+            TenderlinkProposalPlan::DynamicSigma {
+                evidence,
+                next_hysteresis_state,
+            } => {
+                assert_eq!(
+                    evidence.selected_sigma,
+                    PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS.max_sigma,
+                );
+                assert_eq!(
+                    next_hysteresis_state,
+                    DynamicSigmaHysteresisState {
+                        current_sigma: PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS.max_sigma,
+                        stable_windows_below_current: 1,
+                    },
                 );
             }
             TenderlinkProposalPlan::FixedSigma { .. } => {
