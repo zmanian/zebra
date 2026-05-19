@@ -21,7 +21,11 @@ clears state whose round is exactly the abandoned round; it does not erase
 earlier safety-carrying locks. It also keeps the Tendermint quorum-intersection
 argument explicit: retained locks must be backed by value precommit evidence,
 and a nil certificate can coexist with at most `f` correct same-round value
-locks, not with a commit-capable value-lock quorum.
+locks, not with a commit-capable value-lock quorum. The model also ports the
+upstream Tendermint accountability shape over the Crosslink evidence surface:
+proposal, prevote, and precommit evidence feed equivocation and amnesia
+predicates, while a nil-precommit certificate for the abandoned round is treated
+as valid unlock evidence rather than amnesia.
 
 `CrosslinkForkFinality.qnt` is a separate value-semantics model. It abstracts
 PoW snapshots as a finite fork tree, then checks that Crosslink finality can skip
@@ -217,13 +221,14 @@ re-propose the current round.
 
 The final four tests are the accountability witnesses. They check that:
 
-- two conflicting value commits across rounds expose an invalid unlock
-  transition by at least one correct validator
+- two conflicting value commits across rounds expose Tendermint-style amnesia
+  evidence when there is no nil-precommit unlock certificate for the older lock
 - a bogus nil certificate that coexists with a same-round value commit exposes
-  correct-validator nil/value equivocation
+  nil/value equivocation evidence
 - a valid same-round nil certificate justifies switching away from a minority
-  same-round value lock
-- a later nil certificate does not justify abandoning an older value lock
+  same-round value lock without falsely reporting amnesia
+- a later nil certificate does not justify abandoning an older value lock and
+  still leaves amnesia evidence for the invalid switch
 
 One limitation is intentional: a mixed precommit set with some value precommits
 and some nil precommits is not treated as unlock evidence unless nil itself has
@@ -753,16 +758,25 @@ $QUINT verify spec/quint/CrosslinkDynamicSigmaResampling.qnt \
 
 $QUINT verify spec/quint/CrosslinkDynamicSigmaFinality.qnt \
   --main=CrosslinkDynamicSigmaFinalityModel \
-  --max-steps=8 \
+  --max-steps=3 \
   --init=FullComposedInit \
   --step=FullComposedNext \
   --invariant=FullComposedSafety
 ```
 
+The full dynamic-sigma finality composition is substantially heavier under
+Apalache once the resampling model includes accountability evidence. The checked
+symbolic bound above is intentionally shallower; use the Rust backend runs for
+deeper randomized coverage, or raise `JVM_ARGS` when experimenting with deeper
+Apalache bounds.
+
 The bounded resampling checks currently report no violation for `Safety`, which
 combines:
 
+- validity of correct-validator decisions
 - agreement on decided values
+- upstream-style accountability: if agreement fails, at least `f + 1`
+  validators are detectable by equivocation or amnesia evidence
 - no correct-validator precommit equivocation
 - no same-round quorum for both nil and a concrete value
 - any retained Tendermint lock keeps its matching valid value across
@@ -881,6 +895,6 @@ This model is intentionally narrow. The next useful extensions are:
 
 - replace the bounded dynamic-sigma calibration fixture with production
   telemetry and an explicit economic target for acceptable rollback risk
-- port the full upstream Tendermint accountability evidence model into the
-  composed model; the current resampling model only adds the conflict/evidence
-  witnesses needed for nil-precommit unlocks
+- make accountability evidence explicitly transition-carried, matching the
+  upstream Tendermint evidence variables exactly, instead of deriving global
+  evidence from the bounded model's observed message sets

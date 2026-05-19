@@ -7,8 +7,8 @@ module CrosslinkResampling {
      What changes when a 2f+1 PRECOMMIT nil certificate lets the next
      round resample Crosslink's moving PoW stream?
 
-   This is not yet a full Tendermint accountability model. It intentionally
-   isolates the Crosslink-specific moving-value part:
+   This is a Crosslink-focused Tenderlink model. It intentionally isolates the
+   Crosslink-specific moving-value part:
 
    - BFT values are PoW snapshots sampled from Stream(round), modelling the
      implementation's current "head - sigma" proposal.
@@ -44,6 +44,8 @@ module CrosslinkResampling {
   pure val Rounds = 0.to(MaxRound)
   pure val NilRound = -1
   pure val NilSnapshot = "None"
+  pure val AllProcs = Corr.union(Faulty)
+  pure val THRESHOLD1 = T + 1
   pure val THRESHOLD2 = 2 * T + 1
 
   assume corr_and_faulty_disjoint = Corr.intersect(Faulty) == Set()
@@ -119,6 +121,15 @@ module CrosslinkResampling {
     msgsPropose.get(r).exists(m =>
       m.src == Proposer.get(r) and m.round == r and m.proposal == v
     )
+
+  val EvidencePropose: Set[Propose_t] =
+    Rounds.map(r => msgsPropose.get(r)).flatten()
+
+  val EvidencePrevote: Set[Vote_t] =
+    Rounds.map(r => msgsPrevote.get(r)).flatten()
+
+  val EvidencePrecommit: Set[Vote_t] =
+    Rounds.map(r => msgsPrecommit.get(r)).flatten()
 
   def StickyOrStreamProposal(p: Proc_t): Snapshot_t =
     if (validValue.get(p) == NilSnapshot) {
@@ -602,6 +613,11 @@ module CrosslinkResampling {
       decision.get(p) == decision.get(q)
     )
 
+  val Validity =
+    Corr.forall(p =>
+      decision.get(p) == NilSnapshot or IsValidSnapshot(decision.get(p))
+    )
+
   val NoCorrectPrecommitEquivocation =
     Corr.forall(p =>
       Rounds.forall(r =>
@@ -685,6 +701,64 @@ module CrosslinkResampling {
     HasValuePrecommitFrom(p, toRound, toValue) and
     not(NilPrecommitCert(fromRound))
 
+  def ProposalEquivocationIn(p: Proc_t, messages: Set[Propose_t]): bool =
+    tuples(messages, messages).exists(((m1, m2)) =>
+      m1 != m2 and
+      m1.src == p and
+      m2.src == p and
+      m1.round == m2.round
+    )
+
+  def VoteEquivocationIn(p: Proc_t, messages: Set[Vote_t]): bool =
+    tuples(messages, messages).exists(((m1, m2)) =>
+      m1 != m2 and
+      m1.src == p and
+      m2.src == p and
+      m1.round == m2.round
+    )
+
+  def EquivocationBy(p: Proc_t): bool =
+    ProposalEquivocationIn(p, EvidencePropose) or
+    VoteEquivocationIn(p, EvidencePrevote) or
+    VoteEquivocationIn(p, EvidencePrecommit)
+
+  def ValueVoteEvidenceFrom(p: Proc_t, r: Round_t, v: Snapshot_t): bool =
+    EvidencePrevote.contains({ src: p, round: r, id: v }) or
+    EvidencePrecommit.contains({ src: p, round: r, id: v })
+
+  def PriorValueLockEvidenceFrom(p: Proc_t, r: Round_t, v: Snapshot_t): bool =
+    EvidencePrecommit.contains({ src: p, round: r, id: v })
+
+  def EarlierRoundsHaveNoUnlockFor(r1: Round_t, r2: Round_t, v: Snapshot_t): bool =
+    Rounds
+      .filter(r => r1 <= r and r < r2)
+      .forall(r =>
+        size(Voters(EvidencePrevote.filter(m => m.round == r and m.id == v))) < THRESHOLD2
+      )
+
+  def AmnesiaBy(p: Proc_t): bool =
+    tuples(Rounds, Rounds).exists(((r1, r2)) =>
+      r1 < r2 and
+      Snapshots.exists(v1 =>
+        Snapshots.exists(v2 =>
+          v1 != v2 and
+          PriorValueLockEvidenceFrom(p, r1, v1) and
+          ValueVoteEvidenceFrom(p, r2, v2) and
+          EarlierRoundsHaveNoUnlockFor(r1, r2, v2) and
+          not(NilPrecommitCert(r1))
+        )
+      )
+    )
+
+  def DetectableFaultBy(p: Proc_t): bool =
+    EquivocationBy(p) or AmnesiaBy(p)
+
+  val DetectableFaults: Set[Proc_t] =
+    AllProcs.filter(p => DetectableFaultBy(p))
+
+  val Accountability =
+    Agreement or size(DetectableFaults) >= THRESHOLD1
+
   def ConflictHasAccountabilityEvidence(
     r1: Round_t,
     v1: Snapshot_t,
@@ -715,7 +789,9 @@ module CrosslinkResampling {
     )
 
   val Safety =
+    Validity and
     Agreement and
+    Accountability and
     NoCorrectPrecommitEquivocation and
     SameRoundNilAndValueCommitExcluded and
     LockedValueHasMatchingValidValue and
@@ -926,6 +1002,10 @@ module CrosslinkNilResamplingModel {
       .then(all {
         assert(PrecommitQuorum(0, "s0")),
         assert(PrecommitQuorum(1, "s1")),
+        assert(AmnesiaBy("p2")),
+        assert(AmnesiaBy("p4")),
+        assert(size(DetectableFaults) >= THRESHOLD1),
+        assert(Accountability),
         assert(ConflictHasAccountabilityEvidence(0, "s0", 1, "s1")),
         assert(ConflictingCommitsAccountable),
         unchangedAll,
@@ -947,6 +1027,10 @@ module CrosslinkNilResamplingModel {
         assert(NilPrecommitCert(0)),
         assert(PrecommitQuorum(0, "s0")),
         assert(PrecommitQuorum(1, "s1")),
+        assert(EquivocationBy("p2")),
+        assert(EquivocationBy("p4")),
+        assert(size(DetectableFaults) >= THRESHOLD1),
+        assert(Accountability),
         assert(CorrectNilValueEquivocationEvidence(0, "s0")),
         assert(ConflictHasAccountabilityEvidence(0, "s0", 1, "s1")),
         assert(ConflictingCommitsAccountable),
@@ -968,6 +1052,9 @@ module CrosslinkNilResamplingModel {
         assert(NilPrecommitCert(0)),
         assert(not(PrecommitQuorum(0, "s0"))),
         assert(not(CorrectValueSwitchWithoutUnlock("p3", 0, "s0", 1, "s1"))),
+        assert(not(AmnesiaBy("p3"))),
+        assert(not(EquivocationBy("p3"))),
+        assert(Accountability),
         assert(ConflictingCommitsAccountable),
         unchangedAll,
       })
@@ -986,6 +1073,10 @@ module CrosslinkNilResamplingModel {
         assert(NilPrecommitCert(1)),
         assert(PrecommitQuorum(2, "s2")),
         assert(CorrectValueSwitchWithoutUnlock("p2", 0, "s0", 2, "s2")),
+        assert(AmnesiaBy("p2")),
+        assert(AmnesiaBy("p3")),
+        assert(size(DetectableFaults) >= THRESHOLD1),
+        assert(Accountability),
         assert(ConflictHasAccountabilityEvidence(0, "s0", 2, "s2")),
         assert(ConflictingCommitsAccountable),
         unchangedAll,
