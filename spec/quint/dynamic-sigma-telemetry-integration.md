@@ -131,6 +131,12 @@ The controller rule should match the Quint model shape:
 - if participation is below the critical threshold, force max sigma and expose a
   critical status
 
+For diagnostics and proposal telemetry, the Rust controller exposes the
+observed participation share on `DynamicSigmaDecision` as a conservative
+lower-bound percentage. It is derived from the same exact work-threshold check
+used by the sigma floor, so fractional cases round down rather than implying a
+target threshold was met when the work comparison would reject it.
+
 ## Economic Exposure Policy
 
 The controller now makes the expected-loss boundary explicit:

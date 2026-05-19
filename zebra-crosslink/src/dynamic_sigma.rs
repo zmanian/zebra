@@ -576,6 +576,9 @@ impl DynamicSigmaEconomicExposurePolicy {
 pub struct DynamicSigmaDecision {
     /// Selected confirmation depth.
     pub sigma: u64,
+    /// Conservative lower-bound percentage of observed PoW work with verified
+    /// Crosslink participation.
+    pub hash_participation_pct: u8,
     /// Floor derived from hash-work participation.
     pub hash_participation_floor: u64,
     /// Floor derived from observed rollback depth.
@@ -1825,6 +1828,7 @@ pub fn select_dynamic_sigma(
     validate_params(params)?;
     validate_window(window)?;
 
+    let hash_participation_pct = conservative_hash_participation_pct(window);
     let (hash_participation_floor, hash_participation_status) =
         hash_participation_floor(params, window);
     let reorg_floor = reorg_floor(params, window.measured_observed_reorg_depth);
@@ -1844,6 +1848,7 @@ pub fn select_dynamic_sigma(
 
     Ok(DynamicSigmaDecision {
         sigma,
+        hash_participation_pct,
         hash_participation_floor,
         reorg_floor,
         risk_score_floor,
@@ -2014,6 +2019,13 @@ fn hash_participation_floor(
     } else {
         (params.base_sigma, HashParticipationStatus::Healthy)
     }
+}
+
+fn conservative_hash_participation_pct(window: DynamicSigmaTelemetryWindow) -> u8 {
+    (0..=100)
+        .rev()
+        .find(|pct| work_coverage_at_least(window, *pct))
+        .expect("zero percent participation is always covered")
 }
 
 fn work_coverage_at_least(window: DynamicSigmaTelemetryWindow, pct: u8) -> bool {
@@ -4381,6 +4393,7 @@ mod tests {
             100,
         ));
 
+        assert_eq!(decision.hash_participation_pct, 63);
         assert_eq!(decision.hash_participation_floor, 3);
         assert_eq!(decision.sigma, 3);
         assert_eq!(
@@ -4407,11 +4420,36 @@ mod tests {
             100,
         ));
 
+        assert_eq!(decision.hash_participation_pct, 45);
         assert_eq!(decision.hash_participation_floor, 6);
         assert_eq!(decision.sigma, 6);
         assert_eq!(
             decision.hash_participation_status,
             HashParticipationStatus::Critical
+        );
+    }
+
+    #[test]
+    fn hash_work_participation_pct_rounds_down_to_threshold_safe_value() {
+        let decision = decide(DynamicSigmaTelemetryWindow {
+            total_hash_work: 3,
+            crosslink_participating_hash_work: 2,
+            total_tenderlink_rounds: 1,
+            failed_tenderlink_rounds: 0,
+            estimated_coverage_risk_pct: 34,
+            estimated_round_failure_rate_pct: 0,
+            measured_block_interval_variance_pct: 0,
+            measured_observed_reorg_depth: 0,
+            rollback_risk: low_risk_curve(),
+            value_at_risk_units: 1000,
+            max_acceptable_expected_loss_units: 100,
+        });
+
+        assert_eq!(decision.hash_participation_pct, 66);
+        assert_eq!(decision.hash_participation_floor, params().raised_sigma);
+        assert_eq!(
+            decision.hash_participation_status,
+            HashParticipationStatus::Degraded
         );
     }
 

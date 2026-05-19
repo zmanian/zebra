@@ -113,7 +113,10 @@ numerator, so work without objective Crosslink participation evidence is counted
 conservatively as non-participating. The regression tests now include a skewed
 window where fewer high-work non-participating observations outweigh more
 participating observations, ensuring the sigma input is percentage of hash
-power rather than observation count. `hash_work_observation_from_header` and
+power rather than observation count. `DynamicSigmaDecision` also exposes the
+same work-threshold view as a conservative lower-bound participation
+percentage, rounded down so diagnostics cannot overstate threshold coverage.
+`hash_work_observation_from_header` and
 `hash_work_observations_from_headers` now derive that source signal from PoW
 headers by converting compact difficulty into work and treating the current
 non-null Crosslink fat pointer as the objective participation marker. This keeps
