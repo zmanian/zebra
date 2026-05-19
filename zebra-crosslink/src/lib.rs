@@ -42,8 +42,8 @@ use chain::*;
 
 pub mod dynamic_sigma;
 use crate::dynamic_sigma::{
-    DynamicSigmaProposalEvidence, DynamicSigmaRawTelemetry, RollbackRiskCurve,
-    TelemetryEstimateMargins,
+    select_dynamic_sigma, DynamicSigmaProposalEvidence, DynamicSigmaRawTelemetry,
+    RollbackRiskCurve, TelemetryEstimateMargins,
 };
 
 use std::sync::Mutex;
@@ -593,38 +593,70 @@ fn dynamic_sigma_params_from_config(
         .then_some(PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS)
 }
 
-// Prototype-only evidence fixture for exercising the tagged dynamic-sigma wire
-// path. Production must replace this with consensus-visible or proposal-
-// verifiable telemetry before enabling the dynamic variant by default.
-fn prototype_dynamic_sigma_proposal_evidence(selected_sigma: u64) -> DynamicSigmaProposalEvidence {
-    DynamicSigmaProposalEvidence {
-        raw_telemetry: DynamicSigmaRawTelemetry {
-            total_hash_work: 100,
-            crosslink_participating_hash_work: 90,
-            total_tenderlink_rounds: 10,
-            failed_tenderlink_rounds: 0,
-            measured_block_interval_variance_pct: 0,
-            measured_observed_reorg_depth: 0,
-            rollback_risk: RollbackRiskCurve {
-                base_sigma_ppm: 20,
-                raised_sigma_ppm: 10,
-                max_sigma_ppm: 2,
-            },
-            value_at_risk_units: 1_000,
-            max_acceptable_expected_loss_units: 1,
+fn dynamic_sigma_proposal_evidence_from_raw_telemetry(
+    params: dynamic_sigma::DynamicSigmaParameters,
+    raw_telemetry: DynamicSigmaRawTelemetry,
+    margins: TelemetryEstimateMargins,
+) -> Result<DynamicSigmaProposalEvidence, TenderlinkPayloadEncodeError> {
+    let window = raw_telemetry
+        .into_window(margins)
+        .map_err(|_| TenderlinkPayloadEncodeError::DynamicSigmaInvalid)?;
+    let decision = select_dynamic_sigma(params, window)
+        .map_err(|_| TenderlinkPayloadEncodeError::DynamicSigmaInvalid)?;
+
+    Ok(DynamicSigmaProposalEvidence {
+        raw_telemetry,
+        margins,
+        selected_sigma: decision.sigma,
+    })
+}
+
+fn prototype_dynamic_sigma_raw_telemetry() -> DynamicSigmaRawTelemetry {
+    DynamicSigmaRawTelemetry {
+        total_hash_work: 100,
+        crosslink_participating_hash_work: 90,
+        total_tenderlink_rounds: 10,
+        failed_tenderlink_rounds: 0,
+        measured_block_interval_variance_pct: 0,
+        measured_observed_reorg_depth: 0,
+        rollback_risk: RollbackRiskCurve {
+            base_sigma_ppm: 20,
+            raised_sigma_ppm: 10,
+            max_sigma_ppm: 2,
         },
-        margins: TelemetryEstimateMargins {
-            coverage_risk_margin_pct: 2,
-            round_failure_margin_pct: 0,
-        },
-        selected_sigma,
+        value_at_risk_units: 1_000,
+        max_acceptable_expected_loss_units: 1,
     }
 }
 
+fn prototype_dynamic_sigma_telemetry_margins() -> TelemetryEstimateMargins {
+    TelemetryEstimateMargins {
+        coverage_risk_margin_pct: 2,
+        round_failure_margin_pct: 0,
+    }
+}
+
+// Prototype-only evidence fixture for exercising the tagged dynamic-sigma wire
+// path. Production must replace this with consensus-visible or proposal-
+// verifiable telemetry before enabling the dynamic variant by default.
+fn prototype_dynamic_sigma_proposal_evidence(
+    params: dynamic_sigma::DynamicSigmaParameters,
+) -> Result<DynamicSigmaProposalEvidence, TenderlinkPayloadEncodeError> {
+    dynamic_sigma_proposal_evidence_from_raw_telemetry(
+        params,
+        prototype_dynamic_sigma_raw_telemetry(),
+        prototype_dynamic_sigma_telemetry_margins(),
+    )
+}
+
 fn proposal_confirmation_depth(config: &config::Config) -> u64 {
-    dynamic_sigma_params_from_config(config)
-        .map(|params| params.base_sigma)
-        .unwrap_or(PROTOTYPE_PARAMETERS.bc_confirmation_depth_sigma)
+    let Some(params) = dynamic_sigma_params_from_config(config) else {
+        return PROTOTYPE_PARAMETERS.bc_confirmation_depth_sigma;
+    };
+
+    prototype_dynamic_sigma_proposal_evidence(params)
+        .map(|evidence| evidence.selected_sigma)
+        .unwrap_or(params.base_sigma)
 }
 
 fn encode_proposed_tenderlink_payload(
@@ -637,7 +669,7 @@ fn encode_proposed_tenderlink_payload(
             .map_err(|_| TenderlinkPayloadEncodeError::Serialization);
     };
 
-    let evidence = prototype_dynamic_sigma_proposal_evidence(params.base_sigma);
+    let evidence = prototype_dynamic_sigma_proposal_evidence(params)?;
     let payload = DynamicSigmaBftBlockPayload::try_from_with_evidence(
         params,
         evidence,
@@ -2410,26 +2442,34 @@ mod tests {
         selected_sigma: u64,
     ) -> DynamicSigmaProposalEvidence {
         DynamicSigmaProposalEvidence {
-            raw_telemetry: DynamicSigmaRawTelemetry {
-                total_hash_work: 100,
-                crosslink_participating_hash_work: participating_hash_work,
-                total_tenderlink_rounds: 10,
-                failed_tenderlink_rounds: 0,
-                measured_block_interval_variance_pct: 0,
-                measured_observed_reorg_depth: 0,
-                rollback_risk: RollbackRiskCurve {
-                    base_sigma_ppm: 20,
-                    raised_sigma_ppm: 10,
-                    max_sigma_ppm: 2,
-                },
-                value_at_risk_units: 1_000,
-                max_acceptable_expected_loss_units: 1,
-            },
-            margins: TelemetryEstimateMargins {
-                coverage_risk_margin_pct: 2,
-                round_failure_margin_pct: 0,
-            },
+            raw_telemetry: dynamic_sigma_raw_telemetry(participating_hash_work),
+            margins: dynamic_sigma_telemetry_margins(),
             selected_sigma,
+        }
+    }
+
+    fn dynamic_sigma_raw_telemetry(participating_hash_work: u128) -> DynamicSigmaRawTelemetry {
+        DynamicSigmaRawTelemetry {
+            total_hash_work: 100,
+            crosslink_participating_hash_work: participating_hash_work,
+            total_tenderlink_rounds: 10,
+            failed_tenderlink_rounds: 0,
+            measured_block_interval_variance_pct: 0,
+            measured_observed_reorg_depth: 0,
+            rollback_risk: RollbackRiskCurve {
+                base_sigma_ppm: 20,
+                raised_sigma_ppm: 10,
+                max_sigma_ppm: 2,
+            },
+            value_at_risk_units: 1_000,
+            max_acceptable_expected_loss_units: 1,
+        }
+    }
+
+    fn dynamic_sigma_telemetry_margins() -> TelemetryEstimateMargins {
+        TelemetryEstimateMargins {
+            coverage_risk_margin_pct: 2,
+            round_failure_margin_pct: 0,
         }
     }
 
@@ -2672,6 +2712,36 @@ mod tests {
         assert_eq!(
             proposal_confirmation_depth(&config),
             PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS.base_sigma,
+        );
+    }
+
+    #[test]
+    fn dynamic_sigma_proposal_evidence_selects_degraded_sigma_from_hash_participation() {
+        let evidence = dynamic_sigma_proposal_evidence_from_raw_telemetry(
+            PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS,
+            dynamic_sigma_raw_telemetry(63),
+            dynamic_sigma_telemetry_margins(),
+        )
+        .expect("degraded hash participation should produce valid dynamic sigma evidence");
+
+        assert_eq!(
+            evidence.selected_sigma,
+            PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS.raised_sigma,
+        );
+    }
+
+    #[test]
+    fn dynamic_sigma_proposal_evidence_selects_max_sigma_from_critical_hash_participation() {
+        let evidence = dynamic_sigma_proposal_evidence_from_raw_telemetry(
+            PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS,
+            dynamic_sigma_raw_telemetry(45),
+            dynamic_sigma_telemetry_margins(),
+        )
+        .expect("critical hash participation should produce valid dynamic sigma evidence");
+
+        assert_eq!(
+            evidence.selected_sigma,
+            PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS.max_sigma,
         );
     }
 

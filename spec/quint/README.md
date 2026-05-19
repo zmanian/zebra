@@ -98,7 +98,10 @@ emits and accepts the legacy fixed-sigma `BftBlock`, while
 `dynamic_sigma_prototype` emits and validates the tagged dynamic-sigma envelope
 using shared prototype parameters and proposal-carried evidence. The decoded
 payload carries its selected confirmation depth into voting-time stale checks,
-so a prototype dynamic proposal is checked against `head - selected_sigma`.
+so a prototype dynamic proposal is checked against `head - selected_sigma`. The
+prototype proposer now runs the dynamic-sigma controller over its fixture
+telemetry before selecting that sigma; production telemetry sources are still
+the missing deployment step.
 
 `CrosslinkDynamicSigmaForkSchedule.qnt` composes the dynamic-sigma controller
 with the derived PoW fork schedule. In this model, dynamic sigma consumes
@@ -1027,6 +1030,8 @@ This model is intentionally narrow. The next useful extensions are:
 - wire the pure Rust dynamic-sigma controller, proposal-evidence verifier, and
   selected-sigma BFT block constructor to production telemetry sources and live
   proposal validation, including a consensus-safe Crosslink hash-participation
-  metric and a validated economic exposure model
+  metric and a validated economic exposure model. The live prototype proposal
+  path now runs the controller over fixture telemetry, so the remaining work is
+  replacing that fixture with consensus-safe or proposal-verifiable inputs
 - refine the split projection checks into smaller inductive lemmas if bounds
   beyond the checked depth-10 projections still need very large JVM/Z3 heaps

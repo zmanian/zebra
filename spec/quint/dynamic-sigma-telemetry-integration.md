@@ -31,10 +31,10 @@ parameter:
   visualizer, but it is not a production telemetry source.
 
 When `dynamic_sigma_prototype` is explicitly enabled, the proposer uses the
-prototype dynamic-sigma base depth and emits the tagged dynamic-sigma envelope
-with prototype evidence. This is only a live wire-path exercise. The evidence is
-a fixed fixture, not production telemetry, and must be replaced before the
-dynamic variant can be enabled by default.
+prototype dynamic-sigma controller output and emits the tagged dynamic-sigma
+envelope with prototype evidence. This is only a live wire-path exercise. The
+evidence source is a fixed fixture, not production telemetry, and must be
+replaced before the dynamic variant can be enabled by default.
 
 The branch now also includes `zebra-crosslink/src/dynamic_sigma.rs`, a pure
 Rust controller that derives conservative coverage and round-failure estimates
@@ -141,12 +141,15 @@ and accepted by the default prototype path. Tagged dynamic-sigma payloads are
 rejected by default, but a prototype-only config flag enables the proposer to
 emit the tagged envelope and enables validation callbacks to check the envelope
 against shared prototype dynamic-sigma parameters before accepting the carried
-BFT block. The decoded payload also carries its selected confirmation depth into
-the voting-time current-stream staleness check, so prototype dynamic proposals
-are compared against `head - selected_sigma` instead of the fixed-sigma sample.
-This preserves backward compatibility while preventing a dynamic-sigma payload
-from being silently treated as a fixed-sigma block, and it keeps the dynamic
-variant behind an explicit opt-in until production telemetry exists.
+BFT block. The proposer now derives `selected_sigma` by running the
+dynamic-sigma controller over the prototype telemetry fixture instead of
+hard-coding the base sigma. The decoded payload also carries its selected
+confirmation depth into the voting-time current-stream staleness check, so
+prototype dynamic proposals are compared against `head - selected_sigma` instead
+of the fixed-sigma sample. This preserves backward compatibility while
+preventing a dynamic-sigma payload from being silently treated as a fixed-sigma
+block, and it keeps the dynamic variant behind an explicit opt-in until
+production telemetry exists.
 
 In that prototype-gated path, hash participation already affects payload
 validity through the carried evidence: if the Crosslink-participating work share
@@ -196,7 +199,8 @@ A production implementation of the dynamic-sigma variant should provide:
   determinism, evidence serialization, tagged payload encoding, payload/block
   mismatch rejection, fixed-vs-dynamic payload routing, below-floor rejection,
   selected-sigma header depth, prototype-gated proposal emission, and
-  selected-sigma voting-time stale checks, but live dynamic proposal acceptance
-  still needs production telemetry-source tests
+  selected-sigma voting-time stale checks. The live proposer now runs the
+  controller over its prototype telemetry fixture before selecting sigma, but
+  production telemetry-source tests are still needed
 - Quint coverage connecting the implemented telemetry rules back to
   `CrosslinkDynamicSigmaTelemetry.qnt`
