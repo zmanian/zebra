@@ -4,6 +4,10 @@
 //! rules yet. It turns a production-shaped telemetry window into the same sigma
 //! floor described by the Quint dynamic-sigma telemetry contract.
 
+use std::io::{Read, Write};
+
+use zebra_chain::serialization::{SerializationError, ZcashDeserialize, ZcashSerialize};
+
 /// Parts-per-million denominator used by rollback risk estimates.
 pub const PPM_DENOMINATOR: u128 = 1_000_000;
 
@@ -198,6 +202,126 @@ pub enum DynamicSigmaEvidenceError {
         /// Minimum sigma required by the controller.
         required: u64,
     },
+}
+
+fn write_u64_le<W: Write>(writer: &mut W, value: u64) -> Result<(), std::io::Error> {
+    writer.write_all(&value.to_le_bytes())
+}
+
+fn read_u64_le<R: Read>(reader: &mut R) -> Result<u64, std::io::Error> {
+    let mut bytes = [0u8; 8];
+    reader.read_exact(&mut bytes)?;
+    Ok(u64::from_le_bytes(bytes))
+}
+
+fn write_u128_le<W: Write>(writer: &mut W, value: u128) -> Result<(), std::io::Error> {
+    writer.write_all(&value.to_le_bytes())
+}
+
+fn read_u128_le<R: Read>(reader: &mut R) -> Result<u128, std::io::Error> {
+    let mut bytes = [0u8; 16];
+    reader.read_exact(&mut bytes)?;
+    Ok(u128::from_le_bytes(bytes))
+}
+
+fn write_u8<W: Write>(writer: &mut W, value: u8) -> Result<(), std::io::Error> {
+    writer.write_all(&[value])
+}
+
+fn read_u8<R: Read>(reader: &mut R) -> Result<u8, std::io::Error> {
+    let mut bytes = [0u8; 1];
+    reader.read_exact(&mut bytes)?;
+    Ok(bytes[0])
+}
+
+impl ZcashSerialize for RollbackRiskCurve {
+    fn zcash_serialize<W: Write>(&self, mut writer: W) -> Result<(), std::io::Error> {
+        write_u64_le(&mut writer, self.base_sigma_ppm)?;
+        write_u64_le(&mut writer, self.raised_sigma_ppm)?;
+        write_u64_le(&mut writer, self.max_sigma_ppm)?;
+
+        Ok(())
+    }
+}
+
+impl ZcashDeserialize for RollbackRiskCurve {
+    fn zcash_deserialize<R: Read>(mut reader: R) -> Result<Self, SerializationError> {
+        Ok(Self {
+            base_sigma_ppm: read_u64_le(&mut reader)?,
+            raised_sigma_ppm: read_u64_le(&mut reader)?,
+            max_sigma_ppm: read_u64_le(&mut reader)?,
+        })
+    }
+}
+
+impl ZcashSerialize for TelemetryEstimateMargins {
+    fn zcash_serialize<W: Write>(&self, mut writer: W) -> Result<(), std::io::Error> {
+        write_u8(&mut writer, self.coverage_risk_margin_pct)?;
+        write_u8(&mut writer, self.round_failure_margin_pct)?;
+
+        Ok(())
+    }
+}
+
+impl ZcashDeserialize for TelemetryEstimateMargins {
+    fn zcash_deserialize<R: Read>(mut reader: R) -> Result<Self, SerializationError> {
+        Ok(Self {
+            coverage_risk_margin_pct: read_u8(&mut reader)?,
+            round_failure_margin_pct: read_u8(&mut reader)?,
+        })
+    }
+}
+
+impl ZcashSerialize for DynamicSigmaRawTelemetry {
+    fn zcash_serialize<W: Write>(&self, mut writer: W) -> Result<(), std::io::Error> {
+        write_u128_le(&mut writer, self.total_hash_work)?;
+        write_u128_le(&mut writer, self.crosslink_participating_hash_work)?;
+        write_u64_le(&mut writer, self.total_tenderlink_rounds)?;
+        write_u64_le(&mut writer, self.failed_tenderlink_rounds)?;
+        write_u8(&mut writer, self.measured_block_interval_variance_pct)?;
+        write_u64_le(&mut writer, self.measured_observed_reorg_depth)?;
+        self.rollback_risk.zcash_serialize(&mut writer)?;
+        write_u128_le(&mut writer, self.value_at_risk_units)?;
+        write_u128_le(&mut writer, self.max_acceptable_expected_loss_units)?;
+
+        Ok(())
+    }
+}
+
+impl ZcashDeserialize for DynamicSigmaRawTelemetry {
+    fn zcash_deserialize<R: Read>(mut reader: R) -> Result<Self, SerializationError> {
+        Ok(Self {
+            total_hash_work: read_u128_le(&mut reader)?,
+            crosslink_participating_hash_work: read_u128_le(&mut reader)?,
+            total_tenderlink_rounds: read_u64_le(&mut reader)?,
+            failed_tenderlink_rounds: read_u64_le(&mut reader)?,
+            measured_block_interval_variance_pct: read_u8(&mut reader)?,
+            measured_observed_reorg_depth: read_u64_le(&mut reader)?,
+            rollback_risk: RollbackRiskCurve::zcash_deserialize(&mut reader)?,
+            value_at_risk_units: read_u128_le(&mut reader)?,
+            max_acceptable_expected_loss_units: read_u128_le(&mut reader)?,
+        })
+    }
+}
+
+impl ZcashSerialize for DynamicSigmaProposalEvidence {
+    fn zcash_serialize<W: Write>(&self, mut writer: W) -> Result<(), std::io::Error> {
+        self.raw_telemetry.zcash_serialize(&mut writer)?;
+        self.margins.zcash_serialize(&mut writer)?;
+        write_u64_le(&mut writer, self.selected_sigma)?;
+
+        Ok(())
+    }
+}
+
+impl ZcashDeserialize for DynamicSigmaProposalEvidence {
+    fn zcash_deserialize<R: Read>(mut reader: R) -> Result<Self, SerializationError> {
+        Ok(Self {
+            raw_telemetry: DynamicSigmaRawTelemetry::zcash_deserialize(&mut reader)?,
+            margins: TelemetryEstimateMargins::zcash_deserialize(&mut reader)?,
+            selected_sigma: read_u64_le(&mut reader)?,
+        })
+    }
 }
 
 impl DynamicSigmaRawTelemetry {
@@ -533,6 +657,7 @@ fn saturating_pct_add(raw_pct: u8, margin_pct: u8) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zebra_chain::serialization::{ZcashDeserialize, ZcashSerialize};
 
     fn params() -> DynamicSigmaParameters {
         DynamicSigmaParameters {
@@ -697,6 +822,41 @@ mod tests {
             validate_dynamic_sigma_evidence(params(), evidence(63, 4)),
             Err(DynamicSigmaEvidenceError::SelectedSigmaOutsideLadder { selected: 4 })
         );
+    }
+
+    #[test]
+    fn proposal_evidence_zcash_serialization_round_trips() {
+        let proposal_evidence = DynamicSigmaProposalEvidence {
+            raw_telemetry: DynamicSigmaRawTelemetry {
+                total_hash_work: u128::from(u64::MAX) + 1,
+                crosslink_participating_hash_work: 12_345,
+                total_tenderlink_rounds: 987,
+                failed_tenderlink_rounds: 65,
+                measured_block_interval_variance_pct: 7,
+                measured_observed_reorg_depth: 4,
+                rollback_risk: RollbackRiskCurve {
+                    base_sigma_ppm: 1_000,
+                    raised_sigma_ppm: 100,
+                    max_sigma_ppm: 10,
+                },
+                value_at_risk_units: 1_000_000_000_000,
+                max_acceptable_expected_loss_units: 42,
+            },
+            margins: TelemetryEstimateMargins {
+                coverage_risk_margin_pct: 3,
+                round_failure_margin_pct: 5,
+            },
+            selected_sigma: 6,
+        };
+
+        let encoded = proposal_evidence
+            .zcash_serialize_to_vec()
+            .expect("evidence serialization should succeed");
+        let decoded = DynamicSigmaProposalEvidence::zcash_deserialize(encoded.as_slice())
+            .expect("evidence deserialization should succeed");
+
+        assert_eq!(encoded.len(), 123);
+        assert_eq!(decoded, proposal_evidence);
     }
 
     #[test]
