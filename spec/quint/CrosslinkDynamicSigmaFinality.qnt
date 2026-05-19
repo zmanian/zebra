@@ -174,10 +174,19 @@ module CrosslinkDynamicSigmaFinality {
     LatestFinalExtendsAllFinalized and
     InitialFinalizedRemainsFinalized
 
-  val FullComposedSafety =
-    DynamicResamplingSafety and
-    FinalitySafety and
+  val FullProtocolProjectionSafety =
+    DynamicResamplingSafety
+
+  val FullFinalityProjectionSafety =
+    FinalitySafety
+
+  val FullWorkCompetitionProjectionSafety =
     CurrentDynamicBestTipMatchesGeneratedCompetition
+
+  val FullComposedSafety =
+    FullProtocolProjectionSafety and
+    FullFinalityProjectionSafety and
+    FullWorkCompetitionProjectionSafety
 }
 
 module CrosslinkDynamicSigmaFinalityTest {

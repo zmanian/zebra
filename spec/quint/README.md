@@ -762,12 +762,35 @@ JVM_ARGS=-Xmx8192m $QUINT verify spec/quint/CrosslinkDynamicSigmaFinality.qnt \
   --init=FullComposedInit \
   --step=FullComposedNext \
   --invariant=FullComposedSafety
+
+JVM_ARGS=-Xmx8192m $QUINT verify spec/quint/CrosslinkDynamicSigmaFinality.qnt \
+  --main=CrosslinkDynamicSigmaFinalityModel \
+  --max-steps=10 \
+  --init=FullComposedInit \
+  --step=FullComposedNext \
+  --invariant=FullProtocolProjectionSafety
+
+JVM_ARGS=-Xmx8192m $QUINT verify spec/quint/CrosslinkDynamicSigmaFinality.qnt \
+  --main=CrosslinkDynamicSigmaFinalityModel \
+  --max-steps=10 \
+  --init=FullComposedInit \
+  --step=FullComposedNext \
+  --invariant=FullFinalityProjectionSafety
+
+JVM_ARGS=-Xmx8192m $QUINT verify spec/quint/CrosslinkDynamicSigmaFinality.qnt \
+  --main=CrosslinkDynamicSigmaFinalityModel \
+  --max-steps=10 \
+  --init=FullComposedInit \
+  --step=FullComposedNext \
+  --invariant=FullWorkCompetitionProjectionSafety
 ```
 
 The full dynamic-sigma finality composition is substantially heavier under
 Apalache once the resampling model includes accountability evidence. The checked
-symbolic bound above passes with an 8G JVM heap; deeper Apalache bounds may
-still require larger heaps or proof splitting.
+symbolic bound above passes with an 8G JVM heap. The projection checks split the
+full composition into protocol/accountability, finalized-prefix, and generated
+work-competition obligations so each can be pushed to a deeper bound before
+rerunning the full conjunction.
 
 The bounded resampling checks currently report no violation for `Safety`, which
 combines:
@@ -890,12 +913,17 @@ The full dynamic-sigma/resampling/finality composition reports no violation for
 - hash-participation-driven sigma increases compose with the same finality
   depth rule as fork-derived sigma increases
 
+The split full-composition projection checks report no violation at depth 10.
+`FullProtocolProjectionSafety` is the expensive check because it carries the
+nil-precommit/accountability evidence obligations. `FullFinalityProjectionSafety`
+and `FullWorkCompetitionProjectionSafety` isolate the finalized-prefix and
+generated-work-competition obligations and run substantially faster.
+
 ## Next Extensions
 
 This model is intentionally narrow. The next useful extensions are:
 
 - replace the bounded dynamic-sigma calibration fixture with production
   telemetry and an explicit economic target for acceptable rollback risk
-- split the heavier accountability/finality proof obligations so bounds beyond
-  the checked depth-8 full-composition run remain tractable without relying on
-  very large JVM/Z3 heaps
+- refine the split projection checks into smaller inductive lemmas if bounds
+  beyond the checked depth-10 projections still need very large JVM/Z3 heaps
