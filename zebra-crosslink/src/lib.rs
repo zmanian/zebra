@@ -9,6 +9,7 @@ extern crate lazy_static;
 use color_eyre::install;
 
 use async_trait::async_trait;
+use chrono::{TimeZone, Utc};
 use strum::{EnumCount, IntoEnumIterator};
 use strum_macros::{EnumCount, EnumIter};
 
@@ -45,11 +46,11 @@ use crate::dynamic_sigma::{
     select_dynamic_sigma_proposal_evidence, select_dynamic_sigma_proposal_evidence_from_components,
     select_dynamic_sigma_proposal_evidence_from_components_with_hysteresis,
     select_dynamic_sigma_proposal_evidence_with_hysteresis,
-    telemetry_components_from_observation_window, DynamicSigmaHashParticipation,
-    DynamicSigmaHashWorkObservation, DynamicSigmaHysteresisParameters, DynamicSigmaHysteresisState,
-    DynamicSigmaProposalEvidence, DynamicSigmaRawTelemetry, DynamicSigmaRoundCounters,
-    DynamicSigmaRoundEvent, DynamicSigmaTelemetryComponents,
-    DynamicSigmaTelemetryObservationWindow, RollbackRiskCurve, TelemetryEstimateMargins,
+    telemetry_components_from_timed_header_observation_window_with_hash_work_policy,
+    DynamicSigmaHashWorkObservationWindowPolicy, DynamicSigmaHysteresisParameters,
+    DynamicSigmaHysteresisState, DynamicSigmaProposalEvidence, DynamicSigmaRawTelemetry,
+    DynamicSigmaRoundCounters, DynamicSigmaRoundEvent, DynamicSigmaTelemetryComponents,
+    DynamicSigmaTimedHeaderObservationWindow, RollbackRiskCurve, TelemetryEstimateMargins,
 };
 
 use std::sync::Mutex;
@@ -152,8 +153,11 @@ use crate::service::{TFLServiceCalls, TFLServiceHandle};
 
 // TODO: do we want to start differentiating BCHeight/PoWHeight, MalHeight/PoSHeigh etc?
 use zebra_chain::block::{
-    Block, CountedHeader, Hash as BlockHash, Header as BlockHeader, Height as BlockHeight,
+    merkle::Root, Block, CountedHeader, FatPointerToBftBlock, Hash as BlockHash,
+    Header as BlockHeader, Height as BlockHeight,
 };
+use zebra_chain::fmt::HexDebug;
+use zebra_chain::work::{difficulty::CompactDifficulty, equihash::Solution};
 use zebra_node_services::mempool::{Request as MempoolRequest, Response as MempoolResponse};
 use zebra_state::{crosslink::*, Request as StateRequest, Response as StateResponse};
 
@@ -737,28 +741,86 @@ fn prototype_dynamic_sigma_round_counters() -> DynamicSigmaRoundCounters {
     round_counters
 }
 
-fn prototype_dynamic_sigma_hash_work_observations() -> [DynamicSigmaHashWorkObservation; 2] {
+fn prototype_dynamic_sigma_header_difficulty() -> CompactDifficulty {
+    CompactDifficulty::from_bytes_in_display_order(&0x207f_ffffu32.to_be_bytes())
+        .expect("prototype dynamic-sigma header difficulty should be valid")
+}
+
+fn prototype_dynamic_sigma_participating_fat_pointer() -> FatPointerToBftBlock {
+    let mut vote_for_block_without_finalizer_public_key = [0u8; 76 - 32];
+    vote_for_block_without_finalizer_public_key[0] = 1;
+
+    FatPointerToBftBlock {
+        vote_for_block_without_finalizer_public_key,
+        signatures: Vec::new(),
+    }
+}
+
+fn prototype_dynamic_sigma_header_at_time(
+    timestamp: i64,
+    fat_pointer_to_bft_block: FatPointerToBftBlock,
+) -> BlockHeader {
+    BlockHeader {
+        version: 4,
+        previous_block_hash: BlockHash([0; 32]),
+        merkle_root: Root([0; 32]),
+        commitment_bytes: HexDebug([0; 32]),
+        time: Utc
+            .timestamp_opt(timestamp, 0)
+            .single()
+            .expect("prototype dynamic-sigma timestamp should be valid"),
+        difficulty_threshold: prototype_dynamic_sigma_header_difficulty(),
+        nonce: HexDebug([0; 32]),
+        solution: Solution::for_proposal(),
+        fat_pointer_to_bft_block,
+    }
+}
+
+fn prototype_dynamic_sigma_timed_headers() -> [BlockHeader; 4] {
     [
-        DynamicSigmaHashWorkObservation {
-            hash_work: 90,
-            participation: DynamicSigmaHashParticipation::VerifiedParticipating,
-        },
-        DynamicSigmaHashWorkObservation {
-            hash_work: 10,
-            participation: DynamicSigmaHashParticipation::NotVerifiedParticipating,
-        },
+        prototype_dynamic_sigma_header_at_time(
+            0,
+            prototype_dynamic_sigma_participating_fat_pointer(),
+        ),
+        prototype_dynamic_sigma_header_at_time(
+            75,
+            prototype_dynamic_sigma_participating_fat_pointer(),
+        ),
+        prototype_dynamic_sigma_header_at_time(
+            150,
+            prototype_dynamic_sigma_participating_fat_pointer(),
+        ),
+        prototype_dynamic_sigma_header_at_time(225, FatPointerToBftBlock::null()),
     ]
+}
+
+fn prototype_dynamic_sigma_hash_work_policy() -> DynamicSigmaHashWorkObservationWindowPolicy {
+    DynamicSigmaHashWorkObservationWindowPolicy {
+        min_observations: 4,
+        max_observations: 4,
+        min_total_hash_work: 8,
+    }
 }
 
 fn prototype_dynamic_sigma_telemetry_components(
 ) -> Result<DynamicSigmaTelemetryComponents, TenderlinkPayloadEncodeError> {
-    let hash_work_observations = prototype_dynamic_sigma_hash_work_observations();
+    let pow_headers = prototype_dynamic_sigma_timed_headers();
 
-    telemetry_components_from_observation_window(DynamicSigmaTelemetryObservationWindow {
-        hash_work_observations: &hash_work_observations,
+    telemetry_components_from_timed_header_observation_window_with_hash_work_policy(
+        prototype_dynamic_sigma_observation_window(&pow_headers),
+        prototype_dynamic_sigma_hash_work_policy(),
+    )
+    .map_err(|_| TenderlinkPayloadEncodeError::DynamicSigmaInvalid)
+}
+
+fn prototype_dynamic_sigma_observation_window(
+    pow_headers: &[BlockHeader],
+) -> DynamicSigmaTimedHeaderObservationWindow<'_> {
+    DynamicSigmaTimedHeaderObservationWindow {
+        pow_headers,
+        target_block_spacing_seconds: 75,
         round_counters: prototype_dynamic_sigma_round_counters(),
         best_tip_transitions: &[],
-        measured_block_interval_variance_pct: 0,
         rollback_risk: RollbackRiskCurve {
             base_sigma_ppm: 20,
             raised_sigma_ppm: 10,
@@ -766,8 +828,7 @@ fn prototype_dynamic_sigma_telemetry_components(
         },
         value_at_risk_units: 1_000,
         max_acceptable_expected_loss_units: 1,
-    })
-    .map_err(|_| TenderlinkPayloadEncodeError::DynamicSigmaInvalid)
+    }
 }
 
 fn prototype_dynamic_sigma_telemetry_margins() -> TelemetryEstimateMargins {
@@ -2723,12 +2784,13 @@ mod tests {
     }
 
     #[test]
-    fn prototype_dynamic_sigma_components_assemble_from_source_observations() {
+    fn prototype_dynamic_sigma_components_assemble_from_timed_header_source() {
         let components = prototype_dynamic_sigma_telemetry_components()
-            .expect("prototype source observations should assemble");
+            .expect("prototype timed header source should assemble");
 
-        assert_eq!(components.total_hash_work, Some(100));
-        assert_eq!(components.crosslink_participating_hash_work, Some(90));
+        assert_eq!(components.total_hash_work, Some(8));
+        assert_eq!(components.crosslink_participating_hash_work, Some(6));
+        assert_eq!(components.measured_block_interval_variance_pct, 0);
         assert_eq!(components.measured_observed_reorg_depth, 0);
         assert_eq!(
             components.round_counters,

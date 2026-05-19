@@ -167,9 +167,9 @@ emits and accepts the legacy fixed-sigma `BftBlock`, while
 using shared prototype parameters and proposal-carried evidence. The decoded
 payload carries its selected confirmation depth into voting-time stale checks,
 so a prototype dynamic proposal is checked against `head - selected_sigma`. The
-prototype proposer now runs the dynamic-sigma controller over its fixture
-source-shaped fixture observations, telemetry component assembly, and then the
-dynamic-sigma controller before selecting that sigma; production telemetry
+prototype proposer now builds telemetry from a fixture timed-header source
+window, applies the hash-work policy, assembles telemetry components, and then
+runs the dynamic-sigma controller before selecting sigma; production telemetry
 sources are still the missing deployment step. Invalid source observation
 assembly, telemetry assembly, or telemetry-to-evidence selection prevents
 prototype proposal emission instead of falling back to the base sigma.
@@ -1184,8 +1184,8 @@ This model is intentionally narrow. The next useful extensions are:
   selected-sigma BFT block constructor to production telemetry sources and live
   proposal validation, including a consensus-safe Crosslink hash-participation
   metric and a validated economic exposure model. The live prototype proposal
-  path now runs the controller over source-shaped fixture observations, and the
-  pure telemetry assembly boundary fails closed on missing participating-work
+  path now runs the controller over a policy-guarded timed-header fixture, and
+  the pure telemetry assembly boundary fails closed on missing participating-work
   evidence or inconsistent round counters. The event accumulator now gives live
   Tenderlink hooks an exact round-counter contract, the hash-work observation
   accumulator gives source producers an exact participation-numerator contract,

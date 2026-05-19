@@ -309,13 +309,13 @@ the proposal carries the selected value in its evidence. This keeps prototype
 fixtures aligned with the production-shaped contract while leaving the actual
 source producers as explicit remaining work.
 
-The fixture itself now enters through the same source-observation shape:
-prototype hash-work observations are aggregated into total and verified
-participating work, an empty best-tip transition window derives rollback depth
-0, round events derive decided-round counters, and
-`telemetry_components_from_observation_window` builds the components consumed by
-proposal evidence selection. Live producers still need to replace those fixture
-observations.
+The fixture itself now enters through the timed-header source shape: prototype
+PoW headers derive work-weighted participating hash power, the hash-work window
+policy enforces the recent/minimum-work guardrail, adjacent header timestamps
+derive block-interval variance, an empty best-tip transition window derives
+rollback depth 0, round events derive decided-round counters, and the resulting
+components feed proposal evidence selection. Live producers still need to
+replace those fixture headers.
 
 Rollback-depth telemetry has the same shape. `DynamicSigmaBestTipTransition`
 represents a best-tip change by its previous tip height, new tip height, and
@@ -425,7 +425,7 @@ A production implementation of the dynamic-sigma variant should provide:
   mismatch rejection, fixed-vs-dynamic payload routing, below-floor rejection,
   selected-sigma header depth, prototype-gated proposal emission, and
   selected-sigma voting-time stale checks. The live proposer now runs the
-  controller over its prototype telemetry fixture before selecting sigma, but
-  production telemetry-source tests are still needed
+  controller over a policy-guarded timed-header fixture before selecting sigma,
+  but production telemetry-source tests are still needed
 - Quint coverage connecting the implemented telemetry rules back to
   `CrosslinkDynamicSigmaTelemetry.qnt`
