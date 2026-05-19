@@ -251,10 +251,13 @@ measurement-window rollback depths and computes, for each sigma in the ladder,
 the rounded-up parts-per-million frequency of windows whose rollback depth
 reached that sigma. A bounded margin is then added and capped at one million
 ppm. This produces a monotone `RollbackRiskCurve` that can feed the existing
-economic floor and expected-loss checks. It is intentionally empirical: a
-production deployment still has to define the history window, source of
-rollback-depth samples, and whether a calibrated offline model should override
-or augment this baseline.
+economic floor and expected-loss checks. `DynamicSigmaRollbackRiskWindowPolicy`
+now makes the history-window policy explicit: callers must provide at least a
+configured minimum number of rollback-depth windows, only the most recent
+bounded history is used, and invalid bounds or impossible ppm margins fail
+closed. It is intentionally empirical: a production deployment still has to
+wire the source of rollback-depth samples and decide whether a calibrated
+offline model should override or augment this baseline.
 
 `CrosslinkDynamicSigmaTelemetry.qnt` now mirrors that source boundary in the
 production-shaped telemetry harness: source hash-work samples derive the
@@ -348,8 +351,9 @@ A production implementation of the dynamic-sigma variant should provide:
   counters
 - best-tip rollback-depth telemetry derived from actual fork transitions
 - an explicit rollback-risk estimator for each allowed sigma; the pure
-  controller now includes an empirical observed-depth exceedance estimator, but
-  production still needs a window/history policy and may need a calibrated model
+  controller now includes an empirical observed-depth exceedance estimator and a
+  bounded recent-history window policy, but production still needs the live
+  rollback-depth sample source and may need a calibrated model
 - an economic exposure model or a clear decision that expected loss is
   service-local rather than consensus-critical; the pure controller now has an
   explicit policy split and tests for both paths, while production still needs a

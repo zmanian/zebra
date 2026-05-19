@@ -279,6 +279,45 @@ pub enum DynamicSigmaRollbackRiskEstimatorError {
     },
 }
 
+/// History-window policy for deriving rollback risk from recent observations.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DynamicSigmaRollbackRiskWindowPolicy {
+    /// Minimum rollback-depth windows required before producing a risk curve.
+    pub min_observation_windows: usize,
+    /// Maximum recent rollback-depth windows included in the risk curve.
+    pub max_observation_windows: usize,
+    /// Conservative margin added to each empirical risk estimate.
+    pub risk_margin_ppm: u64,
+}
+
+/// Invalid rollback-risk history-window policy or input.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DynamicSigmaRollbackRiskWindowPolicyError {
+    /// Controller parameters were invalid.
+    InvalidParameters(DynamicSigmaError),
+    /// The minimum observation window count must be nonzero.
+    EmptyMinimumObservationWindows,
+    /// The maximum observation window count is below the minimum.
+    MaxObservationWindowsBelowMinimum {
+        /// Minimum required observation windows.
+        min_observation_windows: usize,
+        /// Maximum observation windows included in the risk curve.
+        max_observation_windows: usize,
+    },
+    /// Fewer rollback-depth windows were supplied than the policy requires.
+    InsufficientObservationHistory {
+        /// Supplied rollback-depth windows.
+        observed_windows: usize,
+        /// Minimum required observation windows.
+        min_observation_windows: usize,
+    },
+    /// The safety margin exceeds one million parts per million.
+    RiskMarginTooLarge {
+        /// Risk margin supplied by the caller.
+        margin_ppm: u64,
+    },
+}
+
 /// Source-side observation window for building dynamic-sigma telemetry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DynamicSigmaTelemetryObservationWindow<'a> {
@@ -1061,6 +1100,76 @@ pub fn rollback_risk_curve_from_observed_rollback_depths(
             params.max_sigma,
             risk_margin_ppm,
         ),
+    })
+}
+
+/// Estimate rollback risk from a bounded recent history window.
+///
+/// The policy requires a minimum number of rollback-depth windows before a
+/// curve can be produced, then uses at most the latest
+/// `max_observation_windows` depths. Older history is intentionally discarded so
+/// stale rollback events do not dominate the current dynamic-sigma input.
+pub fn rollback_risk_curve_from_window_policy(
+    params: DynamicSigmaParameters,
+    observed_rollback_depth_history: &[u64],
+    policy: DynamicSigmaRollbackRiskWindowPolicy,
+) -> Result<RollbackRiskCurve, DynamicSigmaRollbackRiskWindowPolicyError> {
+    validate_params(params)
+        .map_err(DynamicSigmaRollbackRiskWindowPolicyError::InvalidParameters)?;
+
+    if policy.min_observation_windows == 0 {
+        return Err(DynamicSigmaRollbackRiskWindowPolicyError::EmptyMinimumObservationWindows);
+    }
+
+    if policy.max_observation_windows < policy.min_observation_windows {
+        return Err(
+            DynamicSigmaRollbackRiskWindowPolicyError::MaxObservationWindowsBelowMinimum {
+                min_observation_windows: policy.min_observation_windows,
+                max_observation_windows: policy.max_observation_windows,
+            },
+        );
+    }
+
+    if observed_rollback_depth_history.len() < policy.min_observation_windows {
+        return Err(
+            DynamicSigmaRollbackRiskWindowPolicyError::InsufficientObservationHistory {
+                observed_windows: observed_rollback_depth_history.len(),
+                min_observation_windows: policy.min_observation_windows,
+            },
+        );
+    }
+
+    if u128::from(policy.risk_margin_ppm) > PPM_DENOMINATOR {
+        return Err(
+            DynamicSigmaRollbackRiskWindowPolicyError::RiskMarginTooLarge {
+                margin_ppm: policy.risk_margin_ppm,
+            },
+        );
+    }
+
+    let window_start = observed_rollback_depth_history
+        .len()
+        .saturating_sub(policy.max_observation_windows);
+    let recent_rollback_depths = &observed_rollback_depth_history[window_start..];
+
+    rollback_risk_curve_from_observed_rollback_depths(
+        params,
+        recent_rollback_depths,
+        policy.risk_margin_ppm,
+    )
+    .map_err(|error| match error {
+        DynamicSigmaRollbackRiskEstimatorError::InvalidParameters(error) => {
+            DynamicSigmaRollbackRiskWindowPolicyError::InvalidParameters(error)
+        }
+        DynamicSigmaRollbackRiskEstimatorError::EmptyObservationWindow => {
+            DynamicSigmaRollbackRiskWindowPolicyError::InsufficientObservationHistory {
+                observed_windows: recent_rollback_depths.len(),
+                min_observation_windows: policy.min_observation_windows,
+            }
+        }
+        DynamicSigmaRollbackRiskEstimatorError::RiskMarginTooLarge { margin_ppm } => {
+            DynamicSigmaRollbackRiskWindowPolicyError::RiskMarginTooLarge { margin_ppm }
+        }
     })
 }
 
@@ -2714,6 +2823,91 @@ mod tests {
             Err(DynamicSigmaRollbackRiskEstimatorError::RiskMarginTooLarge {
                 margin_ppm: 1_000_001,
             }),
+        );
+    }
+
+    #[test]
+    fn rollback_risk_window_policy_uses_most_recent_bounded_history() {
+        let policy = DynamicSigmaRollbackRiskWindowPolicy {
+            min_observation_windows: 3,
+            max_observation_windows: 3,
+            risk_margin_ppm: 0,
+        };
+        let curve = rollback_risk_curve_from_window_policy(params(), &[6, 0, 0, 0], policy)
+            .expect("bounded rollback-depth history should produce a curve");
+
+        assert_eq!(
+            curve,
+            RollbackRiskCurve {
+                base_sigma_ppm: 0,
+                raised_sigma_ppm: 0,
+                max_sigma_ppm: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn rollback_risk_window_policy_requires_minimum_history() {
+        let policy = DynamicSigmaRollbackRiskWindowPolicy {
+            min_observation_windows: 3,
+            max_observation_windows: 5,
+            risk_margin_ppm: 0,
+        };
+
+        assert_eq!(
+            rollback_risk_curve_from_window_policy(params(), &[0, 1], policy),
+            Err(
+                DynamicSigmaRollbackRiskWindowPolicyError::InsufficientObservationHistory {
+                    observed_windows: 2,
+                    min_observation_windows: 3,
+                }
+            ),
+        );
+    }
+
+    #[test]
+    fn rollback_risk_window_policy_rejects_invalid_bounds() {
+        let empty_minimum = DynamicSigmaRollbackRiskWindowPolicy {
+            min_observation_windows: 0,
+            max_observation_windows: 3,
+            risk_margin_ppm: 0,
+        };
+        let inverted_window = DynamicSigmaRollbackRiskWindowPolicy {
+            min_observation_windows: 4,
+            max_observation_windows: 3,
+            risk_margin_ppm: 0,
+        };
+
+        assert_eq!(
+            rollback_risk_curve_from_window_policy(params(), &[0, 1, 2], empty_minimum),
+            Err(DynamicSigmaRollbackRiskWindowPolicyError::EmptyMinimumObservationWindows),
+        );
+        assert_eq!(
+            rollback_risk_curve_from_window_policy(params(), &[0, 1, 2, 3], inverted_window),
+            Err(
+                DynamicSigmaRollbackRiskWindowPolicyError::MaxObservationWindowsBelowMinimum {
+                    min_observation_windows: 4,
+                    max_observation_windows: 3,
+                }
+            ),
+        );
+    }
+
+    #[test]
+    fn rollback_risk_window_policy_rejects_impossible_margin() {
+        let policy = DynamicSigmaRollbackRiskWindowPolicy {
+            min_observation_windows: 1,
+            max_observation_windows: 3,
+            risk_margin_ppm: 1_000_001,
+        };
+
+        assert_eq!(
+            rollback_risk_curve_from_window_policy(params(), &[0, 1, 2], policy),
+            Err(
+                DynamicSigmaRollbackRiskWindowPolicyError::RiskMarginTooLarge {
+                    margin_ppm: 1_000_001,
+                }
+            ),
         );
     }
 
