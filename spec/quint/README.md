@@ -499,6 +499,10 @@ selected sigma satisfies the configured rollback-risk and expected-loss targets
 when the ladder can satisfy them. It also now derives the telemetry component
 inputs from source-shaped hash-work samples, round counters, and best-tip
 transition heights, matching the Rust source observation-window boundary.
+`apply_dynamic_sigma_hysteresis` is a pure Rust policy helper for applying those
+required sigma floors across windows: it raises immediately on worse evidence
+and only lowers one ladder step after enough stable lower-risk windows. It is
+not wired into live proposal validity yet.
 
 Witness dynamic sigma consuming derived PoW rollback depth:
 
@@ -1067,7 +1071,9 @@ This model is intentionally narrow. The next useful extensions are:
   and the pure rollback-depth helper derives the observed reorg-depth input from
   explicit best-tip transition evidence. The observation-window assembler now
   composes those source-shaped inputs into telemetry components, and the
-  prototype proposal path uses it. The remaining work is replacing the fixture
-  with consensus-safe or proposal-verifiable input producers
+  prototype proposal path uses it. The pure hysteresis helper covers bounded
+  sigma decreases for short-window stability, but it is not a live consensus
+  rule yet. The remaining work is replacing the fixture with consensus-safe or
+  proposal-verifiable input producers
 - refine the split projection checks into smaller inductive lemmas if bounds
   beyond the checked depth-10 projections still need very large JVM/Z3 heaps

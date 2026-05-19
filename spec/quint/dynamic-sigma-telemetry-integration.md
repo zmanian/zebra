@@ -249,6 +249,13 @@ The production controller needs guardrails for adversarial telemetry:
   participation as an upper-confidence-bound problem and choose conservative
   sigma when coverage is uncertain.
 
+The Rust controller now has a pure hysteresis helper for the short-window
+oscillation case. `apply_dynamic_sigma_hysteresis` raises immediately when a new
+window requires a larger sigma, but only lowers one ladder level after a
+configured number of stable lower-risk windows. This is not wired into live
+proposal validity yet; it is a policy boundary for the dynamic-sigma variant to
+use once the source windows are production-backed.
+
 ## Implementation Acceptance Criteria
 
 A production implementation of the dynamic-sigma variant should provide:

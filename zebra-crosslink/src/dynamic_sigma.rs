@@ -321,6 +321,39 @@ pub struct DynamicSigmaDecision {
     pub economic_target_status: EconomicTargetStatus,
 }
 
+/// Hysteresis policy for applying dynamic-sigma decisions across windows.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DynamicSigmaHysteresisParameters {
+    /// Stable windows required before sigma may step down one ladder level.
+    pub decrease_confirmation_windows: u64,
+}
+
+/// Hysteresis state for a dynamic-sigma controller.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DynamicSigmaHysteresisState {
+    /// Currently applied sigma.
+    pub current_sigma: u64,
+    /// Consecutive windows whose required sigma was below `current_sigma`.
+    pub stable_windows_below_current: u64,
+}
+
+/// Invalid dynamic-sigma hysteresis input.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DynamicSigmaHysteresisError {
+    /// Controller parameters were invalid.
+    InvalidParameters(DynamicSigmaError),
+    /// The current sigma is not one of the configured ladder values.
+    CurrentSigmaOutsideLadder {
+        /// Current applied sigma.
+        current_sigma: u64,
+    },
+    /// The required sigma is not one of the configured ladder values.
+    RequiredSigmaOutsideLadder {
+        /// Sigma required by the current telemetry window.
+        required_sigma: u64,
+    },
+}
+
 /// Proposal-carried evidence for a dynamic-sigma decision.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DynamicSigmaProposalEvidence {
@@ -821,6 +854,51 @@ pub fn select_dynamic_sigma(
     })
 }
 
+/// Apply hysteresis to a required dynamic-sigma floor.
+///
+/// Worse telemetry raises sigma immediately. Better telemetry must remain
+/// stable for `decrease_confirmation_windows` before sigma steps down one
+/// ladder level, preventing short-window oscillation from rapidly lowering the
+/// confirmation depth.
+pub fn apply_dynamic_sigma_hysteresis(
+    params: DynamicSigmaParameters,
+    policy: DynamicSigmaHysteresisParameters,
+    state: DynamicSigmaHysteresisState,
+    required_sigma: u64,
+) -> Result<DynamicSigmaHysteresisState, DynamicSigmaHysteresisError> {
+    validate_params(params).map_err(DynamicSigmaHysteresisError::InvalidParameters)?;
+
+    if !sigma_is_in_ladder(params, state.current_sigma) {
+        return Err(DynamicSigmaHysteresisError::CurrentSigmaOutsideLadder {
+            current_sigma: state.current_sigma,
+        });
+    }
+
+    if !sigma_is_in_ladder(params, required_sigma) {
+        return Err(DynamicSigmaHysteresisError::RequiredSigmaOutsideLadder { required_sigma });
+    }
+
+    if required_sigma >= state.current_sigma {
+        return Ok(DynamicSigmaHysteresisState {
+            current_sigma: required_sigma,
+            stable_windows_below_current: 0,
+        });
+    }
+
+    let stable_windows_below_current = state.stable_windows_below_current.saturating_add(1);
+    if stable_windows_below_current < policy.decrease_confirmation_windows {
+        return Ok(DynamicSigmaHysteresisState {
+            current_sigma: state.current_sigma,
+            stable_windows_below_current,
+        });
+    }
+
+    Ok(DynamicSigmaHysteresisState {
+        current_sigma: next_lower_sigma(params, state.current_sigma).max(required_sigma),
+        stable_windows_below_current: 0,
+    })
+}
+
 fn validate_params(params: DynamicSigmaParameters) -> Result<(), DynamicSigmaError> {
     if !(1 <= params.base_sigma
         && params.base_sigma < params.raised_sigma
@@ -893,6 +971,14 @@ fn max_floor(floors: [u64; 4]) -> u64 {
 
 fn sigma_is_in_ladder(params: DynamicSigmaParameters, sigma: u64) -> bool {
     sigma == params.base_sigma || sigma == params.raised_sigma || sigma == params.max_sigma
+}
+
+fn next_lower_sigma(params: DynamicSigmaParameters, sigma: u64) -> u64 {
+    if sigma > params.raised_sigma {
+        params.raised_sigma
+    } else {
+        params.base_sigma
+    }
 }
 
 fn hash_participation_floor(
@@ -1082,6 +1168,22 @@ mod tests {
         select_dynamic_sigma(params(), window).expect("fixture telemetry should be valid")
     }
 
+    fn hysteresis_policy() -> DynamicSigmaHysteresisParameters {
+        DynamicSigmaHysteresisParameters {
+            decrease_confirmation_windows: 2,
+        }
+    }
+
+    fn hysteresis_state(
+        current_sigma: u64,
+        stable_windows_below_current: u64,
+    ) -> DynamicSigmaHysteresisState {
+        DynamicSigmaHysteresisState {
+            current_sigma,
+            stable_windows_below_current,
+        }
+    }
+
     fn evidence(
         participating_hash_work: u128,
         selected_sigma: u64,
@@ -1239,6 +1341,111 @@ mod tests {
 
         assert_eq!(decision.hash_participation_floor, 3);
         assert_eq!(decision.sigma, 3);
+    }
+
+    #[test]
+    fn hysteresis_raises_sigma_immediately() {
+        let next = apply_dynamic_sigma_hysteresis(
+            params(),
+            hysteresis_policy(),
+            hysteresis_state(params().base_sigma, 7),
+            params().max_sigma,
+        )
+        .expect("higher required sigma should update hysteresis state");
+
+        assert_eq!(
+            next,
+            DynamicSigmaHysteresisState {
+                current_sigma: params().max_sigma,
+                stable_windows_below_current: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn hysteresis_lowers_sigma_one_step_after_stable_windows() {
+        let held = apply_dynamic_sigma_hysteresis(
+            params(),
+            hysteresis_policy(),
+            hysteresis_state(params().max_sigma, 0),
+            params().base_sigma,
+        )
+        .expect("lower required sigma should be delayed");
+        assert_eq!(
+            held,
+            DynamicSigmaHysteresisState {
+                current_sigma: params().max_sigma,
+                stable_windows_below_current: 1,
+            }
+        );
+
+        let stepped_to_raised = apply_dynamic_sigma_hysteresis(
+            params(),
+            hysteresis_policy(),
+            held,
+            params().base_sigma,
+        )
+        .expect("stable lower evidence should step down by one ladder level");
+        assert_eq!(
+            stepped_to_raised,
+            DynamicSigmaHysteresisState {
+                current_sigma: params().raised_sigma,
+                stable_windows_below_current: 0,
+            }
+        );
+
+        let held_again = apply_dynamic_sigma_hysteresis(
+            params(),
+            hysteresis_policy(),
+            stepped_to_raised,
+            params().base_sigma,
+        )
+        .expect("next lower step should be delayed again");
+        assert_eq!(
+            held_again,
+            DynamicSigmaHysteresisState {
+                current_sigma: params().raised_sigma,
+                stable_windows_below_current: 1,
+            }
+        );
+
+        let stepped_to_base = apply_dynamic_sigma_hysteresis(
+            params(),
+            hysteresis_policy(),
+            held_again,
+            params().base_sigma,
+        )
+        .expect("second stable lower window should return to base");
+        assert_eq!(
+            stepped_to_base,
+            DynamicSigmaHysteresisState {
+                current_sigma: params().base_sigma,
+                stable_windows_below_current: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn hysteresis_rejects_non_ladder_sigma_values() {
+        assert_eq!(
+            apply_dynamic_sigma_hysteresis(
+                params(),
+                hysteresis_policy(),
+                hysteresis_state(2, 0),
+                params().base_sigma,
+            ),
+            Err(DynamicSigmaHysteresisError::CurrentSigmaOutsideLadder { current_sigma: 2 }),
+        );
+
+        assert_eq!(
+            apply_dynamic_sigma_hysteresis(
+                params(),
+                hysteresis_policy(),
+                hysteresis_state(params().base_sigma, 0),
+                2,
+            ),
+            Err(DynamicSigmaHysteresisError::RequiredSigmaOutsideLadder { required_sigma: 2 }),
+        );
     }
 
     #[test]
