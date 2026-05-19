@@ -151,7 +151,7 @@ The current branch has these baseline-specific files:
 | Full agreement/validity/accountability invariant suite over arbitrary evidence | Current suite has bounded safety plus focused accountability witnesses | Partial |
 | False-invariant/counterexample harnesses for amnesia/equivocation/agreement | `CrosslinkBaselineCounterexampleModel`; `falseNoConflictingCommitsInvariantFailsTest`; `falseNoAmnesiaEvidenceInvariantFailsTest`; `falseNoEquivocationEvidenceInvariantFailsTest`; `falseAgreementInvariantFailsTest`; `falseAgreementOrAmnesiaInvariantFailsTest`; `falseAmnesiaImpliesEquivocationInvariantFailsTest`; `falseShowMeAmnesiaWithoutEquivocationInvariantFailsTest`; `falseNeverUndecidedInMaxRoundInvariantFailsTest` | Covered as seeded Rust witnesses; not yet an arbitrary-evidence symbolic suite |
 | Crosslink-specific false-invariant witnesses | `falseNoStaleFixedSigmaProposalInvariantFailsTest`; `falseForkFinalityAttemptIsValidTest` | Covered as seeded Rust witnesses |
-| Generated/adversarial PoW schedule for baseline long reorgs | Baseline uses a bounded fork-switch fixture | Partial |
+| Generated/adversarial PoW schedule for baseline long reorgs | `CrosslinkBaselinePowSampling.qnt`; `CrosslinkBaselinePowSamplingModel`; `CrosslinkBaselinePowLongReorgModel`; `BaselinePowSamplingSafety`; `BaselinePowLongReorgSafety` | Partial; bounded fork-switch and long-reorg fixtures are covered, but generated and stochastic schedules remain open |
 | Stochastic PoW block-production model | Not modeled in baseline | Missing |
 | Inductive or deeper multi-height finality argument | Current BFT-height model is bounded | Partial |
 
@@ -220,8 +220,9 @@ remaining upstream-quality gaps.
 7. Expand the PoW environment.
    - Replace the baseline single fork-switch fixture with generated bounded PoW
      schedules.
-   - Add long-reorg fixtures where the rollback depth exceeds the configured
-     sigma.
+   - A long-reorg fixture now covers rollback depth 3 with sigma 2, where the
+     sticky baseline carries the stale `head - sigma` sample across the fork
+     switch.
    - Add a simple stochastic or adversarial block-production abstraction so
      repeated stream changes are not only hand-authored witnesses.
 8. Push finality beyond a bounded fixture.

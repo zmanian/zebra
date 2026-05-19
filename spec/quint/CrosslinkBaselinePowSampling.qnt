@@ -128,3 +128,132 @@ module CrosslinkBaselinePowSamplingModel {
       .fail()
   }
 }
+
+module CrosslinkBaselinePowLongReorgModel {
+  /*
+   A long-reorg fixed-sigma fixture. The best tip switches from `a5` to `c5`
+   with common ancestor `a2`, so the rollback depth is 3 while sigma is 2. The
+   sticky baseline still carries the old `head - sigma` sample after the fork
+   switch.
+   */
+
+  import CrosslinkResamplingTest(
+    Corr = Set("p1", "p2", "p3"),
+    Faulty = Set("p4"),
+    N = 4,
+    T = 1,
+    MaxRound = 2,
+    Proposer = Map(0 -> "p1", 1 -> "p2", 2 -> "p3"),
+    Stream = Map(0 -> "a3", 1 -> "c3", 2 -> "c3"),
+    Snapshots = Set("g", "a1", "a2", "a3", "a4", "a5", "c3", "c4", "c5"),
+    ResampleOnNilPrecommit = false,
+    ExpectedRound1Proposal = "a3",
+  ).* from "./CrosslinkResampling"
+
+  type Height_t = int
+
+  pure val FixedSigma = 2
+  pure val MaxHeight = 5
+  pure val Heights = 0.to(MaxHeight)
+
+  pure val BestTipByRound = Map(
+    0 -> "a5",
+    1 -> "c5",
+    2 -> "c5",
+  )
+
+  pure val HeightOf = Map(
+    "g" -> 0,
+    "a1" -> 1,
+    "a2" -> 2,
+    "a3" -> 3,
+    "a4" -> 4,
+    "a5" -> 5,
+    "c3" -> 3,
+    "c4" -> 4,
+    "c5" -> 5,
+  )
+
+  pure val AncestorAt = Map(
+    "g" -> Map(0 -> "g", 1 -> "None", 2 -> "None", 3 -> "None", 4 -> "None", 5 -> "None"),
+    "a1" -> Map(0 -> "g", 1 -> "a1", 2 -> "None", 3 -> "None", 4 -> "None", 5 -> "None"),
+    "a2" -> Map(0 -> "g", 1 -> "a1", 2 -> "a2", 3 -> "None", 4 -> "None", 5 -> "None"),
+    "a3" -> Map(0 -> "g", 1 -> "a1", 2 -> "a2", 3 -> "a3", 4 -> "None", 5 -> "None"),
+    "a4" -> Map(0 -> "g", 1 -> "a1", 2 -> "a2", 3 -> "a3", 4 -> "a4", 5 -> "None"),
+    "a5" -> Map(0 -> "g", 1 -> "a1", 2 -> "a2", 3 -> "a3", 4 -> "a4", 5 -> "a5"),
+    "c3" -> Map(0 -> "g", 1 -> "a1", 2 -> "a2", 3 -> "c3", 4 -> "None", 5 -> "None"),
+    "c4" -> Map(0 -> "g", 1 -> "a1", 2 -> "a2", 3 -> "c3", 4 -> "c4", 5 -> "None"),
+    "c5" -> Map(0 -> "g", 1 -> "a1", 2 -> "a2", 3 -> "c3", 4 -> "c4", 5 -> "c5"),
+  )
+
+  pure val LcaHeight = Map(
+    "a5" -> Map("a5" -> 5, "c5" -> 2),
+    "c5" -> Map("a5" -> 2, "c5" -> 5),
+  )
+
+  pure def BestTipAt(r: Round_t): Snapshot_t =
+    BestTipByRound.get(r)
+
+  pure def Height(v: Snapshot_t): Height_t =
+    HeightOf.get(v)
+
+  pure def AncestorAtHeight(v: Snapshot_t, h: Height_t): Snapshot_t =
+    AncestorAt.get(v).get(h)
+
+  pure def HeadMinusFixedSigma(r: Round_t): Snapshot_t =
+    AncestorAtHeight(BestTipAt(r), Height(BestTipAt(r)) - FixedSigma)
+
+  pure def RollbackDepth(previousTip: Snapshot_t, nextTip: Snapshot_t): int =
+    Height(previousTip) - LcaHeight.get(previousTip).get(nextTip)
+
+  pure def FixedSampleSurvivesRollback(previousTip: Snapshot_t, nextTip: Snapshot_t): bool =
+    RollbackDepth(previousTip, nextTip) < FixedSigma
+
+  val StreamMatchesFixedHeadMinusSigma =
+    Rounds.forall(r => Stream.get(r) == HeadMinusFixedSigma(r))
+
+  val BaselinePowLongReorgSafety =
+    Safety and StreamMatchesFixedHeadMinusSigma
+
+  run longReorgExceedsFixedSigmaTest = all {
+    assert(HeadMinusFixedSigma(0) == "a3"),
+    assert(HeadMinusFixedSigma(1) == "c3"),
+    assert(RollbackDepth(BestTipAt(0), BestTipAt(1)) == 3),
+    assert(FixedSigma == 2),
+    assert(not(FixedSampleSurvivesRollback(BestTipAt(0), BestTipAt(1)))),
+    assert(StreamMatchesFixedHeadMinusSigma),
+  }
+
+  run stickyBaselineCarriesLongReorgHeadMinusSigmaTest = {
+    Init
+      .then(SeedAbandonedRoundState("p1"))
+      .then(SeedAbandonedRoundState("p2"))
+      .then(SeedAbandonedRoundState("p3"))
+      .then(StartNextRoundAfterPrecommitQuorum("p2"))
+      .then(InsertProposal("p2"))
+      .then(all {
+        assert(msgsPropose.get(1).exists(m =>
+          m.src == "p2" and m.round == 1 and m.proposal == HeadMinusFixedSigma(0)
+        )),
+        assert(HeadMinusFixedSigma(0) == "a3"),
+        assert(HeadMinusFixedSigma(1) == "c3"),
+        assert(not(FixedSampleSurvivesRollback(BestTipAt(0), BestTipAt(1)))),
+        assert(BaselinePowLongReorgSafety),
+        unchangedAll,
+      })
+  }
+
+  run stickyBaselineCannotPrevoteFreshLongReorgSampleTest = {
+    Init
+      .then(SeedValidNilPrecommitState("p1"))
+      .then(SeedValidNilPrecommitState("p2"))
+      .then(SeedFaultyNilPrecommit("p4"))
+      .then(SeedSameRoundValueLock("p3"))
+      .then(StartNextRoundAfterPrecommitQuorum("p1"))
+      .then(StartNextRoundAfterPrecommitQuorum("p2"))
+      .then(StartNextRoundAfterPrecommitQuorum("p3"))
+      .then(InsertProposal("p2"))
+      .then(UponProposalPrevote("p1", HeadMinusFixedSigma(1)))
+      .fail()
+  }
+}
