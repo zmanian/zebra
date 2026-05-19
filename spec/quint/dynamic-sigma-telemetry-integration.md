@@ -106,10 +106,12 @@ that boundary. It converts a validated PoW header's compact difficulty into
 work, classifies non-null Crosslink fat pointers as the current objective
 participation marker, and counts null-marker headers as observed but
 non-participating work. Invalid header difficulty fails closed instead of being
-counted as zero or healthy participation. This adapter is intentionally a
-prototype marker bridge: production still needs to decide whether the marker
-must validate the fat pointer contents, signatures, quorum, or referenced BFT
-block before assigning verified-participating status.
+counted as zero or healthy participation. The default adapter is intentionally a
+prototype marker bridge, but the `_with_verifier` variants let a production
+source require stricter fat-pointer validation before a non-null marker counts
+as verified participation. The verifier is where a deployment can require valid
+fat pointer contents, signatures, quorum, or a referenced BFT block before
+assigning verified-participating status.
 
 The controller rule should match the Quint model shape:
 
@@ -207,7 +209,9 @@ counters, best-tip transitions, variance telemetry, rollback-risk estimates,
 and economic exposure inputs in one window. The helper derives header work,
 derives the participation numerator and denominator, validates round counters,
 derives rollback depth, and returns the same `DynamicSigmaTelemetryComponents`
-used by proposal evidence selection.
+used by proposal evidence selection. Its `_with_verifier` variant threads the
+same custom fat-pointer verifier through the whole header window, so rejected
+markers still contribute to total work but not to Crosslink-participating work.
 
 The source contracts are now composed by
 `telemetry_components_from_observation_window`. It accepts hash-work
@@ -320,11 +324,13 @@ A production implementation of the dynamic-sigma variant should provide:
   observation-window tests now compose hash-work observations or headers, round
   counters, and best-tip transitions into telemetry components and reject
   invalid source counters, invalid header difficulty, or rollback evidence. The
-  new pure telemetry assembly tests also reject missing participating-work
-  evidence and inconsistent round counters, the event-counter tests reject
-  failure-reason overcounts, and rollback-depth tests derive the observed
-  reorg-depth input from explicit best-tip transition evidence, but live
-  production source integration still needs tests
+  custom verifier tests show that stricter marker validation can reject a
+  non-null fat pointer without removing the header from total work. The new pure
+  telemetry assembly tests also reject missing participating-work evidence and
+  inconsistent round counters, the event-counter tests reject failure-reason
+  overcounts, and rollback-depth tests derive the observed reorg-depth input
+  from explicit best-tip transition evidence, but live production source
+  integration still needs tests
 - tests showing that dynamic sigma changes do not make honest validators reject
   each other's otherwise valid proposals; the pure Rust proposal-evidence
   verifier and BFT block-construction helper cover identical evidence

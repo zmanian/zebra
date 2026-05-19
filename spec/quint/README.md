@@ -111,14 +111,15 @@ conservatively as non-participating. `hash_work_observation_from_header` and
 headers by converting compact difficulty into work and treating the current
 non-null Crosslink fat pointer as the objective participation marker. This keeps
 the dynamic-sigma input as a work-weighted participating hash-power percentage,
-while leaving stronger production validation of the marker contents as an
-explicit follow-up. `DynamicSigmaHeaderObservationWindow` lets callers provide
-headers directly alongside Tenderlink round counters, best-tip transitions,
-variance telemetry, rollback-risk estimates, and economic exposure inputs, then
-builds the same telemetry components as the lower-level hash-work observation
-path. `DynamicSigmaBestTipTransition` derives the observed reorg-depth input
-from explicit old-tip, new-tip, and common-ancestor heights, with a helper for
-taking the maximum rollback depth over a transition window.
+and the `_with_verifier` helpers let a production source require stricter
+fat-pointer validation before non-null marker work enters the participating
+numerator. `DynamicSigmaHeaderObservationWindow` lets callers provide headers
+directly alongside Tenderlink round counters, best-tip transitions, variance
+telemetry, rollback-risk estimates, and economic exposure inputs, then builds
+the same telemetry components as the lower-level hash-work observation path.
+`DynamicSigmaBestTipTransition` derives the observed reorg-depth input from
+explicit old-tip, new-tip, and common-ancestor heights, with a helper for taking
+the maximum rollback depth over a transition window.
 `telemetry_components_from_observation_window` composes these source-shaped
 hash-work observations, round counters, and best-tip transitions into telemetry
 components before proposal evidence selection. The branch also
@@ -1146,11 +1147,13 @@ This model is intentionally narrow. The next useful extensions are:
   Tenderlink hooks an exact round-counter contract, the hash-work observation
   accumulator gives source producers an exact participation-numerator contract,
   the header adapter derives a work-weighted participation share from the
-  current Crosslink fat-pointer marker, the header observation-window assembler
-  composes those headers with round and fork evidence into telemetry components,
-  and the pure rollback-depth helper derives the observed reorg-depth input from
-  explicit best-tip transition evidence. The observation-window assembler now
-  composes source-shaped inputs into telemetry components, and the
+  current Crosslink fat-pointer marker, custom verifier hooks can replace that
+  prototype marker with stricter production validation, the header
+  observation-window assembler composes those headers with round and fork
+  evidence into telemetry components, and the pure rollback-depth helper derives
+  the observed reorg-depth input from explicit best-tip transition evidence. The
+  observation-window assembler now composes source-shaped inputs into telemetry
+  components, and the
   prototype proposal path uses it. The pure hysteresis helper covers bounded
   sigma decreases for short-window stability, and the prototype evidence builder
   now applies an explicit hysteresis state before carrying `selected_sigma`. The

@@ -685,11 +685,27 @@ pub fn observed_hash_work_participation(
 /// The current source marker is the consensus-visible Crosslink fat pointer in
 /// the header. A non-null marker counts the header work as participating, while
 /// a null marker still contributes to the total observed hash-work denominator.
-/// Production callers that need stronger fat-pointer validation should perform
-/// that validation before treating a header as verified participation.
 pub fn hash_work_observation_from_header(
     header: &Header,
 ) -> Result<DynamicSigmaHashWorkObservation, DynamicSigmaHeaderObservationError> {
+    hash_work_observation_from_header_with_verifier(
+        header,
+        default_header_participation_marker_verifier,
+    )
+}
+
+/// Convert a PoW header into a hash-work observation with custom marker validation.
+///
+/// The verifier is only consulted for non-null Crosslink fat pointers. Returning
+/// `true` means the non-null marker is accepted as verified Crosslink
+/// participation for this source window.
+pub fn hash_work_observation_from_header_with_verifier<F>(
+    header: &Header,
+    marker_verifier: F,
+) -> Result<DynamicSigmaHashWorkObservation, DynamicSigmaHeaderObservationError>
+where
+    F: FnOnce(&FatPointerToBftBlock) -> bool,
+{
     let hash_work = header
         .difficulty_threshold
         .to_work()
@@ -700,7 +716,10 @@ pub fn hash_work_observation_from_header(
         return Err(DynamicSigmaHeaderObservationError::ZeroHeaderWork);
     }
 
-    let participation = if header_has_crosslink_participation_marker(header) {
+    let fat_pointer = &header.fat_pointer_to_bft_block;
+    let participation = if default_header_participation_marker_verifier(fat_pointer)
+        && marker_verifier(fat_pointer)
+    {
         DynamicSigmaHashParticipation::VerifiedParticipating
     } else {
         DynamicSigmaHashParticipation::NotVerifiedParticipating
@@ -716,14 +735,28 @@ pub fn hash_work_observation_from_header(
 pub fn hash_work_observations_from_headers(
     headers: &[Header],
 ) -> Result<Vec<DynamicSigmaHashWorkObservation>, DynamicSigmaHeaderObservationError> {
+    hash_work_observations_from_headers_with_verifier(
+        headers,
+        default_header_participation_marker_verifier,
+    )
+}
+
+/// Convert PoW headers into hash-work observations with custom marker validation.
+pub fn hash_work_observations_from_headers_with_verifier<F>(
+    headers: &[Header],
+    marker_verifier: F,
+) -> Result<Vec<DynamicSigmaHashWorkObservation>, DynamicSigmaHeaderObservationError>
+where
+    F: Fn(&FatPointerToBftBlock) -> bool,
+{
     headers
         .iter()
-        .map(hash_work_observation_from_header)
+        .map(|header| hash_work_observation_from_header_with_verifier(header, &marker_verifier))
         .collect()
 }
 
-fn header_has_crosslink_participation_marker(header: &Header) -> bool {
-    header.fat_pointer_to_bft_block != FatPointerToBftBlock::null()
+fn default_header_participation_marker_verifier(fat_pointer: &FatPointerToBftBlock) -> bool {
+    *fat_pointer != FatPointerToBftBlock::null()
 }
 
 impl DynamicSigmaTelemetryComponents {
@@ -897,8 +930,23 @@ pub fn telemetry_components_from_observation_window(
 pub fn telemetry_components_from_header_observation_window(
     window: DynamicSigmaHeaderObservationWindow<'_>,
 ) -> Result<DynamicSigmaTelemetryComponents, DynamicSigmaHeaderObservationWindowError> {
-    let hash_work_observations = hash_work_observations_from_headers(window.pow_headers)
-        .map_err(DynamicSigmaHeaderObservationWindowError::InvalidHeader)?;
+    telemetry_components_from_header_observation_window_with_verifier(
+        window,
+        default_header_participation_marker_verifier,
+    )
+}
+
+/// Assemble header-derived source observations with custom marker validation.
+pub fn telemetry_components_from_header_observation_window_with_verifier<F>(
+    window: DynamicSigmaHeaderObservationWindow<'_>,
+    marker_verifier: F,
+) -> Result<DynamicSigmaTelemetryComponents, DynamicSigmaHeaderObservationWindowError>
+where
+    F: Fn(&FatPointerToBftBlock) -> bool,
+{
+    let hash_work_observations =
+        hash_work_observations_from_headers_with_verifier(window.pow_headers, marker_verifier)
+            .map_err(DynamicSigmaHeaderObservationWindowError::InvalidHeader)?;
 
     telemetry_components_from_observation_window(DynamicSigmaTelemetryObservationWindow {
         hash_work_observations: &hash_work_observations,
@@ -1784,6 +1832,39 @@ mod tests {
     }
 
     #[test]
+    fn header_observation_uses_custom_participation_verifier() {
+        let participating_header = header_with_fat_pointer(participating_fat_pointer());
+        let null_header = header_with_fat_pointer(FatPointerToBftBlock::null());
+
+        let rejected_observation = hash_work_observation_from_header_with_verifier(
+            &participating_header,
+            |_fat_pointer| false,
+        )
+        .expect("valid header work should assemble even when marker verification fails");
+        let accepted_observation = hash_work_observation_from_header_with_verifier(
+            &participating_header,
+            |_fat_pointer| true,
+        )
+        .expect("valid header work should assemble when marker verification succeeds");
+        let null_observation =
+            hash_work_observation_from_header_with_verifier(&null_header, |_fat_pointer| true)
+                .expect("valid null-marker header work should assemble");
+
+        assert_eq!(
+            rejected_observation.participation,
+            DynamicSigmaHashParticipation::NotVerifiedParticipating,
+        );
+        assert_eq!(
+            accepted_observation.participation,
+            DynamicSigmaHashParticipation::VerifiedParticipating,
+        );
+        assert_eq!(
+            null_observation.participation,
+            DynamicSigmaHashParticipation::NotVerifiedParticipating,
+        );
+    }
+
+    #[test]
     fn headers_feed_dynamic_sigma_hash_participation_floor() {
         let observations = hash_work_observations_from_headers(&[
             header_with_fat_pointer(participating_fat_pointer()),
@@ -1936,6 +2017,31 @@ mod tests {
         assert_eq!(decision.hash_participation_floor, params().max_sigma);
         assert_eq!(decision.reorg_floor, params().raised_sigma);
         assert_eq!(decision.sigma, params().max_sigma);
+    }
+
+    #[test]
+    fn header_observation_window_uses_custom_participation_verifier() {
+        let headers = [
+            header_with_fat_pointer(participating_fat_pointer()),
+            header_with_fat_pointer(participating_fat_pointer()),
+        ];
+
+        let components = telemetry_components_from_header_observation_window_with_verifier(
+            DynamicSigmaHeaderObservationWindow {
+                pow_headers: &headers,
+                round_counters: decided_round_counters(10),
+                best_tip_transitions: &[],
+                measured_block_interval_variance_pct: 0,
+                rollback_risk: low_risk_curve(),
+                value_at_risk_units: 1000,
+                max_acceptable_expected_loss_units: 100,
+            },
+            |_fat_pointer| false,
+        )
+        .expect("valid header window should assemble even when verification rejects markers");
+
+        assert_eq!(components.total_hash_work, Some(4));
+        assert_eq!(components.crosslink_participating_hash_work, Some(0));
     }
 
     #[test]
