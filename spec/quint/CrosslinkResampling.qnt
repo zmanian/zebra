@@ -141,6 +141,29 @@ module CrosslinkResampling {
       m.src == Proposer.get(r) and m.round == r and m.proposal == v
     )
 
+  def HasNilValidRoundProposal(r: Round_t, v: Snapshot_t): bool =
+    msgsPropose.get(r).exists(m =>
+      m.src == Proposer.get(r) and
+      m.round == r and
+      m.proposal == v and
+      m.validRound == NilRound
+    )
+
+  def HasConcreteValidRoundProposal(
+    r: Round_t,
+    v: Snapshot_t,
+    vr: Round_t,
+  ): bool =
+    msgsPropose.get(r).exists(m =>
+      m.src == Proposer.get(r) and
+      m.round == r and
+      m.proposal == v and
+      m.validRound == vr and
+      vr.in(Rounds) and
+      vr < r and
+      PrevoteQuorum(vr, v)
+    )
+
   def HasPrevoteJustifiedProposal(r: Round_t, v: Snapshot_t): bool =
     msgsPropose.get(r).exists(m =>
       m.src == Proposer.get(r) and
@@ -349,6 +372,26 @@ module CrosslinkResampling {
       msgsPrecommit' = msgsPrecommit,
       evidencePropose' = evidencePropose,
       evidencePrecommit' = evidencePrecommit,
+    }
+  }
+
+  action UponProposalInPropose(p: Proc_t, v: Snapshot_t): bool = {
+    val r = round.get(p)
+    all {
+      HasNilValidRoundProposal(r, v),
+      UponProposalPrevote(p, v),
+    }
+  }
+
+  action UponProposalInProposeAndPrevote(
+    p: Proc_t,
+    v: Snapshot_t,
+    vr: Round_t,
+  ): bool = {
+    val r = round.get(p)
+    all {
+      HasConcreteValidRoundProposal(r, v, vr),
+      UponProposalPrevote(p, v),
     }
   }
 
@@ -1009,7 +1052,10 @@ module CrosslinkResampling {
     any {
       InsertProposal(p),
       nondet v = oneOf(Snapshots)
-      UponProposalPrevote(p, v),
+      UponProposalInPropose(p, v),
+      nondet v = oneOf(Snapshots)
+      nondet vr = oneOf(Rounds)
+      UponProposalInProposeAndPrevote(p, v, vr),
       TimeoutProposePrevoteNil(p),
       nondet v = oneOf(Snapshots)
       UponValuePrevoteQuorum(p, v),

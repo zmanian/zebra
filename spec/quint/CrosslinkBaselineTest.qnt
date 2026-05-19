@@ -35,7 +35,7 @@ module CrosslinkBaselineParameterizedShellTest {
     BaselineInitWithFaultyEvidence
       .then(BaselineInsertProposal("p1"))
       .then(all {
-        assert(BaselineHasProposal(0, BaselineHeadMinusSigma(0))),
+        assert(BaselineHasProposal(0, "a1")),
         assert(BaselineEvidenceCoversObservedMessages),
         assert(BaselineFaultyInitSafety),
         BaselineUnchangedAll,
@@ -213,6 +213,54 @@ module CrosslinkBaselineN4F1StableTest {
             m.proposal == "a1" and
             m.validRound == 0
         )),
+        assert(msgsPrevote.get(1).exists(m =>
+          m.src == "p1" and m.round == 1 and m.id == "a1"
+        )),
+        assert(BaselineN4F1StableSafety),
+        unchangedAll,
+      })
+  }
+
+  run nilValidRoundProposalHandlerPrevotesTest = {
+    Init
+      .then(InsertProposal("p1"))
+      .then(UponProposalInPropose("p1", "a1"))
+      .then(all {
+        assert(msgsPrevote.get(0).exists(m =>
+          m.src == "p1" and m.round == 0 and m.id == "a1"
+        )),
+        assert(BaselineN4F1StableSafety),
+        unchangedAll,
+      })
+  }
+
+  run validRoundProposalHandlerWithoutPrevoteQuorumIsRejectedTest = {
+    Init
+      .then(SeedValidNilPrecommitState("p1"))
+      .then(SeedValidNilPrecommitState("p2"))
+      .then(SeedValidNilPrecommitState("p3"))
+      .then(StartNextRoundAfterPrecommitQuorum("p1"))
+      .then(StartNextRoundAfterPrecommitQuorum("p2"))
+      .then(StartNextRoundAfterPrecommitQuorum("p3"))
+      .then(InsertProposal("p2"))
+      .then(UponProposalInProposeAndPrevote("p1", "a1", 0))
+      .fail()
+  }
+
+  run validRoundProposalHandlerWithPrevoteQuorumIsAcceptedTest = {
+    Init
+      .then(InsertProposal("p1"))
+      .then(UponProposalInPropose("p1", "a1"))
+      .then(UponProposalInPropose("p2", "a1"))
+      .then(UponProposalInPropose("p3", "a1"))
+      .then(UponValuePrevoteQuorum("p2", "a1"))
+      .then(TimeoutPrevotePrecommitNil("p1"))
+      .then(TimeoutPrecommitStartNextRound("p1"))
+      .then(TimeoutPrecommitStartNextRound("p2"))
+      .then(InsertProposal("p2"))
+      .then(UponProposalInProposeAndPrevote("p1", "a1", 0))
+      .then(all {
+        assert(PrevoteQuorum(0, "a1")),
         assert(msgsPrevote.get(1).exists(m =>
           m.src == "p1" and m.round == 1 and m.id == "a1"
         )),

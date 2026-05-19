@@ -57,6 +57,7 @@ available.
 `CrosslinkBaselineTest.qnt` adds upstream-style smoke tests for the baseline
 shell: parameterized faulty-init coverage, fixed-sigma sampling, normal
 decision, no double proposal, nil prevote quorum precommit-nil handling,
+the split nil-valid-round and concrete-valid-round proposal handlers,
 timeout-driven nil votes and round advance, future-round catchup, deriving a
 fresh `head - sigma` value after a fork switch, and the sticky baseline witness
 that still carries the stale fixed-sigma sample. The forking baseline test also
@@ -465,8 +466,11 @@ no-double-proposal behavior, the normal Tendermint transition from a nil prevote
 quorum to nil precommits, and the valid-round proposal path. The valid-round
 witnesses reject a proposal whose `validRound` has no supporting prevote quorum,
 then accept the same shape once round 0 really has a 2f+1 prevote quorum for
-the proposed value. `CorrectValuePrevotesHaveJustifiedProposal` is also part of
-`Safety`, so every correct non-nil prevote must have a matching
+the proposed value. The model also exposes the upstream-shaped split between
+`UponProposalInPropose` for nil-valid-round proposals and
+`UponProposalInProposeAndPrevote` for proposals justified by an earlier prevote
+quorum; `Next` uses that split. `CorrectValuePrevotesHaveJustifiedProposal` is
+also part of `Safety`, so every correct non-nil prevote must have a matching
 `HasPrevoteJustifiedProposal` witness. The forking `n4_f1` test checks that the
 shell derives the fresh `head - sigma` sample after a fork switch while the
 sticky baseline still carries the old sample into the next round. The `f = 2`
