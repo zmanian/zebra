@@ -158,6 +158,7 @@ $QUINT typecheck spec/quint/CrosslinkComposed.qnt
 $QUINT typecheck spec/quint/CrosslinkBftHeights.qnt
 $QUINT typecheck spec/quint/CrosslinkDynamicSigma.qnt
 $QUINT typecheck spec/quint/CrosslinkDynamicSigmaCalibration.qnt
+$QUINT typecheck spec/quint/CrosslinkDynamicSigmaTelemetry.qnt
 $QUINT typecheck spec/quint/CrosslinkDynamicSigmaForkSchedule.qnt
 $QUINT typecheck spec/quint/CrosslinkDynamicSigmaBranchCompetition.qnt
 $QUINT typecheck spec/quint/CrosslinkDynamicSigmaResampling.qnt
@@ -643,6 +644,16 @@ $QUINT run spec/quint/CrosslinkDynamicSigma.qnt \
 
 $QUINT run spec/quint/CrosslinkDynamicSigmaCalibration.qnt \
   --main=CrosslinkDynamicSigmaCalibrationModel \
+  --init=Init \
+  --step=Next \
+  --max-steps=8 \
+  --max-samples=1000 \
+  --invariant=Safety \
+  --backend=rust \
+  --verbosity=0
+
+$QUINT run spec/quint/CrosslinkDynamicSigmaTelemetry.qnt \
+  --main=CrosslinkDynamicSigmaTelemetryModel \
   --init=Init \
   --step=Next \
   --max-steps=8 \
