@@ -96,7 +96,9 @@ payload envelope. The live Tenderlink proposal, validation, and decided-block
 callbacks now route through a config-aware payload path: default config still
 emits and accepts the legacy fixed-sigma `BftBlock`, while
 `dynamic_sigma_prototype` emits and validates the tagged dynamic-sigma envelope
-using shared prototype parameters and proposal-carried evidence.
+using shared prototype parameters and proposal-carried evidence. The decoded
+payload carries its selected confirmation depth into voting-time stale checks,
+so a prototype dynamic proposal is checked against `head - selected_sigma`.
 
 `CrosslinkDynamicSigmaForkSchedule.qnt` composes the dynamic-sigma controller
 with the derived PoW fork schedule. In this model, dynamic sigma consumes

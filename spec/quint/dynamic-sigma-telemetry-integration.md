@@ -141,10 +141,12 @@ and accepted by the default prototype path. Tagged dynamic-sigma payloads are
 rejected by default, but a prototype-only config flag enables the proposer to
 emit the tagged envelope and enables validation callbacks to check the envelope
 against shared prototype dynamic-sigma parameters before accepting the carried
-BFT block. This preserves backward compatibility while preventing a
-dynamic-sigma payload from being silently treated as a fixed-sigma block, and it
-keeps the dynamic variant behind an explicit opt-in until production telemetry
-exists.
+BFT block. The decoded payload also carries its selected confirmation depth into
+the voting-time current-stream staleness check, so prototype dynamic proposals
+are compared against `head - selected_sigma` instead of the fixed-sigma sample.
+This preserves backward compatibility while preventing a dynamic-sigma payload
+from being silently treated as a fixed-sigma block, and it keeps the dynamic
+variant behind an explicit opt-in until production telemetry exists.
 
 In that prototype-gated path, hash participation already affects payload
 validity through the carried evidence: if the Crosslink-participating work share
@@ -193,7 +195,8 @@ A production implementation of the dynamic-sigma variant should provide:
   verifier and BFT block-construction helper cover identical evidence
   determinism, evidence serialization, tagged payload encoding, payload/block
   mismatch rejection, fixed-vs-dynamic payload routing, below-floor rejection,
-  selected-sigma header depth, and prototype-gated proposal emission, but live
-  dynamic proposal acceptance still needs production telemetry-source tests
+  selected-sigma header depth, prototype-gated proposal emission, and
+  selected-sigma voting-time stale checks, but live dynamic proposal acceptance
+  still needs production telemetry-source tests
 - Quint coverage connecting the implemented telemetry rules back to
   `CrosslinkDynamicSigmaTelemetry.qnt`

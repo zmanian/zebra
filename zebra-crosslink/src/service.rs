@@ -167,18 +167,29 @@ pub fn spawn_new_tfl_service(
 
     let handle_mtx2 = handle_mtx.clone();
     let force_feed_pos: ForceFeedPoSBlockProcedure = Arc::new(move |block, fat_pointer| {
-        let handle = handle_mtx2.lock().unwrap().clone().unwrap();
+        let handle: TFLServiceHandle = handle_mtx2.lock().unwrap().clone().unwrap();
         Box::pin(async move {
+            let confirmation_depth = crate::proposal_confirmation_depth(&handle.config);
             let accepted = if fat_pointer.points_at_block_hash() == block.blake3_hash() {
-                crate::validate_bft_block_from_malachite(&handle, block.as_ref()).await
+                crate::validate_bft_block_from_malachite(
+                    &handle,
+                    block.as_ref(),
+                    confirmation_depth,
+                )
+                .await
                     == tenderlink::TMStatus::Pass
             } else {
                 false
             };
             if accepted {
                 info!("Successfully force-fed BFT block");
-                crate::new_decided_bft_block_from_malachite(&handle, block.as_ref(), &fat_pointer)
-                    .await;
+                crate::new_decided_bft_block_from_malachite(
+                    &handle,
+                    block.as_ref(),
+                    confirmation_depth,
+                    &fat_pointer,
+                )
+                .await;
                 true
             } else {
                 error!("Failed to force-feed BFT block");

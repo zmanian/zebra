@@ -579,6 +579,12 @@ enum TenderlinkPayloadEncodeError {
     Serialization,
 }
 
+#[derive(Debug, Eq, PartialEq)]
+struct DecodedTenderlinkPayload {
+    block: BftBlock,
+    confirmation_depth: u64,
+}
+
 fn dynamic_sigma_params_from_config(
     config: &config::Config,
 ) -> Option<dynamic_sigma::DynamicSigmaParameters> {
@@ -650,24 +656,31 @@ fn encode_proposed_tenderlink_payload(
 fn decode_tenderlink_payload(
     config: &config::Config,
     bytes: &[u8],
-) -> Result<BftBlock, TenderlinkPayloadDecodeError> {
+) -> Result<DecodedTenderlinkPayload, TenderlinkPayloadDecodeError> {
     if bytes.starts_with(&DYNAMIC_SIGMA_BFT_BLOCK_PAYLOAD_MAGIC) && !config.dynamic_sigma_prototype
     {
         return Err(TenderlinkPayloadDecodeError::DynamicSigmaUnsupported);
     }
 
     match BftBlockPayload::zcash_deserialize_from_slice(bytes) {
-        Ok(BftBlockPayload::FixedSigma(block)) => Ok(block),
+        Ok(BftBlockPayload::FixedSigma(block)) => Ok(DecodedTenderlinkPayload {
+            block,
+            confirmation_depth: PROTOTYPE_PARAMETERS.bc_confirmation_depth_sigma,
+        }),
         Ok(BftBlockPayload::DynamicSigma(payload)) => {
             let Some(params) = dynamic_sigma_params_from_config(config) else {
                 return Err(TenderlinkPayloadDecodeError::DynamicSigmaUnsupported);
             };
+            let confirmation_depth = payload.evidence.selected_sigma;
 
             payload
                 .validate(params)
                 .map_err(|_| TenderlinkPayloadDecodeError::DynamicSigmaInvalid)?;
 
-            Ok(payload.block)
+            Ok(DecodedTenderlinkPayload {
+                block: payload.block,
+                confirmation_depth,
+            })
         }
         Err(_) => Err(TenderlinkPayloadDecodeError::Invalid),
     }
@@ -676,7 +689,7 @@ fn decode_tenderlink_payload(
 fn decode_fixed_sigma_tenderlink_payload(
     bytes: &[u8],
 ) -> Result<BftBlock, TenderlinkPayloadDecodeError> {
-    decode_tenderlink_payload(&config::Config::default(), bytes)
+    decode_tenderlink_payload(&config::Config::default(), bytes).map(|payload| payload.block)
 }
 
 fn fat_pointer_has_roster_quorum(
@@ -713,6 +726,7 @@ fn fat_pointer_has_roster_quorum(
 async fn new_decided_bft_block_from_malachite(
     tfl_handle: &TFLServiceHandle,
     new_block: &BftBlock,
+    confirmation_depth: u64,
     fat_pointer: &FatPointerToBftBlock2,
 ) -> Vec<tenderlink::SortedRosterMember> {
     let call = tfl_handle.call.clone();
@@ -757,6 +771,7 @@ async fn new_decided_bft_block_from_malachite(
             &tfl_handle,
             &mut internal,
             new_block,
+            confirmation_depth,
             BftValidationMode::Decided,
         )
         .await,
@@ -1006,12 +1021,14 @@ fn tenderlink_roster_from_internal(vals: &[MalValidator]) -> Vec<SortedRosterMem
 async fn validate_bft_block_from_malachite(
     tfl_handle: &TFLServiceHandle,
     new_block: &BftBlock,
+    confirmation_depth: u64,
 ) -> tenderlink::TMStatus {
     let mut internal = tfl_handle.internal.lock().await;
     validate_bft_block_from_malachite_already_locked(
         tfl_handle,
         &mut internal,
         new_block,
+        confirmation_depth,
         BftValidationMode::Voting,
     )
     .await
@@ -1020,10 +1037,10 @@ async fn validate_bft_block_from_malachite_already_locked(
     tfl_handle: &TFLServiceHandle,
     internal: &mut TFLServiceInternal,
     new_block: &BftBlock,
+    confirmation_depth: u64,
     mode: BftValidationMode,
 ) -> tenderlink::TMStatus {
     let call = tfl_handle.call.clone();
-    let params = &PROTOTYPE_PARAMETERS;
 
     if new_block.previous_block_fat_ptr.points_at_block_hash()
         != internal.fat_pointer_to_tip.points_at_block_hash()
@@ -1061,7 +1078,7 @@ async fn validate_bft_block_from_malachite_already_locked(
     if matches!(mode, BftValidationMode::Voting) {
         let current_candidate_height = match (call.state)(StateRequest::Tip).await {
             Ok(StateResponse::Tip(Some((tip_height, _tip_hash)))) => {
-                finality_candidate_height_at_depth(tip_height, params.bc_confirmation_depth_sigma)
+                finality_candidate_height_at_depth(tip_height, confirmation_depth)
             }
             Ok(StateResponse::Tip(None)) => None,
             _ => return tenderlink::TMStatus::Indeterminate,
@@ -1493,8 +1510,13 @@ async fn tfl_service_main_loop(internal_handle: TFLServiceHandle) -> Result<(), 
                 let tfl_handle2 = tfl_handle2.clone();
                 Box::pin(async move {
                     match decode_tenderlink_payload(&tfl_handle2.config, block.0.as_slice()) {
-                        Ok(bft_block) => {
-                            validate_bft_block_from_malachite(&tfl_handle2, &bft_block).await
+                        Ok(payload) => {
+                            validate_bft_block_from_malachite(
+                                &tfl_handle2,
+                                &payload.block,
+                                payload.confirmation_depth,
+                            )
+                            .await
                         }
                         Err(TenderlinkPayloadDecodeError::DynamicSigmaUnsupported) => {
                             error!("Dynamic-sigma Tenderlink payload rejected: prototype dynamic sigma is not enabled.");
@@ -1515,10 +1537,11 @@ async fn tfl_service_main_loop(internal_handle: TFLServiceHandle) -> Result<(), 
                 let tfl_handle3 = tfl_handle3.clone();
                 Box::pin(async move {
                     match decode_tenderlink_payload(&tfl_handle3.config, block.0.as_slice()) {
-                        Ok(bft_block) => {
+                        Ok(payload) => {
                             new_decided_bft_block_from_malachite(
                                 &tfl_handle3,
-                                &bft_block,
+                                &payload.block,
+                                payload.confirmation_depth,
                                 &fat_pointer.into(),
                             )
                             .await
@@ -2554,6 +2577,7 @@ mod tests {
 
         assert_eq!(
             decoded
+                .block
                 .zcash_serialize_to_vec()
                 .expect("decoded block serialization should succeed"),
             payload
@@ -2561,6 +2585,51 @@ mod tests {
                 .zcash_serialize_to_vec()
                 .expect("payload block serialization should succeed"),
         );
+    }
+
+    #[test]
+    fn tenderlink_payload_decoder_reports_fixed_confirmation_depth() {
+        let block = BftBlock {
+            version: 1,
+            height: 1,
+            previous_block_fat_ptr: FatPointerToBftBlock2::null(),
+            finalization_candidate_height: 10,
+            headers: Vec::new(),
+        };
+        let encoded = block
+            .zcash_serialize_to_vec()
+            .expect("block serialization should succeed");
+
+        let decoded = decode_tenderlink_payload(&config::Config::default(), encoded.as_slice())
+            .expect("fixed payload should decode");
+
+        assert_eq!(
+            decoded.confirmation_depth,
+            PROTOTYPE_PARAMETERS.bc_confirmation_depth_sigma,
+        );
+    }
+
+    #[test]
+    fn tenderlink_payload_decoder_reports_dynamic_selected_sigma() {
+        let mut config = config::Config::default();
+        config.dynamic_sigma_prototype = true;
+        let payload = DynamicSigmaBftBlockPayload::try_from_with_evidence(
+            PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS,
+            dynamic_sigma_evidence(90, 1),
+            1,
+            FatPointerToBftBlock2::null(),
+            10,
+            vec![test_header(BlockHash([0; 32]))],
+        )
+        .expect("valid dynamic-sigma evidence should build a payload");
+        let encoded = payload
+            .zcash_serialize_to_vec()
+            .expect("payload serialization should succeed");
+
+        let decoded = decode_tenderlink_payload(&config, encoded.as_slice())
+            .expect("dynamic payload should decode");
+
+        assert_eq!(decoded.confirmation_depth, 1);
     }
 
     #[test]
@@ -2624,6 +2693,7 @@ mod tests {
             .expect("legacy payload should decode");
         assert_eq!(
             decoded
+                .block
                 .zcash_serialize_to_vec()
                 .expect("decoded legacy block serialization should succeed"),
             block
@@ -2652,6 +2722,7 @@ mod tests {
             .expect("dynamic payload should decode");
         assert_eq!(
             decoded
+                .block
                 .zcash_serialize_to_vec()
                 .expect("decoded dynamic block serialization should succeed"),
             block
