@@ -20,6 +20,7 @@ module CrosslinkDynamicSigma {
   type Round_t = int
   type Sigma_t = int
   type Pct_t = int
+  type Snapshot_t = str
 
   const MaxRound: Round_t
   const BaseSigma: Sigma_t
@@ -29,9 +30,12 @@ module CrosslinkDynamicSigma {
   const CriticalHashParticipationPct: Pct_t
   const HashParticipationPct: Round_t -> Pct_t
   const RoundFailed: Round_t -> bool
+  const Snapshots: Set[Snapshot_t]
+  const SnapshotAtSigma: Round_t -> Sigma_t -> Snapshot_t
 
   pure val Rounds = 0.to(MaxRound)
   pure val Percentages = 0.to(100)
+  pure val SigmaLadder = Set(BaseSigma, RaisedSigma, MaxSigma)
 
   assume max_round_non_negative =
     MaxRound >= 0
@@ -45,9 +49,17 @@ module CrosslinkDynamicSigma {
     Rounds.forall(r =>
       0 <= HashParticipationPct.get(r) and HashParticipationPct.get(r) <= 100
     )
+  assume sampled_snapshots_are_valid =
+    Rounds.forall(r =>
+      SigmaLadder.forall(s =>
+        Snapshots.contains(SnapshotAtSigma.get(r).get(s))
+      )
+    )
 
   var round: Round_t
   var sigma: Sigma_t
+  var sampledSnapshot: Snapshot_t
+  var sampleStability: str
   var controllerStatus: str
   var firedAction: str
 
@@ -89,9 +101,26 @@ module CrosslinkDynamicSigma {
       "healthy-hash-participation"
     }
 
+  pure def HeadMinusSigma(r: Round_t, s: Sigma_t): Snapshot_t =
+    SnapshotAtSigma.get(r).get(s)
+
+  pure def SampleStableAcross(previousRound: Round_t, nextRound: Round_t, s: Sigma_t): bool =
+    HeadMinusSigma(previousRound, s) == HeadMinusSigma(nextRound, s)
+
+  pure def SampleStabilityStatusFor(r: Round_t, s: Sigma_t): str =
+    if (r == 0) {
+      "initial-sample"
+    } else if (SampleStableAcross(r - 1, r, s)) {
+      "stable-under-current-sigma"
+    } else {
+      "unstable-under-current-sigma"
+    }
+
   action Init = all {
     round' = 0,
     sigma' = HashParticipationSigmaFloor(HashParticipationPct.get(0)),
+    sampledSnapshot' = HeadMinusSigma(0, HashParticipationSigmaFloor(HashParticipationPct.get(0))),
+    sampleStability' = SampleStabilityStatusFor(0, HashParticipationSigmaFloor(HashParticipationPct.get(0))),
     controllerStatus' = ControllerStatusFor(HashParticipationPct.get(0)),
     firedAction' = "Init",
   }
@@ -109,6 +138,8 @@ module CrosslinkDynamicSigma {
       nextRound.in(Rounds),
       round' = nextRound,
       sigma' = nextSigma,
+      sampledSnapshot' = HeadMinusSigma(nextRound, nextSigma),
+      sampleStability' = SampleStabilityStatusFor(nextRound, nextSigma),
       controllerStatus' = ControllerStatusFor(nextHashParticipation),
       firedAction' =
         if (RoundFailed.get(oldRound)) {
@@ -124,6 +155,8 @@ module CrosslinkDynamicSigma {
   action Stutter = all {
     round' = round,
     sigma' = sigma,
+    sampledSnapshot' = sampledSnapshot,
+    sampleStability' = sampleStability,
     controllerStatus' = controllerStatus,
     firedAction' = firedAction,
   }
@@ -140,6 +173,15 @@ module CrosslinkDynamicSigma {
   val SigmaRespectsHashParticipationFloor =
     sigma >= HashParticipationSigmaFloor(HashParticipationPct.get(round))
 
+  val SampledSnapshotIsValid =
+    Snapshots.contains(sampledSnapshot)
+
+  val SampledSnapshotMatchesSigma =
+    sampledSnapshot == HeadMinusSigma(round, sigma)
+
+  val SampleStabilityMatchesSigma =
+    sampleStability == SampleStabilityStatusFor(round, sigma)
+
   val HashParticipationFloorIsMonotone =
     Percentages.forall(lower =>
       Percentages.forall(higher =>
@@ -154,6 +196,9 @@ module CrosslinkDynamicSigma {
   val Safety =
     SigmaWithinBounds and
     SigmaRespectsHashParticipationFloor and
+    SampledSnapshotIsValid and
+    SampledSnapshotMatchesSigma and
+    SampleStabilityMatchesSigma and
     HashParticipationFloorIsMonotone and
     ControllerStatusMatchesHashParticipation
 }
@@ -177,6 +222,8 @@ module CrosslinkDynamicSigmaTest {
       .then(all {
         assert(sigma == RaisedSigma),
         assert(firedAction == "AdvanceAfterRoundFailure"),
+        assert(sampledSnapshot == "deep-a"),
+        assert(sampleStability == "stable-under-current-sigma"),
         assert(Safety),
         Stutter,
       })
@@ -194,6 +241,11 @@ module CrosslinkDynamicSigmaTest {
     assert(HashParticipationFloorIsMonotone)
   }
 
+  run raisedSigmaCanStabilizeMovingPowSampleTest = all {
+    assert(not(SampleStableAcross(0, 1, BaseSigma))),
+    assert(SampleStableAcross(0, 1, RaisedSigma)),
+  }
+
   run observedLowHashParticipationRaisesLiveSigmaTest = {
     Init
       .then(AdvanceRound)
@@ -202,6 +254,8 @@ module CrosslinkDynamicSigmaTest {
         assert(sigma == RaisedSigma),
         assert(firedAction == "AdvanceWithLowHashParticipation"),
         assert(controllerStatus == "degraded-hash-participation"),
+        assert(sampledSnapshot == "deep-a"),
+        assert(sampleStability == "stable-under-current-sigma"),
         assert(Safety),
         Stutter,
       })
@@ -216,6 +270,8 @@ module CrosslinkDynamicSigmaTest {
         assert(sigma == MaxSigma),
         assert(firedAction == "AdvanceWithLowHashParticipation"),
         assert(controllerStatus == "critical-hash-participation"),
+        assert(sampledSnapshot == "final-a"),
+        assert(sampleStability == "stable-under-current-sigma"),
         assert(Safety),
         Stutter,
       })
@@ -241,6 +297,29 @@ module CrosslinkDynamicSigmaHashParticipationModel {
       1 -> false,
       2 -> false,
       3 -> false,
+    ),
+    Snapshots = Set("tip-a0", "tip-b1", "tip-c2", "tip-d3", "deep-a", "final-a"),
+    SnapshotAtSigma = Map(
+      0 -> Map(
+        1 -> "tip-a0",
+        3 -> "deep-a",
+        6 -> "final-a",
+      ),
+      1 -> Map(
+        1 -> "tip-b1",
+        3 -> "deep-a",
+        6 -> "final-a",
+      ),
+      2 -> Map(
+        1 -> "tip-c2",
+        3 -> "deep-a",
+        6 -> "final-a",
+      ),
+      3 -> Map(
+        1 -> "tip-d3",
+        3 -> "deep-a",
+        6 -> "final-a",
+      ),
     ),
   ).*
 }

@@ -39,7 +39,10 @@ participation raises the minimum sigma floor because the finalizers' observed
 PoW stream is less representative of the global longest-chain race. Round
 failures can still raise sigma, but they are not the only signal; below a
 critical hash-participation threshold, the model forces the maximum sigma and
-marks the controller state as degraded.
+marks the controller state as degraded. The bounded fixture also makes the
+`head - sigma` sample explicit: base sigma sees adjacent tip churn, while a
+raised sigma samples a deeper ancestor that remains stable across the same
+round boundary.
 
 ## Upstream Base
 
@@ -85,6 +88,7 @@ Typecheck:
 $QUINT typecheck spec/quint/CrosslinkResampling.qnt
 $QUINT typecheck spec/quint/CrosslinkForkFinality.qnt
 $QUINT typecheck spec/quint/CrosslinkComposed.qnt
+$QUINT typecheck spec/quint/CrosslinkDynamicSigma.qnt
 ```
 
 Witness the current sticky behavior:
@@ -216,6 +220,7 @@ This runs:
 - `lowHashParticipationRaisesSigmaFloorWithoutRoundFailureTest`
 - `criticalHashParticipationForcesMaxSigmaTest`
 - `hashParticipationSigmaFloorIsMonotoneTest`
+- `raisedSigmaCanStabilizeMovingPowSampleTest`
 - `observedLowHashParticipationRaisesLiveSigmaTest`
 - `observedCriticalHashParticipationForcesLiveMaxSigmaTest`
 
@@ -224,7 +229,9 @@ round failures tell the protocol that the current sampled stream is not stable
 enough for Tenderlink to decide, while hash-power participation estimates how
 much of the global PoW race is actually represented in the Crosslink-visible
 stream. Lower participation therefore raises the sigma floor even if the current
-round has not failed.
+round has not failed. The `raisedSigmaCanStabilizeMovingPowSampleTest` fixture
+shows the expected sampling effect directly: `head - baseSigma` changes across
+adjacent rounds, but `head - raisedSigma` remains on the same deeper ancestor.
 
 Randomized Rust-backend safety simulation:
 
@@ -390,18 +397,19 @@ safety invariants and the finalized-prefix safety invariants.
 
 The dynamic-sigma harness checks a bounded controller invariant: live sigma
 remains within the configured ladder, never falls below the floor implied by
-observed hash-power participation, and uses a monotone floor where lower
-participation cannot require a lower sigma than higher participation. This is
-still a controller sketch, not a calibrated stochastic model; it does not yet
-derive the thresholds from measured hashrate coverage, block interval variance,
-or reorg distributions.
+observed hash-power participation, tracks the `head - sigma` snapshot selected
+for the current round, and uses a monotone floor where lower participation cannot
+require a lower sigma than higher participation. This is still a controller
+sketch, not a calibrated stochastic model; it does not yet derive the thresholds
+from measured hashrate coverage, block interval variance, or reorg
+distributions.
 
 ## Next Extensions
 
 This model is intentionally narrow. The next useful extensions are:
 
-- replace the concrete fork fixture with parameterized PoW chains and
-  `head - sigma` sampling
+- replace the concrete fork and `head - sigma` fixtures with parameterized PoW
+  chains and adversarial reorg schedules
 - refine `CrosslinkDynamicSigma.qnt` with a calibrated stochastic controller
   that uses measured hash-power participation, round-failure rate, block
   interval variance, and observed reorg depth rather than the current three-step
