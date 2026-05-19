@@ -66,6 +66,11 @@ with the derived PoW fork schedule. In this model, dynamic sigma consumes
 rollback depth computed from best-tip transitions instead of a supplied
 `ObservedReorgDepth` map.
 
+`CrosslinkDynamicSigmaBranchCompetition.qnt` feeds the generated PoW
+branch-competition model into dynamic sigma. The controller now consumes a
+rollback-depth signal produced by published-tip work competition, including the
+adversarial branch release witness.
+
 `CrosslinkDynamicSigmaResampling.qnt` composes the derived fork signal with the
 nil-precommit resampling path. It checks that a fork switch can raise sigma
 before validators advance the abandoned Tenderlink round, and that the
@@ -127,6 +132,7 @@ $QUINT typecheck spec/quint/CrosslinkPowBranchCompetition.qnt
 $QUINT typecheck spec/quint/CrosslinkComposed.qnt
 $QUINT typecheck spec/quint/CrosslinkDynamicSigma.qnt
 $QUINT typecheck spec/quint/CrosslinkDynamicSigmaForkSchedule.qnt
+$QUINT typecheck spec/quint/CrosslinkDynamicSigmaBranchCompetition.qnt
 $QUINT typecheck spec/quint/CrosslinkDynamicSigmaResampling.qnt
 $QUINT typecheck spec/quint/CrosslinkDynamicSigmaFinality.qnt
 ```
@@ -349,6 +355,25 @@ base sigma. It then switches from `a4` to `b4`, derives rollback depth 2 from
 the fork schedule, and raises dynamic sigma from 1 to 3 without relying on a
 separately supplied observed-reorg map.
 
+Witness dynamic sigma consuming generated PoW branch competition:
+
+```sh
+$QUINT test spec/quint/CrosslinkDynamicSigmaBranchCompetition.qnt \
+  --main=CrosslinkDynamicSigmaBranchCompetitionModel \
+  --max-samples=100 \
+  --backend=rust
+```
+
+This runs:
+
+- `generatedCompetitionFeedsDynamicSigmaTest`
+- `generatedCompetitionForkSwitchRaisesDynamicSigmaTest`
+- `generatedRaisedSigmaSurvivesAdversarialSwitchTest`
+
+The composed fixture keeps base sigma while published work extends from `a3` to
+`a4`, then releases the adversarial `b4` branch. The generated best-tip switch
+derives rollback depth 2 and raises dynamic sigma from 1 to 3.
+
 Witness dynamic sigma composing with nil-precommit resampling:
 
 ```sh
@@ -495,6 +520,16 @@ $QUINT run spec/quint/CrosslinkDynamicSigmaForkSchedule.qnt \
   --backend=rust \
   --verbosity=0
 
+$QUINT run spec/quint/CrosslinkDynamicSigmaBranchCompetition.qnt \
+  --main=CrosslinkDynamicSigmaBranchCompetitionModel \
+  --init=BranchCompetitionDynamicInit \
+  --step=BranchCompetitionDynamicNext \
+  --max-steps=4 \
+  --max-samples=1000 \
+  --invariant=BranchCompetitionDynamicSafety \
+  --backend=rust \
+  --verbosity=0
+
 $QUINT run spec/quint/CrosslinkDynamicSigmaResampling.qnt \
   --main=CrosslinkDynamicSigmaResamplingModel \
   --init=DynamicResamplingInit \
@@ -589,6 +624,13 @@ $QUINT verify spec/quint/CrosslinkDynamicSigmaForkSchedule.qnt \
   --step=DerivedNext \
   --invariant=DerivedSafety
 
+$QUINT verify spec/quint/CrosslinkDynamicSigmaBranchCompetition.qnt \
+  --main=CrosslinkDynamicSigmaBranchCompetitionModel \
+  --max-steps=4 \
+  --init=BranchCompetitionDynamicInit \
+  --step=BranchCompetitionDynamicNext \
+  --invariant=BranchCompetitionDynamicSafety
+
 $QUINT verify spec/quint/CrosslinkDynamicSigmaResampling.qnt \
   --main=CrosslinkDynamicSigmaResamplingModel \
   --max-steps=8 \
@@ -672,6 +714,16 @@ The dynamic-sigma/fork-schedule composition reports no violation for
 - dynamic sigma respects the rollback-depth floor derived from the fork schedule
 - the controller status matches current hash participation
 
+The dynamic-sigma/branch-competition composition reports no violation for
+`BranchCompetitionDynamicSafety`, which combines:
+
+- the PoW branch-competition safety invariants
+- dynamic sigma stays within the configured ladder
+- dynamic sigma respects the hash-participation floor
+- dynamic sigma respects the rollback-depth floor derived from generated
+  best-tip work competition
+- the controller status matches current hash participation
+
 The dynamic-sigma/resampling composition reports no violation for
 `DynamicResamplingSafety`, which combines:
 
@@ -699,7 +751,7 @@ This model is intentionally narrow. The next useful extensions are:
 - calibrate the dynamic-sigma risk weights and thresholds against measured
   hash-power participation, round-failure rate, block interval variance, and
   observed reorg distributions
-- feed generated PoW branch competition into the dynamic-sigma/finality
+- feed generated PoW branch competition into the resampling and finality
   compositions, replacing the remaining fixed best-tip fixtures
 - add BFT heights so successive Tenderlink decisions update Crosslink finality
   directly
