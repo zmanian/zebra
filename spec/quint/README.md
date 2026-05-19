@@ -538,7 +538,9 @@ the carried `selected_sigma` is at least the telemetry-required floor, so a
 hysteresis-selected value above the floor remains valid without validators
 reconstructing private proposer state. The prototype service now owns an
 in-process hysteresis state and advances it after successfully encoding a
-dynamic proposal. Production still needs a durable, consensus-safe or
+dynamic proposal. The hysteresis policy and state now have deterministic Zcash
+serialization, giving a production source a stable persistence or
+proposal-carried encoding. Production still needs a durable, consensus-safe or
 proposal-verifiable source for that state before this becomes a deployed
 controller rule. The live proposal callback builds a single proposal plan, so
 the same dynamic-sigma evidence supplies both the BFT block construction depth
@@ -1177,8 +1179,10 @@ This model is intentionally narrow. The next useful extensions are:
   explicit hysteresis state before carrying `selected_sigma`. The proposal
   callback reuses that planned evidence for both depth selection and payload
   encoding, then advances the prototype service's in-process hysteresis state
-  after successful encoding. The remaining work is replacing the fixture with
-  consensus-safe or proposal-verifiable input producers and a durable production
-  hysteresis state source
+  after successful encoding. The hysteresis policy/state now have deterministic
+  Zcash serialization for a future durable or proposal-carried state source. The
+  remaining work is replacing the fixture with consensus-safe or
+  proposal-verifiable input producers and a durable production hysteresis state
+  source
 - refine the split projection checks into smaller inductive lemmas if bounds
   beyond the checked depth-10 projections still need very large JVM/Z3 heaps

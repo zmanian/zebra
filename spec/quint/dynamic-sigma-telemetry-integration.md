@@ -316,11 +316,14 @@ can now apply that helper from an explicit hysteresis state before carrying
 validators reject selected sigma below the telemetry-required floor, while a
 hysteresis-selected sigma above that floor remains valid. The prototype service
 now stores in-process hysteresis state and advances it after a dynamic proposal
-payload is successfully encoded. Production still needs a durable,
-consensus-safe or proposal-verifiable source for the hysteresis state before
-this becomes a deployed controller rule. The prototype proposal callback uses
-one proposal plan for both candidate-depth selection and payload encoding, which
-is the shape needed before that state is promoted beyond the prototype.
+payload is successfully encoded. `DynamicSigmaHysteresisParameters` and
+`DynamicSigmaHysteresisState` now also have deterministic Zcash serialization,
+so a production source has a stable encoding for persistence or
+proposal-carried state. Production still needs a durable, consensus-safe or
+proposal-verifiable source for the hysteresis state before this becomes a
+deployed controller rule. The prototype proposal callback uses one proposal plan
+for both candidate-depth selection and payload encoding, which is the shape
+needed before that state is promoted beyond the prototype.
 
 `CrosslinkDynamicSigmaHysteresis.qnt` mirrors that policy with bounded witnesses:
 participation-driven or reorg-driven sigma increases apply immediately, while
@@ -346,7 +349,8 @@ A production implementation of the dynamic-sigma variant should provide:
   enabled
 - a durable hysteresis state source if the dynamic variant should smooth sigma
   decreases across windows rather than selecting the raw required floor each
-  time
+  time; the hysteresis policy/state now have deterministic serialization, but
+  production still needs the storage or proposal-carried source policy
 - tests showing that lower hash participation never lowers sigma; the pure Rust
   controller now covers the bounded Quint telemetry fixture and raw-counter
   estimate construction, and the prototype-gated Tenderlink payload decoder now

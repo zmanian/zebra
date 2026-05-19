@@ -603,6 +603,40 @@ impl ZcashDeserialize for TelemetryEstimateMargins {
     }
 }
 
+impl ZcashSerialize for DynamicSigmaHysteresisParameters {
+    fn zcash_serialize<W: Write>(&self, mut writer: W) -> Result<(), std::io::Error> {
+        write_u64_le(&mut writer, self.decrease_confirmation_windows)?;
+
+        Ok(())
+    }
+}
+
+impl ZcashDeserialize for DynamicSigmaHysteresisParameters {
+    fn zcash_deserialize<R: Read>(mut reader: R) -> Result<Self, SerializationError> {
+        Ok(Self {
+            decrease_confirmation_windows: read_u64_le(&mut reader)?,
+        })
+    }
+}
+
+impl ZcashSerialize for DynamicSigmaHysteresisState {
+    fn zcash_serialize<W: Write>(&self, mut writer: W) -> Result<(), std::io::Error> {
+        write_u64_le(&mut writer, self.current_sigma)?;
+        write_u64_le(&mut writer, self.stable_windows_below_current)?;
+
+        Ok(())
+    }
+}
+
+impl ZcashDeserialize for DynamicSigmaHysteresisState {
+    fn zcash_deserialize<R: Read>(mut reader: R) -> Result<Self, SerializationError> {
+        Ok(Self {
+            current_sigma: read_u64_le(&mut reader)?,
+            stable_windows_below_current: read_u64_le(&mut reader)?,
+        })
+    }
+}
+
 impl ZcashSerialize for DynamicSigmaRawTelemetry {
     fn zcash_serialize<W: Write>(&self, mut writer: W) -> Result<(), std::io::Error> {
         write_u128_le(&mut writer, self.total_hash_work)?;
@@ -1925,6 +1959,39 @@ mod tests {
             ),
             Err(DynamicSigmaHysteresisError::RequiredSigmaOutsideLadder { required_sigma: 2 }),
         );
+    }
+
+    #[test]
+    fn hysteresis_policy_zcash_serialization_round_trips() {
+        let policy = DynamicSigmaHysteresisParameters {
+            decrease_confirmation_windows: 42,
+        };
+
+        let encoded = policy
+            .zcash_serialize_to_vec()
+            .expect("hysteresis policy serialization should succeed");
+        let decoded = DynamicSigmaHysteresisParameters::zcash_deserialize(encoded.as_slice())
+            .expect("hysteresis policy deserialization should succeed");
+
+        assert_eq!(encoded.len(), 8);
+        assert_eq!(decoded, policy);
+    }
+
+    #[test]
+    fn hysteresis_state_zcash_serialization_round_trips() {
+        let state = DynamicSigmaHysteresisState {
+            current_sigma: 6,
+            stable_windows_below_current: 9,
+        };
+
+        let encoded = state
+            .zcash_serialize_to_vec()
+            .expect("hysteresis state serialization should succeed");
+        let decoded = DynamicSigmaHysteresisState::zcash_deserialize(encoded.as_slice())
+            .expect("hysteresis state deserialization should succeed");
+
+        assert_eq!(encoded.len(), 16);
+        assert_eq!(decoded, state);
     }
 
     #[test]
