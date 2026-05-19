@@ -66,6 +66,12 @@ score over hash-power coverage, recent round-failure rate, block-interval
 variance, and observed rollback depth; the score can raise sigma when combined
 signals become risky even if no single hard floor fires.
 
+`CrosslinkDynamicSigmaCalibration.qnt` gives the dynamic-sigma controller a
+bounded calibration contract. It treats hash-power participation, round-failure
+rate, block-interval variance, and observed reorg depth as measured windows,
+then checks that the selected risk weights and thresholds classify those
+windows into the expected sigma floors.
+
 `CrosslinkDynamicSigmaForkSchedule.qnt` composes the dynamic-sigma controller
 with the derived PoW fork schedule. In this model, dynamic sigma consumes
 rollback depth computed from best-tip transitions instead of a supplied
@@ -140,6 +146,7 @@ $QUINT typecheck spec/quint/CrosslinkPowBranchCompetition.qnt
 $QUINT typecheck spec/quint/CrosslinkComposed.qnt
 $QUINT typecheck spec/quint/CrosslinkBftHeights.qnt
 $QUINT typecheck spec/quint/CrosslinkDynamicSigma.qnt
+$QUINT typecheck spec/quint/CrosslinkDynamicSigmaCalibration.qnt
 $QUINT typecheck spec/quint/CrosslinkDynamicSigmaForkSchedule.qnt
 $QUINT typecheck spec/quint/CrosslinkDynamicSigmaBranchCompetition.qnt
 $QUINT typecheck spec/quint/CrosslinkDynamicSigmaResampling.qnt
@@ -364,6 +371,33 @@ coverage risk, recent round failures, and block-interval variance can raise
 sigma together even when none of the old individual floors would have done so
 alone; sufficiently high combined risk forces the maximum sigma.
 
+Witness dynamic-sigma calibration over measured windows:
+
+```sh
+$QUINT test spec/quint/CrosslinkDynamicSigmaCalibration.qnt \
+  --main=CrosslinkDynamicSigmaCalibrationModel \
+  --max-samples=100 \
+  --backend=rust
+```
+
+This runs:
+
+- `healthyMeasuredWindowKeepsBaseSigmaTest`
+- `marginalHashParticipationRaisesSigmaTest`
+- `combinedMeasuredRiskRaisesSigmaTest`
+- `deepReorgMeasuredWindowForcesMaxSigmaTest`
+- `criticalParticipationMeasuredWindowForcesMaxSigmaTest`
+- `criticalCombinedRiskForcesMaxSigmaTest`
+- `calibrationMatchesAllMeasuredWindowsTest`
+
+The calibration fixture covers six measured windows: healthy baseline,
+marginal hash-power participation, combined stochastic risk from coverage plus
+round-failure plus block-variance signals, deep observed reorgs, critical
+hash-power participation, and critical combined stochastic risk. The harness
+checks that the chosen weights and thresholds map each measured window to the
+expected sigma floor, while keeping each signal monotone and materially
+weighted.
+
 Witness dynamic sigma consuming derived PoW rollback depth:
 
 ```sh
@@ -565,6 +599,16 @@ $QUINT run spec/quint/CrosslinkDynamicSigma.qnt \
   --backend=rust \
   --verbosity=0
 
+$QUINT run spec/quint/CrosslinkDynamicSigmaCalibration.qnt \
+  --main=CrosslinkDynamicSigmaCalibrationModel \
+  --init=Init \
+  --step=Next \
+  --max-steps=8 \
+  --max-samples=1000 \
+  --invariant=Safety \
+  --backend=rust \
+  --verbosity=0
+
 $QUINT run spec/quint/CrosslinkDynamicSigmaForkSchedule.qnt \
   --main=CrosslinkDynamicSigmaForkScheduleModel \
   --init=DerivedInit \
@@ -679,6 +723,13 @@ $QUINT verify spec/quint/CrosslinkDynamicSigma.qnt \
   --step=Next \
   --invariant=Safety
 
+$QUINT verify spec/quint/CrosslinkDynamicSigmaCalibration.qnt \
+  --main=CrosslinkDynamicSigmaCalibrationModel \
+  --max-steps=8 \
+  --init=Init \
+  --step=Next \
+  --invariant=Safety
+
 $QUINT verify spec/quint/CrosslinkDynamicSigmaForkSchedule.qnt \
   --main=CrosslinkDynamicSigmaForkScheduleModel \
   --max-steps=4 \
@@ -768,9 +819,16 @@ remains within the configured ladder, never falls below the floor implied by
 observed hash-power participation, observed reorg depth, or the calibrated
 stochastic-risk score, tracks the `head - sigma` snapshot selected for the
 current round, and uses monotone risk surfaces where lower participation cannot
-require a lower sigma than higher participation. The weights and thresholds are
-still fixtures; the model captures the controller shape, not production
-economic calibration.
+require a lower sigma than higher participation.
+
+The dynamic-sigma calibration harness reports no violation for `Safety`, which
+combines:
+
+- every bounded measurement window maps to its expected sigma floor
+- lower hash-power participation never lowers the participation-derived floor
+- lower hash-power participation never lowers the calibrated risk score
+- round-failure, block-variance, and reorg-depth weights are all material
+- the observation-walk invariant preserves the calibrated label for each window
 
 The dynamic-sigma/fork-schedule composition reports no violation for
 `DerivedSafety`, which combines:
@@ -821,9 +879,8 @@ The full dynamic-sigma/resampling/finality composition reports no violation for
 
 This model is intentionally narrow. The next useful extensions are:
 
-- calibrate the dynamic-sigma risk weights and thresholds against measured
-  hash-power participation, round-failure rate, block interval variance, and
-  observed reorg distributions
+- replace the bounded dynamic-sigma calibration fixture with production
+  telemetry and an explicit economic target for acceptable rollback risk
 - port the full upstream Tendermint accountability evidence model into the
   composed model; the current resampling model only adds the conflict/evidence
   witnesses needed for nil-precommit unlocks
