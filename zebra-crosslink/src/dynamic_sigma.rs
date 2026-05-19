@@ -256,9 +256,18 @@ pub struct DynamicSigmaBestTipTransition {
     pub common_ancestor_height: u64,
 }
 
+/// Source state for deriving best-tip transitions from live observations.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DynamicSigmaBestTipTransitionRecorder {
+    /// Previous observed best-tip height, if this recorder has been seeded.
+    pub previous_tip_height: Option<u64>,
+}
+
 /// Invalid rollback-depth telemetry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DynamicSigmaRollbackTelemetryError {
+    /// A transition was observed after the initial tip without a common ancestor.
+    MissingCommonAncestor,
     /// The common ancestor is above the previous best tip.
     CommonAncestorAbovePreviousTip,
     /// The common ancestor is above the new best tip.
@@ -1048,6 +1057,38 @@ impl DynamicSigmaBestTipTransition {
         }
 
         Ok(self.previous_tip_height - self.common_ancestor_height)
+    }
+}
+
+impl DynamicSigmaBestTipTransitionRecorder {
+    /// Record a best-tip observation and derive a transition after the initial seed.
+    ///
+    /// The first observation seeds the recorder and returns no transition.
+    /// Later observations must include the common ancestor between the previous
+    /// and new best tips. Invalid transition evidence is rejected without
+    /// advancing the recorder.
+    pub fn record_best_tip(
+        &mut self,
+        new_tip_height: u64,
+        common_ancestor_height: Option<u64>,
+    ) -> Result<Option<DynamicSigmaBestTipTransition>, DynamicSigmaRollbackTelemetryError> {
+        let Some(previous_tip_height) = self.previous_tip_height else {
+            self.previous_tip_height = Some(new_tip_height);
+            return Ok(None);
+        };
+
+        let common_ancestor_height = common_ancestor_height
+            .ok_or(DynamicSigmaRollbackTelemetryError::MissingCommonAncestor)?;
+        let transition = DynamicSigmaBestTipTransition {
+            previous_tip_height,
+            new_tip_height,
+            common_ancestor_height,
+        };
+
+        transition.rollback_depth()?;
+        self.previous_tip_height = Some(new_tip_height);
+
+        Ok(Some(transition))
     }
 }
 
@@ -2761,6 +2802,66 @@ mod tests {
         ];
 
         assert_eq!(max_observed_rollback_depth(&transitions), Ok(2));
+    }
+
+    #[test]
+    fn best_tip_transition_recorder_initial_observation_seeds_tip() {
+        let mut recorder = DynamicSigmaBestTipTransitionRecorder::default();
+
+        assert_eq!(recorder.record_best_tip(100, None), Ok(None));
+        assert_eq!(recorder.previous_tip_height, Some(100));
+    }
+
+    #[test]
+    fn best_tip_transition_recorder_derives_transitions_and_updates_tip() {
+        let mut recorder = DynamicSigmaBestTipTransitionRecorder::default();
+        recorder
+            .record_best_tip(100, None)
+            .expect("initial best tip should seed recorder");
+
+        let transition = recorder
+            .record_best_tip(105, Some(100))
+            .expect("same-branch extension should produce a transition")
+            .expect("seeded recorder should return a transition");
+
+        assert_eq!(
+            transition,
+            DynamicSigmaBestTipTransition {
+                previous_tip_height: 100,
+                new_tip_height: 105,
+                common_ancestor_height: 100,
+            }
+        );
+        assert_eq!(transition.rollback_depth(), Ok(0));
+        assert_eq!(recorder.previous_tip_height, Some(105));
+    }
+
+    #[test]
+    fn best_tip_transition_recorder_requires_common_ancestor_after_seed() {
+        let mut recorder = DynamicSigmaBestTipTransitionRecorder::default();
+        recorder
+            .record_best_tip(100, None)
+            .expect("initial best tip should seed recorder");
+
+        assert_eq!(
+            recorder.record_best_tip(101, None),
+            Err(DynamicSigmaRollbackTelemetryError::MissingCommonAncestor),
+        );
+        assert_eq!(recorder.previous_tip_height, Some(100));
+    }
+
+    #[test]
+    fn best_tip_transition_recorder_rejects_invalid_transition_without_advancing() {
+        let mut recorder = DynamicSigmaBestTipTransitionRecorder::default();
+        recorder
+            .record_best_tip(100, None)
+            .expect("initial best tip should seed recorder");
+
+        assert_eq!(
+            recorder.record_best_tip(101, Some(102)),
+            Err(DynamicSigmaRollbackTelemetryError::CommonAncestorAbovePreviousTip),
+        );
+        assert_eq!(recorder.previous_tip_height, Some(100));
     }
 
     #[test]

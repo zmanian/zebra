@@ -131,6 +131,9 @@ and cannot silently change validator validity.
 `DynamicSigmaBestTipTransition` derives the observed reorg-depth input from
 explicit old-tip, new-tip, and common-ancestor heights, with a helper for taking
 the maximum rollback depth over a transition window.
+`DynamicSigmaBestTipTransitionRecorder` gives live state hooks a small
+state-machine boundary: seed the first observed best tip, require a common
+ancestor after that, and reject invalid transition evidence without advancing.
 `rollback_depth_history_from_transition_windows` turns a sequence of transition
 windows into one rollback-depth sample per measurement window, giving live state
 hooks a pure source target for rollback-risk history.
@@ -1175,9 +1178,10 @@ This model is intentionally narrow. The next useful extensions are:
   current Crosslink fat-pointer marker, custom verifier hooks can replace that
   prototype marker with stricter production validation, the header
   observation-window assembler composes those headers with round and fork
-  evidence into telemetry components, and the pure rollback-depth helpers derive
-  both the current observed reorg-depth input and one rollback-depth history
-  sample per transition window from explicit best-tip transition evidence. The
+  evidence into telemetry components, and the pure rollback-depth helpers record
+  best-tip transitions, derive the current observed reorg-depth input, and
+  produce one rollback-depth history sample per transition window from explicit
+  best-tip transition evidence. The
   pure rollback-risk estimator derives a monotone ppm curve from observed
   rollback-depth windows plus a bounded margin, and the explicit window policy
   requires enough history while truncating to the most recent bounded sample
