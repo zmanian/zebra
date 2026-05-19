@@ -11,10 +11,12 @@ module CrosslinkDynamicSigmaFinality {
   import CrosslinkDynamicSigmaResampling.* from "./CrosslinkDynamicSigmaResampling"
   export CrosslinkDynamicSigmaResampling.*
 
+  type ConsensusHeight_t = int
   type Height_t = int
   type Work_t = int
   type Block_t = str
 
+  const MaxConsensusHeight: ConsensusHeight_t
   const MaxHeight: Height_t
   const MaxWork: Work_t
   const InitialFinalized: Snapshot_t
@@ -24,8 +26,11 @@ module CrosslinkDynamicSigmaFinality {
   const TieBreakRank: Snapshot_t -> int
   const AncestorAt: Snapshot_t -> Height_t -> Block_t
 
+  pure val ConsensusHeights = 0.to(MaxConsensusHeight)
   pure val Heights = 0.to(MaxHeight)
 
+  assume max_consensus_height_non_negative =
+    MaxConsensusHeight >= 0
   assume initial_finalized_is_snapshot =
     Snapshots.contains(InitialFinalized)
   assume max_work_non_negative =
@@ -41,6 +46,7 @@ module CrosslinkDynamicSigmaFinality {
   assume generated_best_tips_match_work_competition =
     Rounds.forall(r => IsBestTipAt(r, BestTip.get(r)))
 
+  var consensusHeight: ConsensusHeight_t
   var latestFinal: Snapshot_t
   var finalized: Set[Snapshot_t]
   var finalityAction: str
@@ -100,12 +106,14 @@ module CrosslinkDynamicSigmaFinality {
 
   action FullComposedInit = all {
     DynamicResamplingInit,
+    consensusHeight' = 0,
     latestFinal' = InitialFinalized,
     finalized' = Set(InitialFinalized),
     finalityAction' = "FullComposedInit",
   }
 
   action FinalityUnchanged = all {
+    consensusHeight' = consensusHeight,
     latestFinal' = latestFinal,
     finalized' = finalized,
     finalityAction' = finalityAction,
@@ -145,14 +153,25 @@ module CrosslinkDynamicSigmaFinality {
   action FullDecide(p: Proc_t, r: Round_t, v: Snapshot_t): bool =
     all { DynamicDecide(p, r, v), FinalityUnchanged }
 
-  action FullFinalizeDecision(p: Proc_t, candidate: Snapshot_t, tip: Snapshot_t): bool = all {
+  action FullFinalizeDecisionAt(
+    nextHeight: ConsensusHeight_t,
+    p: Proc_t,
+    candidate: Snapshot_t,
+    tip: Snapshot_t
+  ): bool = all {
+    nextHeight == consensusHeight + 1,
+    nextHeight.in(ConsensusHeights),
     decision.get(p) == candidate,
     ValidFinalityCandidate(candidate, tip),
     DynamicAndProtocolUnchanged,
+    consensusHeight' = nextHeight,
     latestFinal' = candidate,
     finalized' = finalized.union(Set(candidate)),
     finalityAction' = "FullFinalizeDecision",
   }
+
+  action FullFinalizeDecision(p: Proc_t, candidate: Snapshot_t, tip: Snapshot_t): bool =
+    FullFinalizeDecisionAt(consensusHeight + 1, p, candidate, tip)
 
   action FullProtocolNext =
     all { DynamicResamplingNext, FinalityUnchanged }
@@ -183,10 +202,14 @@ module CrosslinkDynamicSigmaFinality {
   val InitialFinalizedRemainsFinalized =
     finalized.contains(InitialFinalized)
 
+  val ConsensusHeightIsBounded =
+    0 <= consensusHeight and consensusHeight <= MaxConsensusHeight
+
   val CurrentDynamicBestTipMatchesGeneratedCompetition =
     IsBestTipAt(dynRound, BestTip.get(dynRound))
 
   val FinalitySafety =
+    ConsensusHeightIsBounded and
     FinalizedPrefixLinear and
     LatestFinalExtendsAllFinalized and
     InitialFinalizedRemainsFinalized
@@ -227,6 +250,7 @@ module CrosslinkDynamicSigmaFinalityTest {
       .then(FullDecide("p1", 1, "b2"))
       .then(FullFinalizeDecision("p1", "b2", "b5"))
       .then(all {
+        assert(consensusHeight == 1),
         assert(latestFinal == "b2"),
         assert(finalized.contains("b2")),
         assert(dynSigma == RaisedSigma),
@@ -257,6 +281,28 @@ module CrosslinkDynamicSigmaFinalityTest {
       .fail()
   }
 
+  run dynamicSigmaRejectsSkippedBftHeightFinalityTest = {
+    FullComposedInit
+      .then(FullSeedValidNil("p1"))
+      .then(FullSeedValidNil("p2"))
+      .then(FullSeedFaultyNil("p4"))
+      .then(FullSeedSameRoundLock("p3"))
+      .then(FullAdvanceDerivedForkSignal)
+      .then(FullStartNextRound("p1"))
+      .then(FullStartNextRound("p2"))
+      .then(FullStartNextRound("p3"))
+      .then(FullInsertProposal("p2"))
+      .then(FullPrevote("p1", "b2"))
+      .then(FullPrevote("p2", "b2"))
+      .then(FullPrevote("p3", "b2"))
+      .then(FullPrecommitValue("p1", "b2"))
+      .then(FullPrecommitValue("p2", "b2"))
+      .then(FullPrecommitValue("p3", "b2"))
+      .then(FullDecide("p1", 1, "b2"))
+      .then(FullFinalizeDecisionAt(2, "p1", "b2", "b5"))
+      .fail()
+  }
+
   run generatedCompetitionBacksFullCompositionForkSignalTest = all {
     assert(IsBestTipAt(0, "a3")),
     assert(not(CandidateAt(0, "b4"))),
@@ -271,6 +317,7 @@ module CrosslinkDynamicSigmaFinalityModel {
     Faulty = Set("p4"),
     N = 4,
     T = 1,
+    MaxConsensusHeight = 2,
     MaxRound = 2,
     Proposer = Map(0 -> "p1", 1 -> "p2", 2 -> "p3"),
     Stream = Map(0 -> "a2", 1 -> "b2", 2 -> "b2"),

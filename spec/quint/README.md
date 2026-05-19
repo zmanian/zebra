@@ -88,7 +88,8 @@ does not add a new fork-switch signal.
 resampling, and Crosslink finality. It uses the live `dynSigma` value as the
 tail-confirmation depth for finality, so a fork-derived sigma increase delays
 finalization until the fresh decision is confirmed deeply enough. Its fork
-signal is now backed by generated published-tip work competition.
+signal is now backed by generated published-tip work competition, and finality
+advances at explicit BFT consensus heights.
 
 ## Upstream Base
 
@@ -436,6 +437,7 @@ This runs:
 
 - `dynamicSigmaResamplingFinalizesTailConfirmedFreshCandidateTest`
 - `dynamicSigmaRejectsUnderconfirmedFreshCandidateTest`
+- `dynamicSigmaRejectsSkippedBftHeightFinalityTest`
 - `generatedCompetitionBacksFullCompositionForkSignalTest`
 
 The witness forms a nil-precommit recovery scenario, derives a rollback-depth
@@ -445,7 +447,9 @@ tip `b5`. The under-confirmed test rejects finalizing the same `b2` decision
 against tip `b4`, showing that finality uses the raised dynamic sigma rather
 than the base confirmation depth. The generated-competition witness checks that
 the fork signal is backed by published work: hidden `b4` does not win at round
-0, but published `b4` becomes the generated best tip at round 1.
+0, but published `b4` becomes the generated best tip at round 1. The skipped
+BFT-height witness rejects trying to finalize the decided value at consensus
+height 2 when the current full-composition height is still 0.
 
 Randomized Rust-backend safety simulation:
 
@@ -796,6 +800,7 @@ The full dynamic-sigma/resampling/finality composition reports no violation for
 - finalized snapshots remain prefix-linear
 - the latest finalized snapshot extends all prior finalized snapshots
 - the initial finalized snapshot remains finalized
+- finality advances exactly one BFT consensus height at a time
 - finality uses the live dynamic sigma as the tail-confirmation depth
 
 ## Next Extensions
@@ -805,10 +810,8 @@ This model is intentionally narrow. The next useful extensions are:
 - calibrate the dynamic-sigma risk weights and thresholds against measured
   hash-power participation, round-failure rate, block interval variance, and
   observed reorg distributions
-- feed generated PoW branch competition into the resampling and finality
-  compositions, replacing the remaining fixed best-tip fixtures
-- integrate BFT heights into the full dynamic-sigma/resampling/finality
-  composition, rather than keeping heighted finality as a focused model
+- feed generated PoW branch competition into the standalone dynamic-sigma
+  resampling composition, replacing the remaining fixed best-tip fixture there
 - port the full upstream Tendermint accountability evidence model into the
   composed model; the current resampling model only adds the conflict/evidence
   witnesses needed for nil-precommit unlocks
