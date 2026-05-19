@@ -95,4 +95,49 @@ module CrosslinkBaselineModels {
     BaselineHeight = HeightBySnapshot,
     BaselineAncestorAt = AncestorByHeight,
   ) as n5_f1_forking from "./CrosslinkBaselineTenderlink"
+
+  import CrosslinkBaselineTenderlink(
+    BaselineCorr = Set("p1", "p2"),
+    BaselineFaulty = Set("p3", "p4"),
+    BaselineN = 4,
+    BaselineT = 2,
+    BaselineValidSnapshots = ValidSnapshots,
+    BaselineInvalidSnapshots = InvalidSnapshots,
+    BaselineMaxRound = 4,
+    BaselineProposer = ProposerSchedule,
+    BaselineSigma = 1,
+    BaselineBestTip = ForkingBestTip,
+    BaselineHeight = HeightBySnapshot,
+    BaselineAncestorAt = AncestorByHeight,
+  ) as n4_f2_forking from "./CrosslinkBaselineTenderlink"
+
+  import CrosslinkBaselineTenderlink(
+    BaselineCorr = Set("p1", "p2", "p3"),
+    BaselineFaulty = Set("p4", "p5"),
+    BaselineN = 5,
+    BaselineT = 2,
+    BaselineValidSnapshots = ValidSnapshots,
+    BaselineInvalidSnapshots = InvalidSnapshots,
+    BaselineMaxRound = 4,
+    BaselineProposer = ProposerSchedule,
+    BaselineSigma = 1,
+    BaselineBestTip = ForkingBestTip,
+    BaselineHeight = HeightBySnapshot,
+    BaselineAncestorAt = AncestorByHeight,
+  ) as n5_f2_forking from "./CrosslinkBaselineTenderlink"
+
+  import CrosslinkBaselineTenderlink(
+    BaselineCorr = Set("p1", "p2", "p3", "p4", "p5"),
+    BaselineFaulty = Set("p6", "p7"),
+    BaselineN = 7,
+    BaselineT = 2,
+    BaselineValidSnapshots = ValidSnapshots,
+    BaselineInvalidSnapshots = InvalidSnapshots,
+    BaselineMaxRound = 4,
+    BaselineProposer = ProposerSchedule,
+    BaselineSigma = 1,
+    BaselineBestTip = ForkingBestTip,
+    BaselineHeight = HeightBySnapshot,
+    BaselineAncestorAt = AncestorByHeight,
+  ) as n7_f2_forking from "./CrosslinkBaselineTenderlink"
 }

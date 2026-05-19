@@ -142,6 +142,9 @@ quick_checks() {
   test_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStreamChangeModel
   test_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN4F1StableTest
   test_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN4F1ForkingTest
+  test_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN4F2ForkingTest
+  test_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN5F2ForkingTest
+  test_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN7F2ForkingTest
   test_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineAccountabilityModel
   test_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineFaultyInitTinyModel
   test_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineFaultyInitForkingModel
@@ -170,6 +173,9 @@ quick_checks() {
   run_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStreamChangeModel Init Next 10 1000 BaselineSafety
   run_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN4F1StableTest Init Next 10 1000 BaselineN4F1StableSafety
   run_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN4F1ForkingTest Init Next 10 1000 BaselineN4F1ForkingSafety
+  run_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN4F2ForkingTest Init Next 10 1000 BaselineN4F2ForkingSafety
+  run_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN5F2ForkingTest Init Next 10 1000 BaselineN5F2ForkingSafety
+  run_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN7F2ForkingTest Init Next 10 1000 BaselineN7F2ForkingSafety
   run_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineAccountabilityModel Init Next 10 1000 BaselineAccountabilitySafety
   run_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineFaultyInitTinyModel InitWithFaultyEvidence Next 2 1000 BaselineFaultyInitSafety
   run_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineFaultyInitForkingModel InitWithBoundedForkingFaultyEvidence Next 2 1000 BaselineForkingFaultyInitSafety
@@ -204,6 +210,9 @@ baseline_quick_checks() {
   test_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStreamChangeModel
   test_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN4F1StableTest
   test_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN4F1ForkingTest
+  test_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN4F2ForkingTest
+  test_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN5F2ForkingTest
+  test_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN7F2ForkingTest
   test_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineAccountabilityModel
   test_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineFaultyInitTinyModel
   test_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineFaultyInitForkingModel
@@ -218,6 +227,9 @@ baseline_quick_checks() {
   run_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStreamChangeModel Init Next 10 1000 BaselineSafety
   run_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN4F1StableTest Init Next 10 1000 BaselineN4F1StableSafety
   run_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN4F1ForkingTest Init Next 10 1000 BaselineN4F1ForkingSafety
+  run_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN4F2ForkingTest Init Next 10 1000 BaselineN4F2ForkingSafety
+  run_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN5F2ForkingTest Init Next 10 1000 BaselineN5F2ForkingSafety
+  run_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN7F2ForkingTest Init Next 10 1000 BaselineN7F2ForkingSafety
   run_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineAccountabilityModel Init Next 10 1000 BaselineAccountabilitySafety
   run_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineFaultyInitTinyModel InitWithFaultyEvidence Next 2 1000 BaselineFaultyInitSafety
   run_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineFaultyInitForkingModel InitWithBoundedForkingFaultyEvidence Next 2 1000 BaselineForkingFaultyInitSafety

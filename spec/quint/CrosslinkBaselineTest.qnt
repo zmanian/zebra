@@ -191,3 +191,242 @@ module CrosslinkBaselineN4F1ForkingTest {
       })
   }
 }
+
+module CrosslinkBaselineN4F2ForkingTest {
+  /*
+   An above-live-boundary f=2 instance. With N=4 and T=2, the quorum size is
+   larger than the validator set, so this witness records the boundary instead
+   of pretending the instance has a normal decision path.
+   */
+
+  import CrosslinkBaselineModels.* from "./CrosslinkBaselineModels"
+
+  pure val TestRounds = 0.to(4)
+
+  pure def TestHeadMinusSigma(r: int): str =
+    AncestorByHeight
+      .get(ForkingBestTip.get(r))
+      .get(HeightBySnapshot.get(ForkingBestTip.get(r)) - 1)
+
+  pure val TestStream: int -> str =
+    TestRounds.mapBy(r => TestHeadMinusSigma(r))
+
+  pure val TestStreamMatchesFixedSigma =
+    TestRounds.forall(r => TestStream.get(r) == TestHeadMinusSigma(r))
+
+  import CrosslinkResampling(
+    Corr = Set("p1", "p2"),
+    Faulty = Set("p3", "p4"),
+    N = 4,
+    T = 2,
+    MaxRound = 4,
+    Proposer = ProposerSchedule,
+    Stream = TestStream,
+    Snapshots = ValidSnapshots,
+    ResampleOnNilPrecommit = false,
+  ).* from "./CrosslinkResampling"
+
+  action unchangedAll = all {
+    round' = round,
+    step' = step,
+    decision' = decision,
+    lockedValue' = lockedValue,
+    lockedRound' = lockedRound,
+    validValue' = validValue,
+    validRound' = validRound,
+    cachedProposal' = cachedProposal,
+    cachedProposalRound' = cachedProposalRound,
+    msgsPropose' = msgsPropose,
+    msgsPrevote' = msgsPrevote,
+    msgsPrecommit' = msgsPrecommit,
+    evidencePropose' = evidencePropose,
+    evidencePrevote' = evidencePrevote,
+    evidencePrecommit' = evidencePrecommit,
+    firedAction' = firedAction,
+  }
+
+  val CorrectCanMakeCatchupEvidence =
+    size(Corr) >= THRESHOLD1
+
+  val CorrectCanMakeValueQuorum =
+    size(Corr) >= THRESHOLD2
+
+  val BaselineN4F2ForkingSafety =
+    Safety and TestStreamMatchesFixedSigma
+
+  run n4F2DocumentsAboveLiveFaultBoundaryTest = {
+    Init.then(all {
+      assert(THRESHOLD1 == 3),
+      assert(THRESHOLD2 == 5),
+      assert(not(CorrectCanMakeCatchupEvidence)),
+      assert(not(CorrectCanMakeValueQuorum)),
+      assert(BaselineN4F2ForkingSafety),
+      unchangedAll,
+    })
+  }
+}
+
+module CrosslinkBaselineN5F2ForkingTest {
+  /*
+   A second above-live-boundary f=2 instance. Correct validators can produce
+   f+1 future-round activity, but they still cannot produce a 2f+1 value quorum.
+   */
+
+  import CrosslinkBaselineModels.* from "./CrosslinkBaselineModels"
+
+  pure val TestRounds = 0.to(4)
+
+  pure def TestHeadMinusSigma(r: int): str =
+    AncestorByHeight
+      .get(ForkingBestTip.get(r))
+      .get(HeightBySnapshot.get(ForkingBestTip.get(r)) - 1)
+
+  pure val TestStream: int -> str =
+    TestRounds.mapBy(r => TestHeadMinusSigma(r))
+
+  pure val TestStreamMatchesFixedSigma =
+    TestRounds.forall(r => TestStream.get(r) == TestHeadMinusSigma(r))
+
+  import CrosslinkResampling(
+    Corr = Set("p1", "p2", "p3"),
+    Faulty = Set("p4", "p5"),
+    N = 5,
+    T = 2,
+    MaxRound = 4,
+    Proposer = ProposerSchedule,
+    Stream = TestStream,
+    Snapshots = ValidSnapshots,
+    ResampleOnNilPrecommit = false,
+  ).* from "./CrosslinkResampling"
+
+  action unchangedAll = all {
+    round' = round,
+    step' = step,
+    decision' = decision,
+    lockedValue' = lockedValue,
+    lockedRound' = lockedRound,
+    validValue' = validValue,
+    validRound' = validRound,
+    cachedProposal' = cachedProposal,
+    cachedProposalRound' = cachedProposalRound,
+    msgsPropose' = msgsPropose,
+    msgsPrevote' = msgsPrevote,
+    msgsPrecommit' = msgsPrecommit,
+    evidencePropose' = evidencePropose,
+    evidencePrevote' = evidencePrevote,
+    evidencePrecommit' = evidencePrecommit,
+    firedAction' = firedAction,
+  }
+
+  val CorrectCanMakeCatchupEvidence =
+    size(Corr) >= THRESHOLD1
+
+  val CorrectCanMakeValueQuorum =
+    size(Corr) >= THRESHOLD2
+
+  val BaselineN5F2ForkingSafety =
+    Safety and TestStreamMatchesFixedSigma
+
+  run n5F2CatchupEvidenceButNoCorrectValueQuorumTest = {
+    Init
+      .then(SeedCorrectNilPrevoteState("p1", 2))
+      .then(SeedCorrectNilPrevoteState("p2", 2))
+      .then(SeedCorrectNilPrevoteState("p3", 2))
+      .then(all {
+        assert(THRESHOLD1 == 3),
+        assert(THRESHOLD2 == 5),
+        assert(CorrectCanMakeCatchupEvidence),
+        assert(RoundCatchupEvidence(2)),
+        assert(not(CorrectCanMakeValueQuorum)),
+        assert(BaselineN5F2ForkingSafety),
+        unchangedAll,
+      })
+  }
+}
+
+module CrosslinkBaselineN7F2ForkingTest {
+  /*
+   A proper f=2 BFT-boundary instance. With N=7 and five correct validators,
+   the baseline shell still has the ordinary fixed-sigma decision path.
+   */
+
+  import CrosslinkBaselineModels.* from "./CrosslinkBaselineModels"
+
+  pure val TestRounds = 0.to(4)
+
+  pure def TestHeadMinusSigma(r: int): str =
+    AncestorByHeight
+      .get(ForkingBestTip.get(r))
+      .get(HeightBySnapshot.get(ForkingBestTip.get(r)) - 1)
+
+  pure val TestStream: int -> str =
+    TestRounds.mapBy(r => TestHeadMinusSigma(r))
+
+  pure val TestStreamMatchesFixedSigma =
+    TestRounds.forall(r => TestStream.get(r) == TestHeadMinusSigma(r))
+
+  import CrosslinkResampling(
+    Corr = Set("p1", "p2", "p3", "p4", "p5"),
+    Faulty = Set("p6", "p7"),
+    N = 7,
+    T = 2,
+    MaxRound = 4,
+    Proposer = ProposerSchedule,
+    Stream = TestStream,
+    Snapshots = ValidSnapshots,
+    ResampleOnNilPrecommit = false,
+  ).* from "./CrosslinkResampling"
+
+  action unchangedAll = all {
+    round' = round,
+    step' = step,
+    decision' = decision,
+    lockedValue' = lockedValue,
+    lockedRound' = lockedRound,
+    validValue' = validValue,
+    validRound' = validRound,
+    cachedProposal' = cachedProposal,
+    cachedProposalRound' = cachedProposalRound,
+    msgsPropose' = msgsPropose,
+    msgsPrevote' = msgsPrevote,
+    msgsPrecommit' = msgsPrecommit,
+    evidencePropose' = evidencePropose,
+    evidencePrevote' = evidencePrevote,
+    evidencePrecommit' = evidencePrecommit,
+    firedAction' = firedAction,
+  }
+
+  val CorrectCanMakeCatchupEvidence =
+    size(Corr) >= THRESHOLD1
+
+  val CorrectCanMakeValueQuorum =
+    size(Corr) >= THRESHOLD2
+
+  val BaselineN7F2ForkingSafety =
+    Safety and TestStreamMatchesFixedSigma
+
+  run n7F2DecisionPathTest = {
+    Init
+      .then(InsertProposal("p1"))
+      .then(UponProposalPrevote("p1", "a1"))
+      .then(UponProposalPrevote("p2", "a1"))
+      .then(UponProposalPrevote("p3", "a1"))
+      .then(UponProposalPrevote("p4", "a1"))
+      .then(UponProposalPrevote("p5", "a1"))
+      .then(UponValuePrevoteQuorum("p1", "a1"))
+      .then(UponValuePrevoteQuorum("p2", "a1"))
+      .then(UponValuePrevoteQuorum("p3", "a1"))
+      .then(UponValuePrevoteQuorum("p4", "a1"))
+      .then(UponValuePrevoteQuorum("p5", "a1"))
+      .then(Decide("p1", 0, "a1"))
+      .then(all {
+        assert(THRESHOLD1 == 3),
+        assert(THRESHOLD2 == 5),
+        assert(CorrectCanMakeCatchupEvidence),
+        assert(CorrectCanMakeValueQuorum),
+        assert(decision.get("p1") == "a1"),
+        assert(BaselineN7F2ForkingSafety),
+        unchangedAll,
+      })
+  }
+}

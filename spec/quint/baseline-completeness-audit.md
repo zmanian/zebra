@@ -65,12 +65,15 @@ The current branch has these baseline-specific files:
 - `CrosslinkBaselineModels.qnt`
   - defines small stable and forking baseline model instances over the
     parameter shell
-  - currently covers `n4_f1_stable`, `n4_f1_forking`, and `n5_f1_forking`
+  - currently covers `n4_f1_stable`, `n4_f1_forking`, `n5_f1_forking`,
+    `n4_f2_forking`, `n5_f2_forking`, and `n7_f2_forking`
 - `CrosslinkBaselineTest.qnt`
   - adds upstream-style smoke tests for fixed-sigma sampling, normal decision,
     no double proposal, nil prevote quorum handling, timeout-driven nil
     votes and round advance, future-round catchup, fork-derived stream change,
     and sticky stale-sample carryover
+  - adds `f = 2` boundary witnesses distinguishing `n4_f2` and `n5_f2`
+    above-live-boundary behavior from a proper `n7_f2` decision path
 - `CrosslinkBaselinePowSampling.qnt`
   - derives `Stream(round)` from an explicit `head - sigma` ancestor
   - records the fork-switch stale-sample behavior
@@ -119,9 +122,10 @@ The current branch has these baseline-specific files:
 | Automated local baseline symbolic gate | `check.sh symbolic-baseline` | Covered |
 | Automated CI baseline gates | `.github/workflows/quint-crosslink.yml` | Covered structurally; requires green run evidence per commit |
 | Parameterized `Corr/Faulty/N/T` validator model | `CrosslinkBaselineTenderlink.qnt` | Partial; parameter shell exists, full transition/faulty injection is still focused |
-| Upstream-style model instances (`n4_f1`, `n4_f2`, `n5_f2`) | `CrosslinkBaselineModels.qnt`; `n4_f1_stable`, `n4_f1_forking`, `n5_f1_forking` | Partial; above-threshold faulty instances are still missing |
+| Upstream-style model instances (`n4_f1`, `n4_f2`, `n5_f2`) | `CrosslinkBaselineModels.qnt`; `n4_f1_stable`, `n4_f1_forking`, `n5_f1_forking`, `n4_f2_forking`, `n5_f2_forking`, `n7_f2_forking` | Covered as named focused instances; broader symbolic coverage is still partial |
 | Upstream-style normal decision/no-double-proposal/nil-prevote/timeout/catchup tests | `CrosslinkBaselineTest.qnt`; `decisionTest`; `noProposeTwiceTest`; `nilPrevoteQuorumPrecommitsNilTest`; `timeoutPrevotePathFormsNilPrecommitCertTest`; `timeoutPrecommitAdvancesWithoutPrecommitQuorumTest`; `roundCatchupStartsFutureRoundTest` | Covered for `n4_f1_stable` |
 | Upstream-style stream-change/sticky-sample test | `CrosslinkBaselineTest.qnt`; `streamChangeDerivesFreshHeadMinusSigmaTest`; `stickyBaselineCarriesStaleFixedSigmaSampleTest` | Covered for `n4_f1_forking` |
+| Fault-boundary behavior for `f = 2` | `CrosslinkBaselineTest.qnt`; `n4F2DocumentsAboveLiveFaultBoundaryTest`; `n5F2CatchupEvidenceButNoCorrectValueQuorumTest`; `n7F2DecisionPathTest` | Covered by Rust-backed witnesses |
 | Faulty proposal/prevote/precommit evidence reaches equivocation predicates | `CrosslinkBaselineAccountability.qnt`; `baselineFaultyProposalEvidenceFeedsEquivocationTest`; `baselineFaultyPrevoteEvidenceFeedsEquivocationTest`; `baselineFaultyNilValuePrecommitEvidenceFeedsEquivocationTest` | Covered as witnesses |
 | Nondeterministic faulty message injection in `Init` | `InitWithFaultyEvidence`; `CrosslinkBaselineFaultyInitTinyModel`; `CrosslinkBaselineFaultyInitForkingModel`; `BaselineFaultyInitSafety`; `BaselineForkingFaultyInitSafety` | Partial; covered by a tiny full-powerset instance and a larger fixed-sigma/forking instance with bounded faulty evidence, but not yet by the unbounded larger parameterized instances |
 | Full Tendermint transition surface | Current model covers value prevote quorum, nil prevote quorum, propose/prevote/precommit timeout paths, stream-change nil precommit, round advance after precommit quorum, timeout round advance, future-round catchup, and decision | Covered for the focused baseline shell; still not a full upstream port |
@@ -153,11 +157,14 @@ To finish an upstream-quality baseline spec, the remaining work is larger:
      ancestor(bestTip(round), height(bestTip(round)) - sigma)` rather than an
      arbitrary Tendermint value.
 2. Add the remaining baseline model instances.
-   - Add above-threshold or accountability-focused analogues for upstream
-     `n4_f2` and `n5_f2` without violating the focused shell's current
-     `size(Faulty) <= T` assumption silently.
-   - Keep at least one model where the PoW stream changes across a round
-     boundary.
+   - The branch now includes focused `n4_f2`, `n5_f2`, and `n7_f2` instances
+     without violating the focused shell's `size(Faulty) <= T` assumption
+     silently.
+   - The `n4_f2` and `n5_f2` witnesses document why those smaller `f = 2`
+     layouts are above the live fault boundary for correct-only value commits;
+     `n7_f2` records the corresponding 2f+1 correct decision path.
+   - Remaining work is to decide which of these should become symbolic gates
+     rather than Rust-only quick witnesses.
 3. Add upstream-style faulty message injection.
    - Nondeterministically seed faulty proposals, prevotes, and precommits in
      `Init`.
@@ -207,8 +214,8 @@ To finish an upstream-quality baseline spec, the remaining work is larger:
    while preserving the baseline sticky nil-precommit rule.
 3. Expand the counterexample suite beyond the current false agreement,
    amnesia, equivocation, and no-conflicting-commit witnesses.
-4. Add remaining model instances, including above-threshold or
-   accountability-focused analogues of upstream `n4_f2` and `n5_f2`.
+4. Decide whether the new `f = 2` boundary witnesses should be promoted into
+   symbolic gates, or kept as quick Rust witnesses with documented scope.
 5. Add the full agreement/validity/accountability checks to
    `symbolic-baseline`.
 6. Generalize baseline PoW schedules for long reorgs and repeated stream

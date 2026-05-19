@@ -45,10 +45,11 @@ faulty-message injection and most of the full Tendermint transition surface
 remain future work.
 
 `CrosslinkBaselineModels.qnt` adds small baseline instances over that shell,
-including stable and forking `n4_f1` fixtures plus a forking `n5_f1` fixture.
-Above-threshold faulty instances such as upstream-style `n4_f2` or `n5_f2` are
-still not modeled because the current focused shell assumes
-`size(Faulty) <= T`.
+including stable and forking `n4_f1` fixtures, a forking `n5_f1` fixture,
+above-live-boundary `n4_f2`/`n5_f2` fixtures, and a proper `n7_f2` fixture.
+The `f = 2` witnesses distinguish cases where correct validators cannot form a
+2f+1 value quorum from the `n7_f2` case where the normal decision path remains
+available.
 
 `CrosslinkBaselineTest.qnt` adds upstream-style smoke tests for the baseline
 shell: fixed-sigma sampling, normal decision, no double proposal, nil prevote
@@ -402,13 +403,31 @@ $QUINT test spec/quint/CrosslinkBaselineTest.qnt \
   --main=CrosslinkBaselineN4F1ForkingTest \
   --max-samples=100 \
   --backend=rust
+
+$QUINT test spec/quint/CrosslinkBaselineTest.qnt \
+  --main=CrosslinkBaselineN4F2ForkingTest \
+  --max-samples=100 \
+  --backend=rust
+
+$QUINT test spec/quint/CrosslinkBaselineTest.qnt \
+  --main=CrosslinkBaselineN5F2ForkingTest \
+  --max-samples=100 \
+  --backend=rust
+
+$QUINT test spec/quint/CrosslinkBaselineTest.qnt \
+  --main=CrosslinkBaselineN7F2ForkingTest \
+  --max-samples=100 \
+  --backend=rust
 ```
 
 The stable `n4_f1` test checks fixed-sigma sampling, normal decision,
 no-double-proposal behavior, and the normal Tendermint transition from a nil
 prevote quorum to nil precommits. The forking `n4_f1` test checks that the
 shell derives the fresh `head - sigma` sample after a fork switch while the
-sticky baseline still carries the old sample into the next round.
+sticky baseline still carries the old sample into the next round. The `f = 2`
+tests record that `n4_f2` and `n5_f2` sit above the live fault boundary for
+correct-only value commits, while `n7_f2` still supports a 2f+1 correct
+decision path.
 
 Witness the named baseline accountability behavior:
 
@@ -1284,14 +1303,18 @@ parameter surface with a bounded nondeterministic faulty-init domain.
 claims about conflicting commits, amnesia, equivocation, and agreement are
 rejected by the harness.
 
-The bounded upstream-shaped baseline checks report no violation for
-`BaselineN4F1StableSafety` or `BaselineN4F1ForkingSafety`. The stable instance
-keeps the normal fixed-sigma decision path, no-double-proposal witness,
-nil-prevote quorum path, and timeout-driven nil vote/round-advance witnesses
-alive through the parameter shell. It also covers a focused future-round
-catchup witness from `f + 1` future-round messages. The forking instance
-records that the shell derives the fresh round-1 `head - sigma` sample while
-the sticky baseline can still carry the stale round-0 sample.
+The bounded upstream-shaped baseline checks report no violation for the
+`n4_f1`, `n4_f2`, `n5_f2`, or `n7_f2` Rust-backed safety witnesses. The stable
+`n4_f1` instance keeps the normal fixed-sigma decision path,
+no-double-proposal witness, nil-prevote quorum path, and timeout-driven nil
+vote/round-advance witnesses alive through the parameter shell. It also covers
+a focused future-round catchup witness from `f + 1` future-round messages. The
+forking `n4_f1` instance records that the shell derives the fresh round-1
+`head - sigma` sample while the sticky baseline can still carry the stale
+round-0 sample. The `f = 2` instances document that `n4_f2` cannot form even
+correct-only catchup evidence, `n5_f2` can form f+1 catchup evidence but not a
+2f+1 correct value quorum, and `n7_f2` retains the ordinary 2f+1 correct
+decision path.
 
 The bounded baseline BFT-height checks report no violation for
 `BaselineBftHeightSafety`, which combines bounded consensus-height progression
