@@ -33,6 +33,12 @@ generated reorg schedules. It derives rollback depth from a bounded sequence of
 best-tip changes, then checks whether a selected sigma is deep enough to survive
 that fork switch.
 
+`CrosslinkPowBranchCompetition.qnt` replaces the hand-declared best-tip switch
+with a bounded branch-competition fixture. Published tips compete by honest plus
+adversarial work, a hidden adversarial branch cannot become best until it is
+published, and releasing an outworking adversarial branch derives the same
+rollback-depth signal used by dynamic sigma.
+
 `CrosslinkComposed.qnt` connects those two pieces: a Tenderlink decision over a
 resampled PoW snapshot becomes the input to Crosslink finality, which can then
 advance to a tail-confirmed snapshot while preserving the finalized prefix.
@@ -117,6 +123,7 @@ Typecheck:
 $QUINT typecheck spec/quint/CrosslinkResampling.qnt
 $QUINT typecheck spec/quint/CrosslinkForkFinality.qnt
 $QUINT typecheck spec/quint/CrosslinkPowForkSchedule.qnt
+$QUINT typecheck spec/quint/CrosslinkPowBranchCompetition.qnt
 $QUINT typecheck spec/quint/CrosslinkComposed.qnt
 $QUINT typecheck spec/quint/CrosslinkDynamicSigma.qnt
 $QUINT typecheck spec/quint/CrosslinkDynamicSigmaForkSchedule.qnt
@@ -238,6 +245,28 @@ The model has a same-branch extension from `a3` to `a4`, then a fork switch from
 `a4` to `b4` whose last common ancestor is at height 2. It derives rollback
 depth 2 from that best-tip transition and checks that sigma 1 does not survive
 the switch while sigma 3 does.
+
+Witness generated PoW branch competition:
+
+```sh
+$QUINT test spec/quint/CrosslinkPowBranchCompetition.qnt \
+  --main=CrosslinkPowBranchCompetitionModel \
+  --max-samples=100 \
+  --backend=rust
+```
+
+This runs:
+
+- `hiddenAdversarialWorkDoesNotWinUntilPublishedTest`
+- `releasedAdversarialBranchOutworksHonestTipTest`
+- `generatedCompetitionDerivesRollbackDepthTest`
+- `raisedSigmaSurvivesGeneratedAdversarialSwitchTest`
+- `adversarialCatchupProducesForkSwitchTest`
+
+The fixture lets an adversarial `b4` branch accumulate hidden work while the
+published best tip remains `a4`. When `b4` is published with higher total work,
+the generated best tip switches to `b4`, deriving rollback depth 2 from the
+`a4 -> b4` transition.
 
 Witness the composed nil-precommit-to-finality flow:
 
@@ -406,6 +435,16 @@ $QUINT run spec/quint/CrosslinkPowForkSchedule.qnt \
   --backend=rust \
   --verbosity=0
 
+$QUINT run spec/quint/CrosslinkPowBranchCompetition.qnt \
+  --main=CrosslinkPowBranchCompetitionModel \
+  --init=Init \
+  --step=Next \
+  --max-steps=4 \
+  --max-samples=1000 \
+  --invariant=Safety \
+  --backend=rust \
+  --verbosity=0
+
 $QUINT run spec/quint/CrosslinkResampling.qnt \
   --main=CrosslinkNilResamplingLivenessModel \
   --init=LivenessInit \
@@ -508,6 +547,13 @@ $QUINT verify spec/quint/CrosslinkPowForkSchedule.qnt \
   --step=Next \
   --invariant=Safety
 
+$QUINT verify spec/quint/CrosslinkPowBranchCompetition.qnt \
+  --main=CrosslinkPowBranchCompetitionModel \
+  --max-steps=4 \
+  --init=Init \
+  --step=Next \
+  --invariant=Safety
+
 $QUINT verify spec/quint/CrosslinkResampling.qnt \
   --main=CrosslinkNilResamplingLivenessModel \
   --max-steps=15 \
@@ -588,6 +634,14 @@ combines:
 - the live rollback depth is derived from the previous and current best tips
 - the rollback depth stays within the configured PoW height bound
 
+The bounded PoW branch-competition check reports no violation for its `Safety`,
+which combines:
+
+- the live best tip matches the work-derived published-tip competition
+- the live best-tip work matches honest plus adversarial work
+- the live rollback depth is derived from generated best-tip changes
+- the rollback depth stays within the configured PoW height bound
+
 The bounded liveness harness checks the proposed nil-precommit flow under a
 post-GST schedule: a same-round nil certificate is formed for `s0`, one correct
 validator may hold a minority same-round value lock, all correct validators
@@ -645,8 +699,8 @@ This model is intentionally narrow. The next useful extensions are:
 - calibrate the dynamic-sigma risk weights and thresholds against measured
   hash-power participation, round-failure rate, block interval variance, and
   observed reorg distributions
-- replace the fixed fork schedule with generated PoW branch competition and
-  adversarial mining schedules
+- feed generated PoW branch competition into the dynamic-sigma/finality
+  compositions, replacing the remaining fixed best-tip fixtures
 - add BFT heights so successive Tenderlink decisions update Crosslink finality
   directly
 - port the full upstream Tendermint accountability evidence model into the
