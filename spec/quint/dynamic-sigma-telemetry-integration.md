@@ -92,7 +92,7 @@ The controller rule should match the Quint model shape:
 - if participation is below target but above critical, raise sigma to the
   degraded floor
 - if participation is below the critical threshold, force max sigma and expose a
-  degraded status
+  critical status
 
 ## Consensus-Safety Requirement
 
