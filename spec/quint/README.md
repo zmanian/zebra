@@ -57,6 +57,11 @@ schedule and ancestor map, then shows that a fork switch can roll back the
 previous fixed-sigma sample while the sticky baseline still carries that sample
 into the next round.
 
+`baseline-completeness-audit.md` maps the current baseline artifacts against
+the upstream Tendermint Quint example and tracks the remaining work before the
+baseline reaches upstream-style completeness rather than focused witness
+coverage.
+
 `CrosslinkForkFinality.qnt` is a separate value-semantics model. It abstracts
 PoW snapshots as a finite fork tree, then checks that Crosslink finality can skip
 heights on one branch while rejecting finalization of a fork after a block is

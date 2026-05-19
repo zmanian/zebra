@@ -1,0 +1,188 @@
+# Baseline Crosslink Quint Completeness Audit
+
+This audit tracks what remains before the baseline fixed-sigma/sticky
+Crosslink Quint spec reaches the same completeness target as the upstream
+Tendermint Quint model.
+
+## Objective
+
+The baseline deliverable is not only a collection of witnesses. It should be a
+reviewable Crosslink baseline specification with:
+
+- a named fixed-sigma/sticky Tenderlink model
+- explicit `head - sigma` PoW sampling
+- Crosslink finalized-prefix semantics at explicit BFT consensus heights
+- Tendermint-style safety, validity, agreement, and accountability properties
+- upstream-style small model instances
+- automated quick and symbolic proof gates
+- documented limitations for fork recovery, PoW reorgs, and nil-precommit
+  behavior
+
+## Upstream Tendermint Reference
+
+The current upstream reference is:
+
+```text
+https://github.com/informalsystems/quint/tree/main/examples/cosmos/tendermint
+```
+
+That directory contains a Quint port of the CometBFT accountability TLA+ spec.
+The relevant upstream surface is:
+
+- `Tendermint.qnt`
+  - parameterized process sets: `Corr`, `Faulty`, `N`, `T`
+  - value sets: `ValidValues`, `InvalidValues`
+  - round/proposer parameters: `MaxRound`, `Proposer`
+  - quorum constants: `THRESHOLD1 = T + 1`, `THRESHOLD2 = 2 * T + 1`
+  - consensus state: `round`, `step`, `decision`, `lockedValue`,
+    `lockedRound`, `validValue`, `validRound`
+  - message/evidence state for proposals, prevotes, and precommits
+  - nondeterministic faulty proposal, prevote, and precommit injection in `Init`
+  - full transition surface:
+    `StartRound`, `InsertProposal`, proposal handlers, prevote quorum handlers,
+    precommit quorum handlers, timeout handlers, and round catchup
+  - accountability predicates for equivocation and amnesia
+  - properties for agreement, validity, accountability, and false-invariant
+    counterexample exploration
+- `TendermintModels.qnt`
+  - small model instances such as `n4_f1`, `n4_f2`, and `n5_f2`
+- `TendermintTest.qnt`
+  - witness tests for normal decision, no double proposal, and timeout progress
+
+## Current Baseline Artifacts
+
+The current branch has these baseline-specific files:
+
+- `CrosslinkBaseline.qnt`
+  - packages the fixed-sigma/sticky variant with
+    `ResampleOnNilPrecommit = false`
+  - includes stable-stream and stream-change witnesses
+- `CrosslinkBaselinePowSampling.qnt`
+  - derives `Stream(round)` from an explicit `head - sigma` ancestor
+  - records the fork-switch stale-sample behavior
+- `CrosslinkBaselineAccountability.qnt`
+  - records that baseline nil precommit preserves same-round value locks
+  - records conflicting commit accountability through amnesia evidence
+- `CrosslinkBaselineBftHeights.qnt`
+  - gives baseline finality explicit BFT consensus heights
+  - rejects skipped consensus heights and fork finality after a finalized prefix
+- `CrosslinkBaselineFinality.qnt`
+  - composes the sticky Tenderlink baseline with finalized-prefix semantics
+  - records stable finality and the stream-change finality stall
+- `CrosslinkResampling.qnt`
+  - shared focused Tenderlink model used by both baseline and proposed
+    nil-precommit resampling variants
+- `check.sh`
+  - provides `quick-baseline` and `symbolic-baseline` gates
+- `.github/workflows/quint-crosslink.yml`
+  - runs baseline quick and symbolic checks on the personal fork
+
+## Coverage Matrix
+
+| Requirement | Current evidence | Status |
+| --- | --- | --- |
+| Named fixed-sigma/sticky baseline variant | `CrosslinkBaseline.qnt`; `ResampleOnNilPrecommit = false` | Covered |
+| Stable-stream decision path | `baselineStableStreamDecidesSampledSnapshotTest` | Covered |
+| Stream-change halt/stale-sample limitation | `baselineCarriesStaleSampleAfterStreamChangeTest`; `baselineSameRoundLockBlocksFreshDecisionAfterStreamChangeTest` | Covered |
+| Explicit fixed `head - sigma` sampling | `CrosslinkBaselinePowSampling.qnt` | Covered |
+| Fork switch rolls back sampled ancestor | `forkSwitchRollsBackFixedSigmaSampleTest` | Covered |
+| Sticky baseline carries rolled-back sample | `stickyBaselineCarriesRolledBackHeadMinusSigmaTest` | Covered |
+| Crosslink finalized-prefix safety | `CrosslinkBaselineFinality.qnt`; `ComposedSafety` | Covered, bounded |
+| Explicit BFT consensus-height progression | `CrosslinkBaselineBftHeights.qnt`; `BaselineBftHeightSafety` | Covered, bounded |
+| Reject skipped BFT heights | `baselineRejectsSkippedBftHeightTest` | Covered |
+| Reject fork finality after prefix finality | `baselineRejectsForkAfterPrefixFinalityTest` | Covered |
+| Baseline nil precommit preserves same-round value locks | `baselineNilPrecommitDoesNotClearSameRoundValueLockTest` | Covered |
+| Conflicting commits expose accountability evidence | `baselineConflictingCommitsWithoutUnlockExposeAmnesiaTest` | Covered as a witness |
+| Automated local baseline quick gate | `check.sh quick-baseline` | Covered |
+| Automated local baseline symbolic gate | `check.sh symbolic-baseline` | Covered |
+| Automated CI baseline gates | `.github/workflows/quint-crosslink.yml` | Covered structurally; requires green run evidence per commit |
+| Parameterized `Corr/Faulty/N/T` validator model | Current specs use fixed focused fixtures | Missing |
+| Upstream-style model instances (`n4_f1`, `n4_f2`, `n5_f2`) | No baseline equivalent yet | Missing |
+| Nondeterministic faulty message injection in `Init` | Current accountability tests are fixture/witness based | Missing |
+| Full Tendermint transition surface | Current model isolates the Crosslink fork-recovery question | Missing |
+| Full agreement/validity/accountability invariant suite over arbitrary evidence | Current suite has bounded safety plus focused accountability witnesses | Partial |
+| False-invariant/counterexample harnesses for amnesia/equivocation/agreement | No baseline equivalent yet | Missing |
+| Generated/adversarial PoW schedule for baseline long reorgs | Baseline uses a bounded fork-switch fixture | Partial |
+| Stochastic PoW block-production model | Not modeled in baseline | Missing |
+| Inductive or deeper multi-height finality argument | Current BFT-height model is bounded | Partial |
+
+## Remaining Work
+
+To finish a focused baseline artifact, the remaining work is:
+
+1. Keep `quick-baseline` and `symbolic-baseline` green locally and in CI for the
+   current commit.
+2. Keep the baseline limitation explicit: stream changes between prevote and
+   precommit can leave the sticky baseline carrying a stale fixed-sigma sample
+   and can halt fresh finality.
+
+To finish an upstream-quality baseline spec, the remaining work is larger:
+
+1. Add a parameterized baseline Tenderlink module.
+   - Mirror the upstream constants and assumptions: `Corr`, `Faulty`, `N`, `T`,
+     `ValidValues`, `InvalidValues`, `MaxRound`, and `Proposer`.
+   - Keep Crosslink value selection as `Stream(round) = ancestor(bestTip,
+     sigma)` rather than an arbitrary Tendermint value.
+2. Add baseline model instances.
+   - Create Crosslink equivalents of `n4_f1`, `n4_f2`, and `n5_f2`.
+   - Include at least one model where the PoW stream changes across a round
+     boundary.
+3. Add upstream-style faulty message injection.
+   - Nondeterministically seed faulty proposals, prevotes, and precommits in
+     `Init`.
+   - Ensure proposal, prevote, and precommit evidence is carried into
+     Crosslink accountability predicates.
+4. Port the full transition surface.
+   - Include proposer selection, proposal insertion, proposal handling,
+     prevote quorum handling, precommit quorum handling, timeouts, nil prevotes,
+     and round catchup.
+   - Preserve the baseline sticky rule: nil precommit does not clear same-round
+     valid or locked state.
+5. Strengthen properties.
+   - Check agreement, validity, and accountability over the parameterized model.
+   - Keep Crosslink finalized-prefix safety separate from Tenderlink agreement
+     so failures are easier to diagnose.
+6. Add false-invariant/counterexample modules.
+   - Port the upstream negative checks for amnesia, equivocation, agreement, and
+     undecided max-round behavior.
+   - Add Crosslink-specific negative checks for stale fixed-sigma samples and
+     fork finality attempts.
+7. Expand the PoW environment.
+   - Replace the baseline single fork-switch fixture with generated bounded PoW
+     schedules.
+   - Add long-reorg fixtures where the rollback depth exceeds the configured
+     sigma.
+   - Add a simple stochastic or adversarial block-production abstraction so
+     repeated stream changes are not only hand-authored witnesses.
+8. Push finality beyond a bounded fixture.
+   - Either add deeper symbolic projection checks or split the model into
+     smaller lemmas that make the multi-height finalized-prefix argument more
+     obviously inductive.
+
+## Recommended Order
+
+1. Build `CrosslinkBaselineTenderlink.qnt` as the parameterized upstream-shaped
+   module.
+2. Build `CrosslinkBaselineModels.qnt` with the small validator instances.
+3. Build `CrosslinkBaselineTest.qnt` with normal decision, timeout/stale-stream,
+   and no-double-proposal witnesses.
+4. Add the full agreement/validity/accountability checks to
+   `symbolic-baseline`.
+5. Add the false-invariant/counterexample harnesses.
+6. Generalize baseline PoW schedules for long reorgs and repeated stream
+   changes.
+7. Revisit CI timeout and split symbolic jobs if the parameterized model makes
+   Apalache too heavy.
+
+## Completion Standard
+
+The baseline should be treated as complete only when:
+
+- the focused baseline witnesses still pass
+- the upstream-shaped parameterized baseline model typechecks
+- every baseline model instance has quick witness coverage
+- bounded symbolic checks pass for agreement, validity, accountability,
+  fixed-sigma sampling, and finalized-prefix safety
+- the counterexample harnesses produce the expected failures
+- CI runs the quick and symbolic baseline gates on the personal fork
+- the issue and gist link to the current spec folder and this audit
