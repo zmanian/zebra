@@ -1061,6 +1061,20 @@ pub fn max_observed_rollback_depth(
     })
 }
 
+/// Derive rollback-depth history samples from best-tip transition windows.
+///
+/// Each input slice is one measurement window and produces one history sample:
+/// the maximum rollback depth observed among best-tip transitions in that
+/// window. Empty windows contribute a zero-depth sample.
+pub fn rollback_depth_history_from_transition_windows(
+    transition_windows: &[&[DynamicSigmaBestTipTransition]],
+) -> Result<Vec<u64>, DynamicSigmaRollbackTelemetryError> {
+    transition_windows
+        .iter()
+        .map(|transitions| max_observed_rollback_depth(transitions))
+        .collect()
+}
+
 /// Estimate rollback risk for each sigma from observed rollback-depth windows.
 ///
 /// Each supplied depth should be the maximum rollback depth observed in one
@@ -2747,6 +2761,84 @@ mod tests {
         ];
 
         assert_eq!(max_observed_rollback_depth(&transitions), Ok(2));
+    }
+
+    #[test]
+    fn rollback_depth_history_derives_one_sample_per_transition_window() {
+        let stable_window = [DynamicSigmaBestTipTransition {
+            previous_tip_height: 100,
+            new_tip_height: 101,
+            common_ancestor_height: 100,
+        }];
+        let reorg_window = [
+            DynamicSigmaBestTipTransition {
+                previous_tip_height: 105,
+                new_tip_height: 106,
+                common_ancestor_height: 103,
+            },
+            DynamicSigmaBestTipTransition {
+                previous_tip_height: 106,
+                new_tip_height: 109,
+                common_ancestor_height: 106,
+            },
+        ];
+
+        let history = rollback_depth_history_from_transition_windows(&[
+            &stable_window[..],
+            &reorg_window[..],
+        ])
+        .expect("valid transition windows should derive rollback-depth history");
+
+        assert_eq!(history, vec![0, 2]);
+    }
+
+    #[test]
+    fn rollback_depth_history_feeds_window_policy_estimator() {
+        let stable_window = [DynamicSigmaBestTipTransition {
+            previous_tip_height: 100,
+            new_tip_height: 101,
+            common_ancestor_height: 100,
+        }];
+        let reorg_window = [DynamicSigmaBestTipTransition {
+            previous_tip_height: 105,
+            new_tip_height: 106,
+            common_ancestor_height: 102,
+        }];
+        let history = rollback_depth_history_from_transition_windows(&[
+            &stable_window[..],
+            &reorg_window[..],
+        ])
+        .expect("valid transition windows should derive rollback-depth history");
+        let policy = DynamicSigmaRollbackRiskWindowPolicy {
+            min_observation_windows: 2,
+            max_observation_windows: 2,
+            risk_margin_ppm: 0,
+        };
+        let curve = rollback_risk_curve_from_window_policy(params(), &history, policy)
+            .expect("rollback-depth history should feed the bounded policy");
+
+        assert_eq!(
+            curve,
+            RollbackRiskCurve {
+                base_sigma_ppm: 500_000,
+                raised_sigma_ppm: 500_000,
+                max_sigma_ppm: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn rollback_depth_history_rejects_invalid_transition_window() {
+        let invalid_window = [DynamicSigmaBestTipTransition {
+            previous_tip_height: 100,
+            new_tip_height: 101,
+            common_ancestor_height: 102,
+        }];
+
+        assert_eq!(
+            rollback_depth_history_from_transition_windows(&[&invalid_window[..]]),
+            Err(DynamicSigmaRollbackTelemetryError::CommonAncestorAbovePreviousTip),
+        );
     }
 
     #[test]

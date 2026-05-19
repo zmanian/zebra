@@ -255,9 +255,13 @@ economic floor and expected-loss checks. `DynamicSigmaRollbackRiskWindowPolicy`
 now makes the history-window policy explicit: callers must provide at least a
 configured minimum number of rollback-depth windows, only the most recent
 bounded history is used, and invalid bounds or impossible ppm margins fail
-closed. It is intentionally empirical: a production deployment still has to
-wire the source of rollback-depth samples and decide whether a calibrated
-offline model should override or augment this baseline.
+closed. `rollback_depth_history_from_transition_windows` defines the source
+adapter shape: each measurement window of best-tip transitions contributes one
+history sample equal to its maximum rollback depth, and invalid transition
+evidence fails before reaching sigma selection. It is intentionally empirical:
+a production deployment still has to wire live best-tip transition recording and
+decide whether a calibrated offline model should override or augment this
+baseline.
 
 `CrosslinkDynamicSigmaTelemetry.qnt` now mirrors that source boundary in the
 production-shaped telemetry harness: source hash-work samples derive the
@@ -352,8 +356,9 @@ A production implementation of the dynamic-sigma variant should provide:
 - best-tip rollback-depth telemetry derived from actual fork transitions
 - an explicit rollback-risk estimator for each allowed sigma; the pure
   controller now includes an empirical observed-depth exceedance estimator and a
-  bounded recent-history window policy, but production still needs the live
-  rollback-depth sample source and may need a calibrated model
+  bounded recent-history window policy fed by best-tip transition windows, but
+  production still needs live best-tip transition recording and may need a
+  calibrated model
 - an economic exposure model or a clear decision that expected loss is
   service-local rather than consensus-critical; the pure controller now has an
   explicit policy split and tests for both paths, while production still needs a
