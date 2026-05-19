@@ -98,6 +98,32 @@ module CrosslinkBaselineTenderlink {
   val BaselineTenderlinkSafety =
     Safety and BaselineStreamMatchesFixedSigma
 
+  val BaselineFaultyInitDomainWellFormed =
+    AllFaultyProposals.forall(m =>
+      m.src.in(BaselineFaulty) and
+      m.round.in(BaselineRounds) and
+      m.proposal.in(BaselineValidSnapshots) and
+      m.validRound.in(RoundsOrNil)
+    ) and
+    AllFaultyPrevotes.forall(m =>
+      m.src.in(BaselineFaulty) and
+      m.round.in(BaselineRounds) and
+      m.id.in(SnapshotsOrNil)
+    ) and
+    AllFaultyPrecommits.forall(m =>
+      m.src.in(BaselineFaulty) and
+      m.round.in(BaselineRounds) and
+      m.id.in(SnapshotsOrNil)
+    )
+
+  val BaselineEvidenceCoversObservedMessages =
+    EvidenceCoversObservedMessages
+
+  val BaselineFaultyInitSafety =
+    BaselineTenderlinkSafety and
+    BaselineFaultyInitDomainWellFormed and
+    BaselineEvidenceCoversObservedMessages
+
   val BaselineAgreement =
     Agreement
 
@@ -106,4 +132,22 @@ module CrosslinkBaselineTenderlink {
 
   val BaselineAccountability =
     Accountability
+
+  action BaselineInitWithFaultyEvidence =
+    InitWithFaultyEvidence
+
+  action BaselineNext =
+    Next
+
+  action BaselineInsertProposal(p: BaselineProc_t): bool =
+    InsertProposal(p)
+
+  action BaselineUnchangedAll =
+    unchangedAll
+
+  def BaselineHasProposal(
+    r: BaselineRound_t,
+    v: BaselineSnapshot_t,
+  ): bool =
+    HasProposal(r, v)
 }

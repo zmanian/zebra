@@ -1,4 +1,57 @@
 // -*- mode: Bluespec; -*-
+module CrosslinkBaselineParameterizedShellTest {
+  /*
+   Tests for the upstream-shaped parameterized baseline shell itself. These keep
+   the shell honest as it grows beyond import-only model handles.
+   */
+
+  import CrosslinkBaselineModels.* from "./CrosslinkBaselineModels"
+
+  import CrosslinkBaselineTenderlink(
+    BaselineCorr = Set("p1", "p2", "p3"),
+    BaselineFaulty = Set("p4"),
+    BaselineN = 4,
+    BaselineT = 1,
+    BaselineValidSnapshots = ValidSnapshots,
+    BaselineInvalidSnapshots = InvalidSnapshots,
+    BaselineMaxRound = 4,
+    BaselineProposer = ProposerSchedule,
+    BaselineSigma = 1,
+    BaselineBestTip = ForkingBestTip,
+    BaselineHeight = HeightBySnapshot,
+    BaselineAncestorAt = AncestorByHeight,
+  ).* from "./CrosslinkBaselineTenderlink"
+
+  run parameterizedShellFaultyInitCoversEvidenceTest = {
+    BaselineInitWithFaultyEvidence.then(all {
+      assert(BaselineFaultyInitDomainWellFormed),
+      assert(BaselineEvidenceCoversObservedMessages),
+      assert(BaselineFaultyInitSafety),
+      BaselineUnchangedAll,
+    })
+  }
+
+  run parameterizedShellFaultyInitAllowsCorrectProposalTest = {
+    BaselineInitWithFaultyEvidence
+      .then(BaselineInsertProposal("p1"))
+      .then(all {
+        assert(BaselineHasProposal(0, BaselineHeadMinusSigma(0))),
+        assert(BaselineEvidenceCoversObservedMessages),
+        assert(BaselineFaultyInitSafety),
+        BaselineUnchangedAll,
+      })
+  }
+
+  run parameterizedShellFaultyInitNextPreservesSafetyTest = {
+    BaselineInitWithFaultyEvidence
+      .then(BaselineNext)
+      .then(all {
+        assert(BaselineFaultyInitSafety),
+        BaselineUnchangedAll,
+      })
+  }
+}
+
 module CrosslinkBaselineN4F1StableTest {
   /*
    Upstream-style smoke tests for the parameterized baseline shell. This mirrors

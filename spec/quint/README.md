@@ -40,9 +40,12 @@ parameter shell: `BaselineCorr`, `BaselineFaulty`, `BaselineN`, `BaselineT`,
 valid and invalid snapshot sets, round/proposer parameters, and the
 Crosslink-specific fixed-sigma rule
 `BaselineStream(round) = ancestor(bestTip(round), height(bestTip(round)) -
-sigma)`. It still delegates to the focused sticky model, so full upstream
-faulty-message injection and most of the full Tendermint transition surface
-remain future work.
+sigma)`. It now exposes the full faulty-init evidence surface through
+`BaselineInitWithFaultyEvidence`, `BaselineFaultyInitDomainWellFormed`, and
+`BaselineFaultyInitSafety` shell names, plus `BaselineNext` as the
+baseline-prefixed transition step. It still delegates the core sticky
+transition semantics to the focused model, so most of the full upstream
+Tendermint transition surface remains future work.
 
 `CrosslinkBaselineModels.qnt` adds small baseline instances over that shell,
 including stable and forking `n4_f1` fixtures, a forking `n5_f1` fixture,
@@ -52,13 +55,13 @@ The `f = 2` witnesses distinguish cases where correct validators cannot form a
 available.
 
 `CrosslinkBaselineTest.qnt` adds upstream-style smoke tests for the baseline
-shell: fixed-sigma sampling, normal decision, no double proposal, nil prevote
-quorum precommit-nil handling, timeout-driven nil votes and round advance,
-future-round catchup, deriving a fresh `head - sigma` value after a fork
-switch, and the sticky baseline witness that still carries the stale
-fixed-sigma sample. The forking baseline test also includes a `.fail()`
-witness for the false claim that every proposal remains the current
-fixed-sigma sample after a stream switch.
+shell: parameterized faulty-init coverage, fixed-sigma sampling, normal
+decision, no double proposal, nil prevote quorum precommit-nil handling,
+timeout-driven nil votes and round advance, future-round catchup, deriving a
+fresh `head - sigma` value after a fork switch, and the sticky baseline witness
+that still carries the stale fixed-sigma sample. The forking baseline test also
+includes a `.fail()` witness for the false claim that every proposal remains
+the current fixed-sigma sample after a stream switch.
 
 `CrosslinkBaselineAccountability.qnt` makes the baseline accountability
 projection explicit. It checks that a nil-precommit certificate does not clear
@@ -427,6 +430,11 @@ Witness the upstream-shaped baseline shell:
 
 ```sh
 $QUINT test spec/quint/CrosslinkBaselineTest.qnt \
+  --main=CrosslinkBaselineParameterizedShellTest \
+  --max-samples=100 \
+  --backend=rust
+
+$QUINT test spec/quint/CrosslinkBaselineTest.qnt \
   --main=CrosslinkBaselineN4F1StableTest \
   --max-samples=100 \
   --backend=rust
@@ -511,7 +519,11 @@ This model checks that baseline nil precommit preserves same-round value-lock
 state and that conflicting value commits without nil-unlock evidence are
 accountable through the existing amnesia predicates. It also checks that
 faulty proposal, prevote, and nil/value precommit evidence feeds the
-equivocation detector. The tiny faulty-init model checks the upstream-style
+equivocation detector. The parameterized shell test checks that the
+upstream-shaped baseline shell exposes the full faulty-init evidence surface
+and transition step through baseline-prefixed aliases before the focused
+accountability witnesses exercise smaller and larger instances. The tiny
+faulty-init model checks the upstream-style
 `InitWithFaultyEvidence` path with nondeterministic faulty message powersets.
 The forking faulty-init model checks a larger fixed-sigma/forking baseline
 instance with bounded faulty proposal, prevote, and precommit powersets. The

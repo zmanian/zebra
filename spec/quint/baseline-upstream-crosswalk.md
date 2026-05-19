@@ -51,7 +51,7 @@ without clearing same-round value or proposal-cache state.
 | Consensus state `round`, `step`, `decision`, `lockedValue`, `lockedRound`, `validValue`, `validRound` | Same state in `CrosslinkResampling.qnt` | Covered | Baseline also adds `cachedProposal` and `cachedProposalRound` for sticky Crosslink proposal carryover. |
 | Message/evidence state for proposals, prevotes, precommits | `msgsPropose`, `msgsPrevote`, `msgsPrecommit`, `evidencePropose`, `evidencePrevote`, `evidencePrecommit` | Covered | Evidence is used by equivocation, amnesia, and Crosslink-specific accountability witnesses. |
 | Faulty proposal/prevote/precommit domains | `FaultyProposals`, `FaultyPrevotes`, `FaultyPrecommits`, `AllFaulty*` | Covered structurally | The full domains exist in the shared model. |
-| Nondeterministic faulty message injection in `Init` | `InitWithFaultyEvidence`, `CrosslinkBaselineFaultyInitTinyModel`, `CrosslinkBaselineFaultyInitForkingModel`, `CrosslinkBaselineBoundedFaultyInitN4F2ForkingModel`, `CrosslinkBaselineBoundedFaultyInitN5F2ForkingModel`, `CrosslinkBaselineFullFaultyInitForkingModel`, `CrosslinkBaselineFullFaultyInitN4F2ForkingModel`, `CrosslinkBaselineFullFaultyInitN5F1ForkingModel`, `CrosslinkBaselineFullFaultyInitN5F2ForkingModel`, `CrosslinkBaselineFullFaultyInitN7F2ForkingModel` | Partial | Covered in a tiny full-powerset harness, bounded symbolic forking harnesses for `n4_f1` plus representative `n4_f2` and `n5_f2`, and full-powerset quick-check forking `n4_f1`, `n4_f2`, `n5_f1`, `n5_f2`, and `n7_f2` harnesses; not lifted into symbolic checking for every full-powerset larger instance. |
+| Nondeterministic faulty message injection in `Init` | `BaselineInitWithFaultyEvidence`, `BaselineNext`, `BaselineFaultyInitSafety`, `CrosslinkBaselineParameterizedShellTest`, `InitWithFaultyEvidence`, `CrosslinkBaselineFaultyInitTinyModel`, `CrosslinkBaselineFaultyInitForkingModel`, `CrosslinkBaselineBoundedFaultyInitN4F2ForkingModel`, `CrosslinkBaselineBoundedFaultyInitN5F2ForkingModel`, `CrosslinkBaselineFullFaultyInitForkingModel`, `CrosslinkBaselineFullFaultyInitN4F2ForkingModel`, `CrosslinkBaselineFullFaultyInitN5F1ForkingModel`, `CrosslinkBaselineFullFaultyInitN5F2ForkingModel`, `CrosslinkBaselineFullFaultyInitN7F2ForkingModel` | Partial | Exposed through the parameterized baseline shell and covered in a tiny full-powerset harness, bounded symbolic forking harnesses for `n4_f1` plus representative `n4_f2` and `n5_f2`, and full-powerset quick-check forking `n4_f1`, `n4_f2`, `n5_f1`, `n5_f2`, and `n7_f2` harnesses; not lifted into symbolic checking for every full-powerset larger instance. |
 | `StartRound` | `StartNextRoundAfterPrecommitQuorum`, `TimeoutPrecommitStartNextRound`, `CatchUpToRound` | Partial | Baseline models the externally visible round advance paths, but does not expose an upstream-identical `StartRound` helper. |
 | `BroadcastProposal`, `BroadcastPrevote`, `BroadcastPrecommit` | Same named broadcast actions | Covered | Message evidence is updated alongside observed messages. |
 | `InsertProposal(p, v)` | `InsertProposal(p)` using `StickyOrStreamProposal(p)` | Intentional Crosslink deviation | A correct Crosslink proposer samples `Stream(round)` or reuses sticky cached/valid state; it does not choose arbitrary `v`. |
@@ -63,7 +63,7 @@ without clearing same-round value or proposal-cache state.
 | Timeout precommit | `TimeoutPrecommitStartNextRound` | Covered | Correct processes can advance rounds without a precommit quorum. |
 | Nil prevote quorum | `UponNilPrevoteQuorum` | Covered | This is one of the explicit baseline witnesses. |
 | Round catchup | `RoundCatchupEvidence`, `CatchUpToRound` | Covered for focused shell | Catchup requires `T + 1` observed activity in the target round. |
-| System transition `Next` | `CrosslinkResampling.qnt` `Next` | Partial | Includes focused Crosslink proposal, vote, timeout, nil, stream-change, catchup, and decision paths; still not an upstream-identical transition surface. |
+| System transition `Next` | `CrosslinkResampling.qnt` `Next`; `CrosslinkBaselineTenderlink.qnt` `BaselineNext` | Partial | Includes focused Crosslink proposal, vote, timeout, nil, stream-change, catchup, and decision paths behind a baseline-prefixed shell alias; still not an upstream-identical transition surface. |
 | Agreement | `Agreement`, `BaselineAgreement`, symbolic `BaselineSafety`/`ComposedSafety` gates | Covered, bounded | Agreement is checked directly in the focused and composed baseline gates. |
 | Validity | `Validity`, `BaselineValidity`, `Safety` | Covered, bounded | Valid decisions must be modeled snapshots. |
 | Accountability | `EquivocationBy`, `AmnesiaBy`, `DetectableFaults`, `Accountability`, `ConflictingCommitsAccountable` | Partial | Baseline adapts accountability to Crosslink nil certificates; broader arbitrary-evidence checking remains incomplete. |
@@ -116,10 +116,10 @@ The crosswalk leaves these concrete gaps:
    smaller Crosslink-equivalent lemma that every correct non-nil prevote has a
    `HasPrevoteJustifiedProposal` witness.
 3. Broaden the tractable symbolic shape for faulty proposal, prevote, and
-   precommit injection beyond the tiny, bounded `n4_f1`, and representative
-   `n4_f2`/`n5_f2` harnesses. The fixed-sigma/forking `n4_f1`, `n4_f2`,
-   `n5_f1`, `n5_f2`, and `n7_f2` surfaces now have full-powerset quick
-   coverage.
+   precommit injection beyond the parameterized shell quick witness, tiny,
+   bounded `n4_f1`, and representative `n4_f2`/`n5_f2` harnesses. The
+   fixed-sigma/forking `n4_f1`, `n4_f2`, `n5_f1`, `n5_f2`, and `n7_f2`
+   surfaces now have full-powerset quick coverage.
 4. Add broader symbolic checks for agreement, validity, and accountability over
    those larger instances.
 5. Decide whether the `n4_f2`, `n5_f2`, and `n7_f2` symbolic gates should be

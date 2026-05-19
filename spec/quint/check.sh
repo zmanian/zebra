@@ -157,6 +157,7 @@ quick_checks() {
   test_model spec/quint/CrosslinkResampling.qnt CrosslinkStickyModel
   test_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStableModel
   test_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStreamChangeModel
+  test_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineParameterizedShellTest
   test_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN4F1StableTest
   test_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN4F1ForkingTest
   test_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN4F2ForkingTest
@@ -199,6 +200,7 @@ quick_checks() {
   run_model spec/quint/CrosslinkResampling.qnt CrosslinkStickyModel Init Next 10 1000 Safety
   run_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStableModel Init Next 10 1000 BaselineSafety
   run_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStreamChangeModel Init Next 10 1000 BaselineSafety
+  run_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineParameterizedShellTest BaselineInitWithFaultyEvidence BaselineNext 2 100 BaselineFaultyInitSafety
   run_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN4F1StableTest Init Next 10 1000 BaselineN4F1StableSafety
   run_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN4F1ForkingTest Init Next 10 1000 BaselineN4F1ForkingSafety
   run_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN4F2ForkingTest Init Next 10 1000 BaselineN4F2ForkingSafety
@@ -247,6 +249,7 @@ baseline_quick_checks() {
   test_model spec/quint/CrosslinkResampling.qnt CrosslinkStickyModel
   test_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStableModel
   test_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStreamChangeModel
+  test_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineParameterizedShellTest
   test_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN4F1StableTest
   test_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN4F1ForkingTest
   test_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN4F2ForkingTest
@@ -275,6 +278,7 @@ baseline_quick_checks() {
   run_model spec/quint/CrosslinkResampling.qnt CrosslinkStickyModel Init Next 10 1000 Safety
   run_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStableModel Init Next 10 1000 BaselineSafety
   run_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStreamChangeModel Init Next 10 1000 BaselineSafety
+  run_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineParameterizedShellTest BaselineInitWithFaultyEvidence BaselineNext 2 100 BaselineFaultyInitSafety
   run_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN4F1StableTest Init Next 10 1000 BaselineN4F1StableSafety
   run_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN4F1ForkingTest Init Next 10 1000 BaselineN4F1ForkingSafety
   run_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN4F2ForkingTest Init Next 10 1000 BaselineN4F2ForkingSafety
