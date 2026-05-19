@@ -41,6 +41,12 @@ tail-confirmed stable-stream decision, and records the Crosslink-level failure
 mode when a stream change leaves the protocol carrying the stale sample while
 finality remains at the prior prefix.
 
+`CrosslinkBaselinePowSampling.qnt` pins the baseline stream to an explicit
+fixed `head - sigma` PoW sample. It derives `Stream(round)` from a best-tip
+schedule and ancestor map, then shows that a fork switch can roll back the
+previous fixed-sigma sample while the sticky baseline still carries that sample
+into the next round.
+
 `CrosslinkForkFinality.qnt` is a separate value-semantics model. It abstracts
 PoW snapshots as a finite fork tree, then checks that Crosslink finality can skip
 heights on one branch while rejecting finalization of a fork after a block is
@@ -275,6 +281,7 @@ Typecheck:
 ```sh
 $QUINT typecheck spec/quint/CrosslinkBaseline.qnt
 $QUINT typecheck spec/quint/CrosslinkBaselineFinality.qnt
+$QUINT typecheck spec/quint/CrosslinkBaselinePowSampling.qnt
 $QUINT typecheck spec/quint/CrosslinkResampling.qnt
 $QUINT typecheck spec/quint/CrosslinkForkFinality.qnt
 $QUINT typecheck spec/quint/CrosslinkPowForkSchedule.qnt
@@ -331,6 +338,20 @@ stable. The stream-change finality model records the Crosslink-level limitation:
 after a nil-precommit quorum, the current protocol can still carry the stale
 sample and leave finality at the previous prefix instead of reaching the fresh
 stream value.
+
+Witness fixed-sigma baseline PoW sampling:
+
+```sh
+$QUINT test spec/quint/CrosslinkBaselinePowSampling.qnt \
+  --main=CrosslinkBaselinePowSamplingModel \
+  --max-samples=100 \
+  --backend=rust
+```
+
+This model makes `Stream(round)` equal to the explicit fixed `head - sigma`
+ancestor. Its fork-switch fixture moves the best tip from `a4` to `b4`, derives
+round samples `a3` and `b3`, and checks that the sticky baseline still proposes
+the rolled-back `a3` sample in round 1.
 
 Witness the current sticky behavior:
 
@@ -1111,6 +1132,13 @@ the finalized-prefix invariant. The stable-stream liveness harness reaches an
 `a2` decision and finality update by phase 9; the stream-change witness records
 that the sticky baseline can carry `a1` into round 1 and leave finality at `g`
 instead of finalizing the fresh stream value.
+
+The bounded baseline PoW-sampling check reports no violation for
+`BaselinePowSamplingSafety`, which combines the current fixed-sigma/sticky
+Tenderlink safety invariant with an explicit `Stream(round) = head - sigma`
+condition. The fork-switch witness records a rollback from `a4` to `b4` where
+the round-0 fixed-sigma sample `a3` no longer survives, but the sticky baseline
+still carries it into round 1 instead of sampling `b3`.
 
 The bounded fork-finality check reports no violation for its `Safety`, which
 combines:

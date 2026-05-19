@@ -41,6 +41,7 @@ typecheck_all() {
   local specs=(
     spec/quint/CrosslinkBaseline.qnt
     spec/quint/CrosslinkBaselineFinality.qnt
+    spec/quint/CrosslinkBaselinePowSampling.qnt
     spec/quint/CrosslinkResampling.qnt
     spec/quint/CrosslinkForkFinality.qnt
     spec/quint/CrosslinkPowForkSchedule.qnt
@@ -110,6 +111,7 @@ quick_checks() {
   test_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStreamChangeModel
   test_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStableModel
   test_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStreamChangeModel
+  test_model spec/quint/CrosslinkBaselinePowSampling.qnt CrosslinkBaselinePowSamplingModel
   test_model spec/quint/CrosslinkResampling.qnt CrosslinkNilResamplingModel
   test_model spec/quint/CrosslinkForkFinality.qnt CrosslinkForkFinalityModel
   test_model spec/quint/CrosslinkPowForkSchedule.qnt CrosslinkPowForkScheduleModel
@@ -131,6 +133,7 @@ quick_checks() {
   run_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStableModel ComposedInit ComposedNext 10 1000 ComposedSafety
   run_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStreamChangeModel ComposedInit ComposedNext 10 1000 ComposedSafety
   run_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityLivenessModel LivenessInit LivenessStep 9 1 LivenessSafety
+  run_model spec/quint/CrosslinkBaselinePowSampling.qnt CrosslinkBaselinePowSamplingModel Init Next 10 1000 BaselinePowSamplingSafety
   run_model spec/quint/CrosslinkResampling.qnt CrosslinkNilResamplingModel Init Next 10 1000 Safety
   run_model spec/quint/CrosslinkForkFinality.qnt CrosslinkForkFinalityModel Init Next 6 1000 Safety
   run_model spec/quint/CrosslinkPowForkSchedule.qnt CrosslinkPowForkScheduleModel Init Next 4 1000 Safety
@@ -156,6 +159,7 @@ symbolic_checks() {
   verify_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStableModel 5 ComposedInit ComposedNext ComposedSafety
   verify_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStreamChangeModel 5 ComposedInit ComposedNext ComposedSafety
   verify_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityLivenessModel 9 LivenessInit LivenessStep LivenessSafety
+  verify_model spec/quint/CrosslinkBaselinePowSampling.qnt CrosslinkBaselinePowSamplingModel 3 Init Next BaselinePowSamplingSafety
   verify_model spec/quint/CrosslinkResampling.qnt CrosslinkNilResamplingModel 3 Init Next Safety
   verify_model spec/quint/CrosslinkForkFinality.qnt CrosslinkForkFinalityModel 4 Init Next Safety
   verify_model spec/quint/CrosslinkPowForkSchedule.qnt CrosslinkPowForkScheduleModel 4 Init Next Safety
