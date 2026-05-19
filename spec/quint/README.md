@@ -106,12 +106,18 @@ mixed-evidence labels into those counters, while rejecting failure-reason
 overcounts. `observed_hash_work_participation` aggregates source-side PoW work
 observations into the total-work denominator and verified-participating
 numerator, so work without objective Crosslink participation evidence is counted
-conservatively as non-participating. `DynamicSigmaBestTipTransition` derives the
-observed reorg-depth input from explicit old-tip, new-tip, and common-ancestor
-heights, with a helper for taking the maximum rollback depth over a transition
-window. `telemetry_components_from_observation_window` composes these
-source-shaped hash-work observations, round counters, and best-tip transitions
-into telemetry components before proposal evidence selection. The branch also
+conservatively as non-participating. `hash_work_observation_from_header` and
+`hash_work_observations_from_headers` now derive that source signal from PoW
+headers by converting compact difficulty into work and treating the current
+non-null Crosslink fat pointer as the objective participation marker. This keeps
+the dynamic-sigma input as a work-weighted participating hash-power percentage,
+while leaving stronger production validation of the marker contents as an
+explicit follow-up. `DynamicSigmaBestTipTransition` derives the observed
+reorg-depth input from explicit old-tip, new-tip, and common-ancestor heights,
+with a helper for taking the maximum rollback depth over a transition window.
+`telemetry_components_from_observation_window` composes these source-shaped
+hash-work observations, round counters, and best-tip transitions into telemetry
+components before proposal evidence selection. The branch also
 includes a
 `BftBlock::try_from_with_confirmation_depth` construction hook and tagged payload
 envelope. The live Tenderlink proposal, validation, and decided-block
@@ -1135,9 +1141,11 @@ This model is intentionally narrow. The next useful extensions are:
   evidence or inconsistent round counters. The event accumulator now gives live
   Tenderlink hooks an exact round-counter contract, the hash-work observation
   accumulator gives source producers an exact participation-numerator contract,
-  and the pure rollback-depth helper derives the observed reorg-depth input from
-  explicit best-tip transition evidence. The observation-window assembler now
-  composes those source-shaped inputs into telemetry components, and the
+  the header adapter derives a work-weighted participation share from the
+  current Crosslink fat-pointer marker, and the pure rollback-depth helper
+  derives the observed reorg-depth input from explicit best-tip transition
+  evidence. The observation-window assembler now composes those source-shaped
+  inputs into telemetry components, and the
   prototype proposal path uses it. The pure hysteresis helper covers bounded
   sigma decreases for short-window stability, and the prototype evidence builder
   now applies an explicit hysteresis state before carrying `selected_sigma`. The

@@ -101,6 +101,16 @@ into the numerator. Empty observation windows are rejected. This still does not
 define the production marker; it prevents the next source producer from treating
 unknown or unverified work as healthy participation.
 
+`hash_work_observation_from_header` is the first concrete source adapter for
+that boundary. It converts a validated PoW header's compact difficulty into
+work, classifies non-null Crosslink fat pointers as the current objective
+participation marker, and counts null-marker headers as observed but
+non-participating work. Invalid header difficulty fails closed instead of being
+counted as zero or healthy participation. This adapter is intentionally a
+prototype marker bridge: production still needs to decide whether the marker
+must validate the fat pointer contents, signatures, quorum, or referenced BFT
+block before assigning verified-participating status.
+
 The controller rule should match the Quint model shape:
 
 - if participation is at or above the target threshold, hash participation does
@@ -183,6 +193,13 @@ has objective Crosslink participation evidence, while
 critical participation shares through this path, so lower verified
 participation raises or preserves the selected sigma floor instead of lowering
 it.
+
+Header-derived observations now feed that same path:
+`hash_work_observations_from_headers` derives per-header work from
+`difficulty_threshold.to_work()`, uses the current non-null Crosslink fat pointer
+as the participation marker, and keeps all valid header work in the denominator.
+That makes the "percentage of hash power participating in Crosslink" input
+work-weighted rather than block-count-weighted.
 
 The source contracts are now composed by
 `telemetry_components_from_observation_window`. It accepts hash-work

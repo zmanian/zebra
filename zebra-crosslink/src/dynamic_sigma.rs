@@ -7,7 +7,10 @@
 
 use std::io::{Read, Write};
 
-use zebra_chain::serialization::{SerializationError, ZcashDeserialize, ZcashSerialize};
+use zebra_chain::{
+    block::{FatPointerToBftBlock, Header},
+    serialization::{SerializationError, ZcashDeserialize, ZcashSerialize},
+};
 
 /// Parts-per-million denominator used by rollback risk estimates.
 pub const PPM_DENOMINATOR: u128 = 1_000_000;
@@ -147,6 +150,15 @@ pub enum DynamicSigmaHashWorkTelemetryError {
     ZeroHashWorkObservation,
     /// The observed PoW work total overflowed.
     HashWorkOverflow,
+}
+
+/// Invalid source-side PoW header observation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DynamicSigmaHeaderObservationError {
+    /// The header difficulty threshold cannot be converted into PoW work.
+    InvalidDifficultyThreshold,
+    /// The header difficulty threshold converted into zero PoW work.
+    ZeroHeaderWork,
 }
 
 /// Tenderlink round counters collected over a dynamic-sigma telemetry window.
@@ -638,6 +650,52 @@ pub fn observed_hash_work_participation(
         total_hash_work,
         crosslink_participating_hash_work,
     })
+}
+
+/// Convert a PoW header into a dynamic-sigma hash-work observation.
+///
+/// The current source marker is the consensus-visible Crosslink fat pointer in
+/// the header. A non-null marker counts the header work as participating, while
+/// a null marker still contributes to the total observed hash-work denominator.
+/// Production callers that need stronger fat-pointer validation should perform
+/// that validation before treating a header as verified participation.
+pub fn hash_work_observation_from_header(
+    header: &Header,
+) -> Result<DynamicSigmaHashWorkObservation, DynamicSigmaHeaderObservationError> {
+    let hash_work = header
+        .difficulty_threshold
+        .to_work()
+        .ok_or(DynamicSigmaHeaderObservationError::InvalidDifficultyThreshold)?
+        .as_u128();
+
+    if hash_work == 0 {
+        return Err(DynamicSigmaHeaderObservationError::ZeroHeaderWork);
+    }
+
+    let participation = if header_has_crosslink_participation_marker(header) {
+        DynamicSigmaHashParticipation::VerifiedParticipating
+    } else {
+        DynamicSigmaHashParticipation::NotVerifiedParticipating
+    };
+
+    Ok(DynamicSigmaHashWorkObservation {
+        hash_work,
+        participation,
+    })
+}
+
+/// Convert PoW headers into dynamic-sigma hash-work observations.
+pub fn hash_work_observations_from_headers(
+    headers: &[Header],
+) -> Result<Vec<DynamicSigmaHashWorkObservation>, DynamicSigmaHeaderObservationError> {
+    headers
+        .iter()
+        .map(hash_work_observation_from_header)
+        .collect()
+}
+
+fn header_has_crosslink_participation_marker(header: &Header) -> bool {
+    header.fat_pointer_to_bft_block != FatPointerToBftBlock::null()
 }
 
 impl DynamicSigmaTelemetryComponents {
@@ -1160,7 +1218,16 @@ fn saturating_pct_add(raw_pct: u8, margin_pct: u8) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
     use zebra_chain::serialization::{ZcashDeserialize, ZcashSerialize};
+    use zebra_chain::{
+        block::{merkle::Root, FatPointerToBftBlock, Header},
+        fmt::HexDebug,
+        work::{
+            difficulty::{CompactDifficulty, INVALID_COMPACT_DIFFICULTY},
+            equihash::Solution,
+        },
+    };
 
     fn params() -> DynamicSigmaParameters {
         DynamicSigmaParameters {
@@ -1351,6 +1418,35 @@ mod tests {
             },
             value_at_risk_units: 1000,
             max_acceptable_expected_loss_units: 100,
+        }
+    }
+
+    fn valid_header_difficulty() -> CompactDifficulty {
+        CompactDifficulty::from_bytes_in_display_order(&0x207f_ffffu32.to_be_bytes())
+            .expect("fixture difficulty should be valid")
+    }
+
+    fn participating_fat_pointer() -> FatPointerToBftBlock {
+        let mut vote_for_block_without_finalizer_public_key = [0u8; 76 - 32];
+        vote_for_block_without_finalizer_public_key[0] = 1;
+
+        FatPointerToBftBlock {
+            vote_for_block_without_finalizer_public_key,
+            signatures: Vec::new(),
+        }
+    }
+
+    fn header_with_fat_pointer(fat_pointer_to_bft_block: FatPointerToBftBlock) -> Header {
+        Header {
+            version: 4,
+            previous_block_hash: zebra_chain::block::Hash([0; 32]),
+            merkle_root: Root([0; 32]),
+            commitment_bytes: HexDebug([0; 32]),
+            time: Utc::now(),
+            difficulty_threshold: valid_header_difficulty(),
+            nonce: HexDebug([0; 32]),
+            solution: Solution::for_proposal(),
+            fat_pointer_to_bft_block,
         }
     }
 
@@ -1605,6 +1701,54 @@ mod tests {
         assert_eq!(healthy_sigma, params().base_sigma);
         assert_eq!(degraded_sigma, params().raised_sigma);
         assert_eq!(critical_sigma, params().max_sigma);
+    }
+
+    #[test]
+    fn headers_derive_hash_work_participation_share() {
+        let participating_header = header_with_fat_pointer(participating_fat_pointer());
+        let non_participating_header = header_with_fat_pointer(FatPointerToBftBlock::null());
+        let expected_header_work = valid_header_difficulty()
+            .to_work()
+            .expect("fixture difficulty should produce work")
+            .as_u128();
+
+        let observations =
+            hash_work_observations_from_headers(&[participating_header, non_participating_header])
+                .expect("valid headers should derive hash-work observations");
+        let hash_work = observed_hash_work_participation(&observations)
+            .expect("header observations should assemble");
+
+        assert_eq!(hash_work.total_hash_work, expected_header_work * 2);
+        assert_eq!(
+            hash_work.crosslink_participating_hash_work,
+            expected_header_work
+        );
+    }
+
+    #[test]
+    fn header_observation_rejects_invalid_difficulty() {
+        let mut header = header_with_fat_pointer(participating_fat_pointer());
+        header.difficulty_threshold = INVALID_COMPACT_DIFFICULTY;
+
+        assert_eq!(
+            hash_work_observation_from_header(&header),
+            Err(DynamicSigmaHeaderObservationError::InvalidDifficultyThreshold),
+        );
+    }
+
+    #[test]
+    fn headers_feed_dynamic_sigma_hash_participation_floor() {
+        let observations = hash_work_observations_from_headers(&[
+            header_with_fat_pointer(participating_fat_pointer()),
+            header_with_fat_pointer(FatPointerToBftBlock::null()),
+            header_with_fat_pointer(FatPointerToBftBlock::null()),
+        ])
+        .expect("valid headers should derive hash-work observations");
+
+        assert_eq!(
+            sigma_from_hash_work_observations(&observations),
+            params().max_sigma
+        );
     }
 
     #[test]
