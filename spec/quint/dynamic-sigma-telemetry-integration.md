@@ -93,6 +93,14 @@ the estimator should bias toward lower participation, not higher participation.
 This is important because hidden or delayed PoW work is exactly the risk that
 requires a larger sigma.
 
+The Rust prototype now has a pure source-side aggregation boundary for this
+metric. `observed_hash_work_participation` takes explicit PoW work observations
+tagged as either verified-participating or not verified-participating, sums all
+observed work into the denominator, and only sums verified-participating work
+into the numerator. Empty observation windows are rejected. This still does not
+define the production marker; it prevents the next source producer from treating
+unknown or unverified work as healthy participation.
+
 The controller rule should match the Quint model shape:
 
 - if participation is at or above the target threshold, hash participation does
@@ -167,6 +175,15 @@ solve the source-of-truth problem by itself; it makes the next source-integratio
 step fail closed instead of letting unknown participation or contradictory round
 metrics look like a healthy calibration window.
 
+Hash-work participation has the same source-shaping pattern:
+`DynamicSigmaHashWorkObservation` records the observed work and whether that work
+has objective Crosslink participation evidence, while
+`observed_hash_work_participation` derives the component pair used by
+`DynamicSigmaTelemetryComponents`. The tests now cover healthy, degraded, and
+critical participation shares through this path, so lower verified
+participation raises or preserves the selected sigma floor instead of lowering
+it.
+
 Round telemetry now has a matching event contract.
 `DynamicSigmaRoundEvent` records started rounds, decisions, nil-precommit
 recovery, stale proposals, timeouts, invalid proposals, and mixed evidence into
@@ -224,12 +241,14 @@ A production implementation of the dynamic-sigma variant should provide:
   controller now covers the bounded Quint telemetry fixture and raw-counter
   estimate construction, and the prototype-gated Tenderlink payload decoder now
   rejects dynamic payload evidence whose Crosslink-participating hash-power
-  share requires a higher sigma than the proposer selected. The new pure
-  telemetry assembly tests also reject missing participating-work evidence and
-  inconsistent round counters, the event-counter tests reject failure-reason
-  overcounts, and rollback-depth tests derive the observed reorg-depth input
-  from explicit best-tip transition evidence, but live production source
-  integration still needs tests
+  share requires a higher sigma than the proposer selected. The hash-work
+  observation tests now derive the participation numerator from explicit
+  verified-participating observations and cover healthy, degraded, and critical
+  shares through telemetry assembly. The new pure telemetry assembly tests also
+  reject missing participating-work evidence and inconsistent round counters,
+  the event-counter tests reject failure-reason overcounts, and rollback-depth
+  tests derive the observed reorg-depth input from explicit best-tip transition
+  evidence, but live production source integration still needs tests
 - tests showing that dynamic sigma changes do not make honest validators reject
   each other's otherwise valid proposals; the pure Rust proposal-evidence
   verifier and BFT block-construction helper cover identical evidence

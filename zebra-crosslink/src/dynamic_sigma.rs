@@ -110,6 +110,44 @@ pub struct DynamicSigmaRawTelemetry {
     pub max_acceptable_expected_loss_units: u128,
 }
 
+/// Crosslink-participation classification for one observed PoW work unit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DynamicSigmaHashParticipation {
+    /// The observed work carries objectively verified Crosslink participation.
+    VerifiedParticipating,
+    /// The observed work does not carry objectively verified Crosslink participation.
+    NotVerifiedParticipating,
+}
+
+/// One source-side PoW work observation for dynamic-sigma hash participation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DynamicSigmaHashWorkObservation {
+    /// Observed PoW work represented by this sample.
+    pub hash_work: u128,
+    /// Whether this observed work is verified as Crosslink-participating.
+    pub participation: DynamicSigmaHashParticipation,
+}
+
+/// Aggregated PoW work participation telemetry for a measurement window.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DynamicSigmaHashWorkTelemetry {
+    /// Total observed PoW work in the measurement window.
+    pub total_hash_work: u128,
+    /// Observed PoW work with verified Crosslink participation.
+    pub crosslink_participating_hash_work: u128,
+}
+
+/// Invalid source-side PoW work telemetry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DynamicSigmaHashWorkTelemetryError {
+    /// No PoW work observations were provided.
+    EmptyObservationWindow,
+    /// A PoW work observation carried zero work.
+    ZeroHashWorkObservation,
+    /// The observed PoW work total overflowed.
+    HashWorkOverflow,
+}
+
 /// Tenderlink round counters collected over a dynamic-sigma telemetry window.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct DynamicSigmaRoundCounters {
@@ -482,6 +520,42 @@ impl DynamicSigmaRawTelemetry {
 
         Ok(window)
     }
+}
+
+/// Aggregate observed PoW work into Crosslink-participation telemetry.
+///
+/// Work without objectively verified Crosslink participation contributes to
+/// the denominator but not the numerator.
+pub fn observed_hash_work_participation(
+    observations: &[DynamicSigmaHashWorkObservation],
+) -> Result<DynamicSigmaHashWorkTelemetry, DynamicSigmaHashWorkTelemetryError> {
+    if observations.is_empty() {
+        return Err(DynamicSigmaHashWorkTelemetryError::EmptyObservationWindow);
+    }
+
+    let mut total_hash_work = 0u128;
+    let mut crosslink_participating_hash_work = 0u128;
+
+    for observation in observations {
+        if observation.hash_work == 0 {
+            return Err(DynamicSigmaHashWorkTelemetryError::ZeroHashWorkObservation);
+        }
+
+        total_hash_work = total_hash_work
+            .checked_add(observation.hash_work)
+            .ok_or(DynamicSigmaHashWorkTelemetryError::HashWorkOverflow)?;
+
+        if observation.participation == DynamicSigmaHashParticipation::VerifiedParticipating {
+            crosslink_participating_hash_work = crosslink_participating_hash_work
+                .checked_add(observation.hash_work)
+                .ok_or(DynamicSigmaHashWorkTelemetryError::HashWorkOverflow)?;
+        }
+    }
+
+    Ok(DynamicSigmaHashWorkTelemetry {
+        total_hash_work,
+        crosslink_participating_hash_work,
+    })
 }
 
 impl DynamicSigmaTelemetryComponents {
@@ -1011,6 +1085,48 @@ mod tests {
         }
     }
 
+    fn decided_round_counters(rounds: u64) -> DynamicSigmaRoundCounters {
+        DynamicSigmaRoundCounters {
+            started_rounds: rounds,
+            decided_rounds: rounds,
+            ..DynamicSigmaRoundCounters::default()
+        }
+    }
+
+    fn low_risk_components_from_hash_work(
+        hash_work: DynamicSigmaHashWorkTelemetry,
+    ) -> DynamicSigmaTelemetryComponents {
+        DynamicSigmaTelemetryComponents {
+            total_hash_work: Some(hash_work.total_hash_work),
+            crosslink_participating_hash_work: Some(hash_work.crosslink_participating_hash_work),
+            round_counters: decided_round_counters(10),
+            measured_block_interval_variance_pct: 0,
+            measured_observed_reorg_depth: 0,
+            rollback_risk: RollbackRiskCurve {
+                base_sigma_ppm: 1,
+                raised_sigma_ppm: 1,
+                max_sigma_ppm: 1,
+            },
+            value_at_risk_units: 1000,
+            max_acceptable_expected_loss_units: 100,
+        }
+    }
+
+    fn sigma_from_hash_work_observations(observations: &[DynamicSigmaHashWorkObservation]) -> u64 {
+        let hash_work = observed_hash_work_participation(observations)
+            .expect("hash-work observations should assemble");
+        let raw = low_risk_components_from_hash_work(hash_work)
+            .try_into_raw_telemetry()
+            .expect("hash-work components should assemble into raw telemetry");
+        let window = raw
+            .into_window(TelemetryEstimateMargins::default())
+            .expect("hash-work raw telemetry should build a window");
+
+        select_dynamic_sigma(params(), window)
+            .expect("hash-work telemetry should feed the controller")
+            .sigma
+    }
+
     #[test]
     fn raw_observation_counters_build_conservative_window() {
         let telemetry = raw_telemetry(63, 15)
@@ -1048,6 +1164,83 @@ mod tests {
 
         assert_eq!(decision.hash_participation_floor, 3);
         assert_eq!(decision.sigma, 3);
+    }
+
+    #[test]
+    fn hash_work_observations_derive_participation_share() {
+        let hash_work = observed_hash_work_participation(&[
+            DynamicSigmaHashWorkObservation {
+                hash_work: 40,
+                participation: DynamicSigmaHashParticipation::VerifiedParticipating,
+            },
+            DynamicSigmaHashWorkObservation {
+                hash_work: 20,
+                participation: DynamicSigmaHashParticipation::NotVerifiedParticipating,
+            },
+            DynamicSigmaHashWorkObservation {
+                hash_work: 30,
+                participation: DynamicSigmaHashParticipation::VerifiedParticipating,
+            },
+            DynamicSigmaHashWorkObservation {
+                hash_work: 10,
+                participation: DynamicSigmaHashParticipation::NotVerifiedParticipating,
+            },
+        ])
+        .expect("hash-work observations should assemble");
+
+        assert_eq!(
+            hash_work,
+            DynamicSigmaHashWorkTelemetry {
+                total_hash_work: 100,
+                crosslink_participating_hash_work: 70,
+            }
+        );
+    }
+
+    #[test]
+    fn hash_work_observations_feed_participation_sigma_floor() {
+        let healthy_sigma = sigma_from_hash_work_observations(&[
+            DynamicSigmaHashWorkObservation {
+                hash_work: 70,
+                participation: DynamicSigmaHashParticipation::VerifiedParticipating,
+            },
+            DynamicSigmaHashWorkObservation {
+                hash_work: 30,
+                participation: DynamicSigmaHashParticipation::NotVerifiedParticipating,
+            },
+        ]);
+        let degraded_sigma = sigma_from_hash_work_observations(&[
+            DynamicSigmaHashWorkObservation {
+                hash_work: 60,
+                participation: DynamicSigmaHashParticipation::VerifiedParticipating,
+            },
+            DynamicSigmaHashWorkObservation {
+                hash_work: 40,
+                participation: DynamicSigmaHashParticipation::NotVerifiedParticipating,
+            },
+        ]);
+        let critical_sigma = sigma_from_hash_work_observations(&[
+            DynamicSigmaHashWorkObservation {
+                hash_work: 40,
+                participation: DynamicSigmaHashParticipation::VerifiedParticipating,
+            },
+            DynamicSigmaHashWorkObservation {
+                hash_work: 60,
+                participation: DynamicSigmaHashParticipation::NotVerifiedParticipating,
+            },
+        ]);
+
+        assert_eq!(healthy_sigma, params().base_sigma);
+        assert_eq!(degraded_sigma, params().raised_sigma);
+        assert_eq!(critical_sigma, params().max_sigma);
+    }
+
+    #[test]
+    fn empty_hash_work_observations_are_rejected() {
+        assert_eq!(
+            observed_hash_work_participation(&[]),
+            Err(DynamicSigmaHashWorkTelemetryError::EmptyObservationWindow),
+        );
     }
 
     #[test]

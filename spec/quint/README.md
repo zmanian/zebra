@@ -97,10 +97,13 @@ Crosslink-participating hash work, reject inconsistent round counters, and only
 then build raw controller telemetry. `DynamicSigmaRoundEvent` accumulates
 started, decided, nil-precommit, stale-proposal, timeout, invalid-proposal, and
 mixed-evidence labels into those counters, while rejecting failure-reason
-overcounts. `DynamicSigmaBestTipTransition` derives the observed reorg-depth
-input from explicit old-tip, new-tip, and common-ancestor heights, with a helper
-for taking the maximum rollback depth over a transition window. The branch also
-includes a
+overcounts. `observed_hash_work_participation` aggregates source-side PoW work
+observations into the total-work denominator and verified-participating
+numerator, so work without objective Crosslink participation evidence is counted
+conservatively as non-participating. `DynamicSigmaBestTipTransition` derives the
+observed reorg-depth input from explicit old-tip, new-tip, and common-ancestor
+heights, with a helper for taking the maximum rollback depth over a transition
+window. The branch also includes a
 `BftBlock::try_from_with_confirmation_depth` construction hook and tagged payload
 envelope. The live Tenderlink proposal, validation, and decided-block
 callbacks now route through a config-aware payload path: default config still
@@ -1046,9 +1049,10 @@ This model is intentionally narrow. The next useful extensions are:
   path now runs the controller over fixture telemetry components, and the pure
   telemetry assembly boundary fails closed on missing participating-work
   evidence or inconsistent round counters. The event accumulator now gives live
-  Tenderlink hooks an exact round-counter contract, and the pure rollback-depth
-  helper derives the observed reorg-depth input from explicit best-tip
-  transition evidence. The remaining work is replacing the fixture with
-  consensus-safe or proposal-verifiable input producers
+  Tenderlink hooks an exact round-counter contract, the hash-work observation
+  accumulator gives source producers an exact participation-numerator contract,
+  and the pure rollback-depth helper derives the observed reorg-depth input from
+  explicit best-tip transition evidence. The remaining work is replacing the
+  fixture with consensus-safe or proposal-verifiable input producers
 - refine the split projection checks into smaller inductive lemmas if bounds
   beyond the checked depth-10 projections still need very large JVM/Z3 heaps
