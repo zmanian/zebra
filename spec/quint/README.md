@@ -57,6 +57,14 @@ with the derived PoW fork schedule. In this model, dynamic sigma consumes
 rollback depth computed from best-tip transitions instead of a supplied
 `ObservedReorgDepth` map.
 
+`CrosslinkDynamicSigmaResampling.qnt` composes the derived fork signal with the
+nil-precommit resampling path. It checks that a fork switch can raise sigma
+before validators advance the abandoned Tenderlink round, and that the
+resampling path can still decide the fresh stream value. It also carries the
+hash-power participation floor into the composed model, so low participation by
+Crosslink-aware miners can raise sigma even when the latest best-tip transition
+does not add a new fork-switch signal.
+
 ## Upstream Base
 
 The best current Tendermint Quint base is the Quint repository's Cosmos example:
@@ -104,6 +112,7 @@ $QUINT typecheck spec/quint/CrosslinkPowForkSchedule.qnt
 $QUINT typecheck spec/quint/CrosslinkComposed.qnt
 $QUINT typecheck spec/quint/CrosslinkDynamicSigma.qnt
 $QUINT typecheck spec/quint/CrosslinkDynamicSigmaForkSchedule.qnt
+$QUINT typecheck spec/quint/CrosslinkDynamicSigmaResampling.qnt
 ```
 
 Witness the current sticky behavior:
@@ -295,6 +304,28 @@ base sigma. It then switches from `a4` to `b4`, derives rollback depth 2 from
 the fork schedule, and raises dynamic sigma from 1 to 3 without relying on a
 separately supplied observed-reorg map.
 
+Witness dynamic sigma composing with nil-precommit resampling:
+
+```sh
+$QUINT test spec/quint/CrosslinkDynamicSigmaResampling.qnt \
+  --main=CrosslinkDynamicSigmaResamplingModel \
+  --max-samples=100 \
+  --backend=rust
+```
+
+This runs:
+
+- `derivedForkSignalRaisesSigmaBeforeResamplingDecisionTest`
+- `derivedForkSignalThenNilResamplingDecidesFreshValueTest`
+- `criticalHashParticipationRaisesSigmaWithoutNewForkSwitchTest`
+
+The witness forms the same-round nil-precommit recovery scenario, derives a
+rollback-depth signal from the PoW fork fixture, raises sigma from 1 to 3, then
+advances the validators to round 1 and decides fresh stream value `s1`.
+The hash-participation witness then advances over a same-branch transition with
+rollback depth 0 and still raises sigma to the maximum when participating hash
+power falls below the configured critical threshold.
+
 Randomized Rust-backend safety simulation:
 
 ```sh
@@ -387,6 +418,16 @@ $QUINT run spec/quint/CrosslinkDynamicSigmaForkSchedule.qnt \
   --invariant=DerivedSafety \
   --backend=rust \
   --verbosity=0
+
+$QUINT run spec/quint/CrosslinkDynamicSigmaResampling.qnt \
+  --main=CrosslinkDynamicSigmaResamplingModel \
+  --init=DynamicResamplingInit \
+  --step=DynamicResamplingNext \
+  --max-steps=8 \
+  --max-samples=1000 \
+  --invariant=DynamicResamplingSafety \
+  --backend=rust \
+  --verbosity=0
 ```
 
 Bounded Apalache verification:
@@ -454,6 +495,13 @@ $QUINT verify spec/quint/CrosslinkDynamicSigmaForkSchedule.qnt \
   --init=DerivedInit \
   --step=DerivedNext \
   --invariant=DerivedSafety
+
+$QUINT verify spec/quint/CrosslinkDynamicSigmaResampling.qnt \
+  --main=CrosslinkDynamicSigmaResamplingModel \
+  --max-steps=8 \
+  --init=DynamicResamplingInit \
+  --step=DynamicResamplingNext \
+  --invariant=DynamicResamplingSafety
 ```
 
 The bounded resampling checks currently report no violation for `Safety`, which
@@ -516,13 +564,24 @@ The dynamic-sigma/fork-schedule composition reports no violation for
 - dynamic sigma respects the rollback-depth floor derived from the fork schedule
 - the controller status matches current hash participation
 
+The dynamic-sigma/resampling composition reports no violation for
+`DynamicResamplingSafety`, which combines:
+
+- the nil-precommit resampling safety invariants
+- dynamic sigma stays within the configured ladder
+- dynamic sigma respects the rollback-depth floor derived from the fork fixture
+- dynamic sigma respects the hash-power participation floor
+- the participation floor is monotone, so lower participation never requires a
+  lower sigma than higher participation
+- the controller status matches current hash-power participation
+
 ## Next Extensions
 
 This model is intentionally narrow. The next useful extensions are:
 
-- compose dynamic-sigma fork recovery with the resampling/Tenderlink liveness
-  harness, so a fork switch can derive rollback depth, raise sigma, and then
-  resample into a fresh Tenderlink decision
+- compose dynamic sigma, nil-precommit resampling, and Crosslink finality so a
+  fork switch can raise sigma, resample into a fresh Tenderlink decision, and
+  finalize a tail-confirmed snapshot
 - refine `CrosslinkDynamicSigma.qnt` with a calibrated stochastic controller
   that uses measured hash-power participation, round-failure rate, block
   interval variance, and observed reorg depth rather than the current three-step
