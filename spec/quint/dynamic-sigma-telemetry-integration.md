@@ -258,7 +258,9 @@ can now apply that helper from an explicit hysteresis state before carrying
 validators reject selected sigma below the telemetry-required floor, while a
 hysteresis-selected sigma above that floor remains valid. Production still needs
 a durable, consensus-safe or proposal-verifiable source for the hysteresis state
-before this becomes a deployed controller rule.
+before this becomes a deployed controller rule. The prototype proposal callback
+now uses one proposal plan for both candidate-depth selection and payload
+encoding, which is the shape needed before that state can be made persistent.
 
 `CrosslinkDynamicSigmaHysteresis.qnt` mirrors that policy with bounded witnesses:
 participation-driven or reorg-driven sigma increases apply immediately, while

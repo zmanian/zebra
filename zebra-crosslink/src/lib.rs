@@ -510,17 +510,18 @@ async fn propose_new_bft_block_with_confirmation_depth(
 async fn propose_new_tenderlink_payload(
     tfl_handle: &TFLServiceHandle,
 ) -> Option<tenderlink::BlockValue> {
-    let confirmation_depth = match proposal_confirmation_depth(&tfl_handle.config) {
-        Ok(confirmation_depth) => confirmation_depth,
+    let proposal_plan = match tenderlink_proposal_plan(&tfl_handle.config) {
+        Ok(proposal_plan) => proposal_plan,
         Err(err) => {
             warn!("Unable to select Tenderlink proposal depth: {:?}", err);
             return None;
         }
     };
+    let confirmation_depth = proposal_plan.confirmation_depth();
     let block =
         propose_new_bft_block_with_confirmation_depth(tfl_handle, confirmation_depth).await?;
 
-    match encode_proposed_tenderlink_payload(&tfl_handle.config, block) {
+    match encode_proposed_tenderlink_payload_with_plan(&tfl_handle.config, block, proposal_plan) {
         Ok(bytes) => Some(tenderlink::BlockValue(bytes)),
         Err(err) => {
             warn!("Unable to encode Tenderlink proposal payload: {:?}", err);
@@ -593,6 +594,25 @@ enum TenderlinkPayloadEncodeError {
 struct DecodedTenderlinkPayload {
     block: BftBlock,
     confirmation_depth: u64,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum TenderlinkProposalPlan {
+    FixedSigma {
+        confirmation_depth: u64,
+    },
+    DynamicSigma {
+        evidence: DynamicSigmaProposalEvidence,
+    },
+}
+
+impl TenderlinkProposalPlan {
+    fn confirmation_depth(&self) -> u64 {
+        match self {
+            Self::FixedSigma { confirmation_depth } => *confirmation_depth,
+            Self::DynamicSigma { evidence } => evidence.selected_sigma,
+        }
+    }
 }
 
 fn dynamic_sigma_params_from_config(
@@ -780,37 +800,58 @@ fn prototype_dynamic_sigma_next_hysteresis_state(
 fn proposal_confirmation_depth(
     config: &config::Config,
 ) -> Result<u64, TenderlinkPayloadEncodeError> {
+    tenderlink_proposal_plan(config).map(|plan| plan.confirmation_depth())
+}
+
+fn tenderlink_proposal_plan(
+    config: &config::Config,
+) -> Result<TenderlinkProposalPlan, TenderlinkPayloadEncodeError> {
     let Some(params) = dynamic_sigma_params_from_config(config) else {
-        return Ok(PROTOTYPE_PARAMETERS.bc_confirmation_depth_sigma);
+        return Ok(TenderlinkProposalPlan::FixedSigma {
+            confirmation_depth: PROTOTYPE_PARAMETERS.bc_confirmation_depth_sigma,
+        });
     };
 
-    prototype_dynamic_sigma_proposal_evidence(params).map(|evidence| evidence.selected_sigma)
+    prototype_dynamic_sigma_proposal_evidence(params)
+        .map(|evidence| TenderlinkProposalPlan::DynamicSigma { evidence })
 }
 
 fn encode_proposed_tenderlink_payload(
     config: &config::Config,
     block: BftBlock,
 ) -> Result<Vec<u8>, TenderlinkPayloadEncodeError> {
-    let Some(params) = dynamic_sigma_params_from_config(config) else {
-        return block
+    let proposal_plan = tenderlink_proposal_plan(config)?;
+    encode_proposed_tenderlink_payload_with_plan(config, block, proposal_plan)
+}
+
+fn encode_proposed_tenderlink_payload_with_plan(
+    config: &config::Config,
+    block: BftBlock,
+    proposal_plan: TenderlinkProposalPlan,
+) -> Result<Vec<u8>, TenderlinkPayloadEncodeError> {
+    match proposal_plan {
+        TenderlinkProposalPlan::FixedSigma { .. } => block
             .zcash_serialize_to_vec()
-            .map_err(|_| TenderlinkPayloadEncodeError::Serialization);
-    };
+            .map_err(|_| TenderlinkPayloadEncodeError::Serialization),
+        TenderlinkProposalPlan::DynamicSigma { evidence } => {
+            let Some(params) = dynamic_sigma_params_from_config(config) else {
+                return Err(TenderlinkPayloadEncodeError::DynamicSigmaInvalid);
+            };
+            let payload = DynamicSigmaBftBlockPayload::try_from_with_evidence(
+                params,
+                evidence,
+                block.height,
+                block.previous_block_fat_ptr,
+                block.finalization_candidate_height,
+                block.headers,
+            )
+            .map_err(|_| TenderlinkPayloadEncodeError::DynamicSigmaInvalid)?;
 
-    let evidence = prototype_dynamic_sigma_proposal_evidence(params)?;
-    let payload = DynamicSigmaBftBlockPayload::try_from_with_evidence(
-        params,
-        evidence,
-        block.height,
-        block.previous_block_fat_ptr,
-        block.finalization_candidate_height,
-        block.headers,
-    )
-    .map_err(|_| TenderlinkPayloadEncodeError::DynamicSigmaInvalid)?;
-
-    payload
-        .zcash_serialize_to_vec()
-        .map_err(|_| TenderlinkPayloadEncodeError::Serialization)
+            payload
+                .zcash_serialize_to_vec()
+                .map_err(|_| TenderlinkPayloadEncodeError::Serialization)
+        }
+    }
 }
 
 fn decode_tenderlink_payload(
@@ -2890,6 +2931,36 @@ mod tests {
                 .expect("prototype dynamic proposal depth should be available"),
             PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS.base_sigma,
         );
+    }
+
+    #[test]
+    fn tenderlink_proposal_plan_carries_dynamic_evidence_once() {
+        let mut config = config::Config::default();
+        config.dynamic_sigma_prototype = true;
+
+        let proposal_plan =
+            tenderlink_proposal_plan(&config).expect("dynamic proposal plan should be available");
+
+        match proposal_plan {
+            TenderlinkProposalPlan::DynamicSigma { evidence } => {
+                assert_eq!(
+                    evidence.selected_sigma,
+                    PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS.base_sigma,
+                );
+                assert_eq!(
+                    crate::dynamic_sigma::validate_dynamic_sigma_evidence(
+                        PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS,
+                        evidence,
+                    )
+                    .expect("proposal plan evidence should validate")
+                    .sigma,
+                    PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS.base_sigma,
+                );
+            }
+            TenderlinkProposalPlan::FixedSigma { .. } => {
+                panic!("dynamic prototype config should build a dynamic proposal plan")
+            }
+        }
     }
 
     #[test]

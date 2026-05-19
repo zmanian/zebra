@@ -515,7 +515,9 @@ the carried `selected_sigma` is at least the telemetry-required floor, so a
 hysteresis-selected value above the floor remains valid without validators
 reconstructing private proposer state. Production still needs a durable,
 consensus-safe source for the hysteresis state before this becomes a deployed
-controller rule.
+controller rule. The live proposal callback now builds a single proposal plan,
+so the same dynamic-sigma evidence supplies both the BFT block construction
+depth and the encoded payload instead of running selection twice.
 
 Witness dynamic-sigma hysteresis:
 
@@ -1136,8 +1138,10 @@ This model is intentionally narrow. The next useful extensions are:
   composes those source-shaped inputs into telemetry components, and the
   prototype proposal path uses it. The pure hysteresis helper covers bounded
   sigma decreases for short-window stability, and the prototype evidence builder
-  now applies an explicit hysteresis state before carrying `selected_sigma`.
-  The remaining work is replacing the fixture with consensus-safe or
-  proposal-verifiable input producers and a durable hysteresis state source
+  now applies an explicit hysteresis state before carrying `selected_sigma`. The
+  proposal callback reuses that planned evidence for both depth selection and
+  payload encoding. The remaining work is replacing the fixture with
+  consensus-safe or proposal-verifiable input producers and a durable hysteresis
+  state source
 - refine the split projection checks into smaller inductive lemmas if bounds
   beyond the checked depth-10 projections still need very large JVM/Z3 heaps
