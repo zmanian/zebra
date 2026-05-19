@@ -66,7 +66,7 @@ consensus-visible or proposal-verifiable telemetry.
 | `FailedTenderlinkRounds` | Rounds that do not decide a value and require recovery. | `DynamicSigmaRoundCounters` can assemble failed rounds and validates nil-precommit/stale-proposal subcounters against the failed-round count. | Define failure labels for timeout, invalid proposal, or mixed evidence and wire them to live events. |
 | `EstimatedRoundFailureRatePct` | Conservative upper bound on failed-round frequency. | Derived from assembled round counters, with conservative margins applied by the raw telemetry conversion. | Decide smoothing, hysteresis, and window size so transient jitter does not create unstable sigma changes. |
 | `MeasuredBlockIntervalVariancePct` | PoW timing instability over the same window. | Header times are available from validated blocks. | Define a robust estimator that handles timestamp manipulation and difficulty-adjustment lag. |
-| `MeasuredObservedReorgDepth` | Maximum rollback depth observed across best-tip changes in the window. | Zebra state can observe best-tip transitions, but Crosslink-specific rollback-depth telemetry is not present. | Add a metric that records replaced prefix depth for best-tip changes and side-branch releases. |
+| `MeasuredObservedReorgDepth` | Maximum rollback depth observed across best-tip changes in the window. | `DynamicSigmaBestTipTransition` can derive rollback depth from old-tip, new-tip, and common-ancestor heights, but live state hooks are not wired yet. | Add a metric that records replaced prefix depth for best-tip changes and side-branch releases. |
 | `RollbackRiskPpmAtSigma` | Modelled rollback probability for each candidate sigma. | Not a direct node metric. | Build an offline or deterministic estimator from participation, observed work competition, variance, and historical reorg data. |
 | `ValueAtRiskUnits` | Economic value exposed to rollback if a finalized point is wrong or delayed. | Not available in the protocol implementation. | Define a policy input or service-facing exposure model. |
 | `MaxAcceptableExpectedLossUnits` | Governance or operator budget for expected loss. | Not available in the protocol implementation. | Decide whether this is protocol policy, finalizer policy, or service-local policy. |
@@ -166,6 +166,14 @@ solve the source-of-truth problem by itself; it makes the next source-integratio
 step fail closed instead of letting unknown participation or contradictory round
 metrics look like a healthy calibration window.
 
+Rollback-depth telemetry has the same shape. `DynamicSigmaBestTipTransition`
+represents a best-tip change by its previous tip height, new tip height, and
+common ancestor height. The helper derives rollback depth as the replaced
+previous-best-chain suffix and rejects impossible ancestor evidence. This gives
+the controller a precise production-facing input contract for observed reorg
+depth, but it still needs live state integration that can supply the actual
+common ancestor for best-tip transitions and side-branch releases.
+
 ## Failure Modes
 
 The production controller needs guardrails for adversarial telemetry:
@@ -202,8 +210,9 @@ A production implementation of the dynamic-sigma variant should provide:
   rejects dynamic payload evidence whose Crosslink-participating hash-power
   share requires a higher sigma than the proposer selected. The new pure
   telemetry assembly tests also reject missing participating-work evidence and
-  inconsistent round counters, but live production source integration still
-  needs tests
+  inconsistent round counters, and rollback-depth tests derive the observed
+  reorg-depth input from explicit best-tip transition evidence, but live
+  production source integration still needs tests
 - tests showing that dynamic sigma changes do not make honest validators reject
   each other's otherwise valid proposals; the pure Rust proposal-evidence
   verifier and BFT block-construction helper cover identical evidence

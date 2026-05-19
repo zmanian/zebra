@@ -167,6 +167,26 @@ pub enum DynamicSigmaTelemetryAssemblyError {
     InvalidRawTelemetry(DynamicSigmaError),
 }
 
+/// A best-tip transition with its common ancestor in the previous best chain.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DynamicSigmaBestTipTransition {
+    /// Previous best-tip height before the transition.
+    pub previous_tip_height: u64,
+    /// New best-tip height after the transition.
+    pub new_tip_height: u64,
+    /// Common ancestor height shared by the previous and new best tips.
+    pub common_ancestor_height: u64,
+}
+
+/// Invalid rollback-depth telemetry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DynamicSigmaRollbackTelemetryError {
+    /// The common ancestor is above the previous best tip.
+    CommonAncestorAbovePreviousTip,
+    /// The common ancestor is above the new best tip.
+    CommonAncestorAboveNewTip,
+}
+
 /// Hash-participation health status.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HashParticipationStatus {
@@ -502,6 +522,31 @@ impl DynamicSigmaRoundCounters {
 
         Ok(())
     }
+}
+
+impl DynamicSigmaBestTipTransition {
+    /// Return the number of previous-best-chain blocks replaced by this transition.
+    pub fn rollback_depth(self) -> Result<u64, DynamicSigmaRollbackTelemetryError> {
+        if self.common_ancestor_height > self.previous_tip_height {
+            return Err(DynamicSigmaRollbackTelemetryError::CommonAncestorAbovePreviousTip);
+        }
+
+        if self.common_ancestor_height > self.new_tip_height {
+            return Err(DynamicSigmaRollbackTelemetryError::CommonAncestorAboveNewTip);
+        }
+
+        Ok(self.previous_tip_height - self.common_ancestor_height)
+    }
+}
+
+/// Return the maximum rollback depth observed over best-tip transitions.
+pub fn max_observed_rollback_depth(
+    transitions: &[DynamicSigmaBestTipTransition],
+) -> Result<u64, DynamicSigmaRollbackTelemetryError> {
+    transitions.iter().try_fold(0, |max_depth, transition| {
+        let rollback_depth = transition.rollback_depth()?;
+        Ok(max_depth.max(rollback_depth))
+    })
 }
 
 /// Validate proposal-carried dynamic-sigma evidence.
@@ -966,6 +1011,67 @@ mod tests {
         assert_eq!(
             components.try_into_raw_telemetry(),
             Err(DynamicSigmaTelemetryAssemblyError::DecidedAndFailedRoundsExceedStarted),
+        );
+    }
+
+    #[test]
+    fn best_tip_transitions_report_max_observed_rollback_depth() {
+        let transitions = [
+            DynamicSigmaBestTipTransition {
+                previous_tip_height: 105,
+                new_tip_height: 106,
+                common_ancestor_height: 103,
+            },
+            DynamicSigmaBestTipTransition {
+                previous_tip_height: 106,
+                new_tip_height: 109,
+                common_ancestor_height: 106,
+            },
+        ];
+
+        assert_eq!(max_observed_rollback_depth(&transitions), Ok(2));
+    }
+
+    #[test]
+    fn best_tip_rollback_depth_feeds_dynamic_sigma_reorg_floor() {
+        let reorg_depth = max_observed_rollback_depth(&[DynamicSigmaBestTipTransition {
+            previous_tip_height: 105,
+            new_tip_height: 106,
+            common_ancestor_height: 103,
+        }])
+        .expect("valid best-tip transition should derive rollback depth");
+
+        let decision = decide(window(
+            90,
+            0,
+            10,
+            0,
+            0,
+            reorg_depth,
+            RollbackRiskCurve {
+                base_sigma_ppm: 80,
+                raised_sigma_ppm: 20,
+                max_sigma_ppm: 2,
+            },
+            1000,
+            100,
+        ));
+
+        assert_eq!(decision.reorg_floor, 3);
+        assert_eq!(decision.sigma, 3);
+    }
+
+    #[test]
+    fn best_tip_transition_rejects_impossible_common_ancestor() {
+        let transition = DynamicSigmaBestTipTransition {
+            previous_tip_height: 105,
+            new_tip_height: 106,
+            common_ancestor_height: 107,
+        };
+
+        assert_eq!(
+            transition.rollback_depth(),
+            Err(DynamicSigmaRollbackTelemetryError::CommonAncestorAbovePreviousTip),
         );
     }
 
