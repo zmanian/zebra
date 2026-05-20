@@ -60,7 +60,7 @@ consensus-visible or proposal-verifiable telemetry.
 | Quint input | Production meaning | Current source | Missing production work |
 | --- | --- | --- | --- |
 | `TotalHashWork` | Total PoW work observed in the calibration window. | Block headers and chain work can be derived from validated PoW headers; the Rust telemetry assembly boundary now requires explicit total-work evidence before raw telemetry can be built. | Define the exact window and whether competing side-branch work is included or only best-chain work. |
-| `CrosslinkParticipatingHashWork` | PoW work from blocks whose miners are participating in Crosslink. | No complete production source yet; the Rust source contracts derive a work-weighted participating numerator from explicit observations or headers and reject missing participating-work evidence instead of assuming healthy participation. | Add an objectively verifiable production participation marker or derive participation from valid Crosslink-finality content in blocks. |
+| `CrosslinkParticipatingHashWork` | PoW work from blocks whose miners are participating in Crosslink. | The production participation marker is the PoW header's `FatPointerToBftBlock`, validated by a conjunction of non-null + signatures + roster quorum + known-BFT-block checks (see `spec/dynamic-sigma-participation-marker.md`). The Rust source contracts derive a work-weighted participating numerator from observations or headers through the `_with_verifier` hooks. | Wire the concrete production verifier (combining `FatPointerToBftBlock2::validate_signatures`, `fat_pointer_has_roster_quorum`, and the known-BFT-block lookup) into the prototype proposer's source-window assembly. |
 | `EstimatedCoverageRiskPct` | Conservative upper bound on the non-participating or unseen-work share. | Can be computed from total and participating work once both are defined. | Add safety margin for hidden work, delayed propagation, peer eclipse, and incomplete fork visibility. |
 | `TotalTenderlinkRounds` | Count of Tenderlink rounds in the measurement window. | `DynamicSigmaRoundEvent` can accumulate started rounds into `DynamicSigmaRoundCounters`, but live Tenderlink event hooks are not wired yet. | Wire durable round-start events from Tenderlink into the counter window. |
 | `FailedTenderlinkRounds` | Rounds that do not decide a value and require recovery. | `DynamicSigmaRoundEvent` can accumulate nil-precommit, stale-proposal, timeout, invalid-proposal, and mixed-evidence failure labels, and validation rejects reason counters that outnumber failed rounds. | Wire those labels to live Tenderlink recovery and timeout paths. |
@@ -83,10 +83,12 @@ The production controller should compute participation as a work-weighted ratio:
 participating_hash_work / total_hash_work
 ```
 
-The numerator should only include objectively verifiable Crosslink-participating
-work. Self-reported pool share is not enough. A future implementation could use
-valid Crosslink finality-update content, a consensus-valid participation marker,
-or another marker that full nodes can verify from block data.
+The numerator only includes objectively verifiable Crosslink-participating
+work. Self-reported pool share is not enough. The production marker is the
+PoW header's `FatPointerToBftBlock`, validated by the four-check verifier
+contract in `spec/dynamic-sigma-participation-marker.md`. Earlier alternatives
+considered (coinbase commitments, off-chain attestations, derived
+finality-content) are documented and rejected in that decision doc.
 
 The denominator must be conservative. If a node cannot see all competing work,
 the estimator should bias toward lower participation, not higher participation.
@@ -116,11 +118,16 @@ work, classifies non-null Crosslink fat pointers as the current objective
 participation marker, and counts null-marker headers as observed but
 non-participating work. Invalid header difficulty fails closed instead of being
 counted as zero or healthy participation. The default adapter is intentionally a
-prototype marker bridge, but the `_with_verifier` variants let a production
-source require stricter fat-pointer validation before a non-null marker counts
-as verified participation. The verifier is where a deployment can require valid
-fat pointer contents, signatures, quorum, or a referenced BFT block before
-assigning verified-participating status.
+prototype marker bridge: `default_header_participation_marker_verifier` only
+short-circuits null markers, so calling the non-`_with_verifier` helpers in a
+production build is a configuration error. Production deployments MUST pass a
+verifier through the `_with_verifier` variants that performs the conjunction
+specified in `spec/dynamic-sigma-participation-marker.md`: non-null marker,
+valid ed25519 signatures (via `FatPointerToBftBlock2::validate_signatures`),
+roster quorum at the source-header height (via `fat_pointer_has_roster_quorum`),
+and a known referenced BFT block. The verifier-contract test
+`production_marker_verifier_contract_chains_checks` pins this conjunction
+shape against future refactors.
 
 The controller rule should match the Quint model shape:
 

@@ -2895,6 +2895,81 @@ mod tests {
     }
 
     #[test]
+    fn production_marker_verifier_contract_chains_checks() {
+        // Production verifier composes four per-check predicates as conjunction.
+        // See spec/dynamic-sigma-participation-marker.md for the contract.
+        let header = header_with_fat_pointer(participating_fat_pointer());
+
+        let chained_verifier = |non_null: bool,
+                                valid_signatures: bool,
+                                has_roster_quorum: bool,
+                                known_bft_block: bool|
+         -> Box<dyn Fn(&FatPointerToBftBlock) -> bool> {
+            Box::new(move |_fp: &FatPointerToBftBlock| {
+                non_null && valid_signatures && has_roster_quorum && known_bft_block
+            })
+        };
+
+        let all_pass = hash_work_observation_from_header_with_verifier(
+            &header,
+            chained_verifier(true, true, true, true),
+        )
+        .expect("header work should assemble");
+        assert_eq!(
+            all_pass.participation,
+            DynamicSigmaHashParticipation::VerifiedParticipating,
+            "all four production checks pass -> verified participating",
+        );
+
+        for (label, non_null, sigs, quorum, known) in [
+            ("missing non-null marker", false, true, true, true),
+            ("invalid signatures", true, false, true, true),
+            ("sub-quorum signature set", true, true, false, true),
+            ("unknown referenced BFT block", true, true, true, false),
+        ] {
+            let observation = hash_work_observation_from_header_with_verifier(
+                &header,
+                chained_verifier(non_null, sigs, quorum, known),
+            )
+            .expect("header work should still assemble when verifier rejects");
+            assert_eq!(
+                observation.participation,
+                DynamicSigmaHashParticipation::NotVerifiedParticipating,
+                "production verifier check failed: {label}",
+            );
+        }
+
+        // Failure-closed: a verifier that returns false (simulating
+        // uncheckable roster history) classifies as non-participating, not
+        // participating.
+        let failure_closed = hash_work_observation_from_header_with_verifier(
+            &header,
+            |_fp| false,
+        )
+        .expect("header work should assemble even when verifier fails closed");
+        assert_eq!(
+            failure_closed.participation,
+            DynamicSigmaHashParticipation::NotVerifiedParticipating,
+            "failure-closed verifier must not silently mark headers as participating",
+        );
+
+        // Null marker is short-circuited by the upstream guard; the custom
+        // verifier is never consulted, so a verifier that would otherwise
+        // accept everything still produces a NotVerifiedParticipating result.
+        let null_header = header_with_fat_pointer(FatPointerToBftBlock::null());
+        let null_observed = hash_work_observation_from_header_with_verifier(
+            &null_header,
+            |_fp| true,
+        )
+        .expect("null-marker header work should assemble");
+        assert_eq!(
+            null_observed.participation,
+            DynamicSigmaHashParticipation::NotVerifiedParticipating,
+            "null marker must short-circuit to non-participating regardless of custom verifier",
+        );
+    }
+
+    #[test]
     fn headers_feed_dynamic_sigma_hash_participation_floor() {
         let observations = hash_work_observations_from_headers(&[
             header_with_fat_pointer(participating_fat_pointer()),
