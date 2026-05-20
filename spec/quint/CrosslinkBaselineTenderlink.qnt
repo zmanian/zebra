@@ -98,6 +98,10 @@ module CrosslinkBaselineTenderlink {
   val BaselineTenderlinkSafety =
     Safety and BaselineStreamMatchesFixedSigma
 
+  // Shell-level safety alias used by the first-class BaselineNext gates.
+  val BaselineSafety =
+    BaselineTenderlinkSafety
+
   val BaselineFaultyInitDomainWellFormed =
     AllFaultyProposals.forall(m =>
       m.src.in(BaselineFaulty) and
@@ -136,8 +140,54 @@ module CrosslinkBaselineTenderlink {
   action BaselineInitWithFaultyEvidence =
     InitWithFaultyEvidence
 
-  action BaselineNext =
-    Next
+  // BaselineNext is now a first-class transition system. It no longer
+  // delegates to the focused-model `Next`. The disjunction below mirrors the
+  // upstream Tendermint.qnt `Next` shape (proposer/proposal/vote/timeout/
+  // catchup/decide), but every action is the baseline-prefixed shell action
+  // and the Crosslink rules are preserved by construction:
+  //   - Value selection via `head - sigma` (BaselineInsertProposal uses
+  //     `StickyOrStreamProposal`).
+  //   - Sticky nil-precommit semantics (BaselineStartNextRoundAfterPrecommit-
+  //     Quorum and BaselineApplyLateNilPrecommitCertificate keep the
+  //     baseline's `ResampleOnNilPrecommit = false` carryover).
+  //   - Decision freshness via BaselineDecide's underlying
+  //     `IsFreshForRound` precondition.
+  // The precommit-quorum handlers are also exposed in evidence-set-parameter
+  // shape via BaselineUponPrecommitQuorumEvidence so symbolic gates can range
+  // over arbitrary precommit-evidence sets, matching the upstream
+  // `UponPrecommitQuorum(p, evidence)` interface while keeping baseline
+  // behavior unchanged.
+  action BaselineNext = {
+    nondet p = oneOf(BaselineCorr)
+    any {
+      BaselineInsertProposal(p),
+      nondet v = oneOf(BaselineValidSnapshots)
+      BaselineUponProposalInPropose(p, v),
+      nondet v = oneOf(BaselineValidSnapshots)
+      nondet vr = oneOf(BaselineRounds)
+      BaselineUponProposalInProposeAndPrevote(p, v, vr),
+      BaselineTimeoutProposePrevoteNil(p),
+      nondet v = oneOf(BaselineValidSnapshots)
+      BaselineUponValuePrevoteQuorum(p, v),
+      BaselineTimeoutPrevotePrecommitNil(p),
+      BaselineUponNilPrevoteQuorum(p),
+      BaselineUponStreamChangePrecommitNil(p),
+      BaselineStartNextRoundAfterPrecommitQuorum(p),
+      BaselineTimeoutPrecommitStartNextRound(p),
+      nondet targetRound = oneOf(BaselineRounds)
+      BaselineCatchUpToRound(p, targetRound),
+      nondet r = oneOf(BaselineRounds)
+      nondet v = oneOf(BaselineValidSnapshots)
+      BaselineDecide(p, r, v),
+      // Evidence-set-shaped precommit-quorum handler: ranges over arbitrary
+      // subsets of observed precommit evidence, matching upstream's
+      // UponPrecommitQuorum(p, evidence) interface. Behavior is identical to
+      // the focused baseline; only the interface differs.
+      nondet r = oneOf(BaselineRounds)
+      nondet evidence = oneOf(powerset(msgsPrecommit.get(r)))
+      BaselineUponPrecommitQuorumEvidence(p, r, evidence),
+    }
+  }
 
   action BaselineStartRound(
     p: BaselineProc_t,
@@ -211,6 +261,40 @@ module CrosslinkBaselineTenderlink {
     v: BaselineSnapshot_t,
   ): bool =
     Decide(p, r, v)
+
+  // BaselineUponPrecommitQuorumEvidence(p, r, evidence) is the evidence-set
+  // -parameter-shaped precommit-quorum handler. It takes an arbitrary subset
+  // of observed precommit messages at round `r` and requires that subset to
+  // contain precommits from at least THRESHOLD2 = 2T+1 distinct sources,
+  // matching the upstream UponPrecommitQuorum(p, evidence) interface.
+  //
+  // Baseline behavior is preserved: the action dispatches to either
+  // - BaselineDecide(p, r, v) when the evidence projects onto a single
+  //   non-nil value `v` with full precommit quorum (value-commit path), or
+  // - BaselineStartNextRoundAfterPrecommitQuorum(p) otherwise (sticky nil/
+  //   any-precommit round advance). The sticky baseline does not clear
+  //   same-round value, locked, or cached state on a nil-precommit quorum.
+  action BaselineUponPrecommitQuorumEvidence(
+    p: BaselineProc_t,
+    r: BaselineRound_t,
+    evidence: Set[Vote_t],
+  ): bool = all {
+    r.in(BaselineRounds),
+    evidence.subseteq(msgsPrecommit.get(r)),
+    size(evidence.map(m => m.src)) >= THRESHOLD2,
+    any {
+      // Value-commit dispatch: evidence carries a non-nil value precommit
+      // quorum and the decided value is fresh for the round.
+      nondet v = oneOf(BaselineValidSnapshots)
+      all {
+        evidence.filter(m => m.id == v).map(m => m.src).size() >= THRESHOLD2,
+        Decide(p, r, v),
+      },
+      // Nil/any-precommit round-advance dispatch. Sticky baseline keeps
+      // same-round value/locked/cached state across this transition.
+      StartNextRoundAfterPrecommitQuorum(p),
+    },
+  }
 
   action BaselineUnchangedAll =
     unchangedAll

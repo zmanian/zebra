@@ -177,6 +177,103 @@ module CrosslinkBaselineParameterizedShellTest {
         BaselineUnchangedAll,
       })
   }
+
+  run parameterizedShellInlinedNextDrivesDecisionPathTest = {
+    // BaselineNext is now a first-class transition; this test drives the
+    // value-commit path entirely through BaselineNext to confirm the inlined
+    // disjunction subsumes the focused alias decision path.
+    BaselineInitWithFaultyEvidence
+      .then(BaselineNext)
+      .then(BaselineNext)
+      .then(BaselineNext)
+      .then(BaselineNext)
+      .then(all {
+        assert(BaselineFaultyInitSafety),
+        assert(BaselineSafety),
+        BaselineUnchangedAll,
+      })
+  }
+
+  run parameterizedShellInlinedNextPreservesShellSafetyTest = {
+    // BaselineSafety (shell-level alias) must hold across the inlined
+    // BaselineNext transition system.
+    BaselineInitWithFaultyEvidence
+      .then(BaselineNext)
+      .then(all {
+        assert(BaselineSafety),
+        BaselineUnchangedAll,
+      })
+  }
+
+  run parameterizedShellPrecommitQuorumEvidenceCarriesQuorumTest = {
+    // BaselineUponPrecommitQuorumEvidence(p, r, evidence) — evidence-set-
+    // shaped precommit-quorum handler. With a full value precommit quorum
+    // observed at round 0, the precommit-quorum predicate is established and
+    // BaselineSafety still holds. The handler dispatches nondeterministically
+    // between the value-commit and sticky-round-advance branches; both
+    // preserve safety.
+    BaselineInitWithFaultyEvidence
+      .then(BaselineInsertProposal("p1"))
+      .then(BaselineUponProposalInPropose("p1", "a1"))
+      .then(BaselineUponProposalInPropose("p2", "a1"))
+      .then(BaselineUponProposalInPropose("p3", "a1"))
+      .then(BaselineUponValuePrevoteQuorum("p1", "a1"))
+      .then(BaselineUponValuePrevoteQuorum("p2", "a1"))
+      .then(BaselineUponValuePrevoteQuorum("p3", "a1"))
+      .then(BaselineUponPrecommitQuorumEvidence(
+        "p1", 0,
+        Set(
+          { src: "p1", round: 0, id: "a1" },
+          { src: "p2", round: 0, id: "a1" },
+          { src: "p3", round: 0, id: "a1" },
+        ),
+      ))
+      .then(all {
+        assert(BaselinePrecommitQuorum(0, "a1")),
+        assert(BaselineSafety),
+        BaselineUnchangedAll,
+      })
+  }
+
+  run parameterizedShellPrecommitQuorumEvidenceDispatchesNilRoundAdvanceTest = {
+    // With a full nil-precommit quorum, BaselineUponPrecommitQuorumEvidence
+    // dispatches to the sticky-baseline round-advance branch and the round
+    // advances without clearing same-round state.
+    BaselineInitWithFaultyEvidence
+      .then(BaselineTimeoutProposePrevoteNil("p1"))
+      .then(BaselineTimeoutProposePrevoteNil("p2"))
+      .then(BaselineTimeoutProposePrevoteNil("p3"))
+      .then(BaselineUponNilPrevoteQuorum("p1"))
+      .then(BaselineUponNilPrevoteQuorum("p2"))
+      .then(BaselineUponNilPrevoteQuorum("p3"))
+      .then(BaselineUponPrecommitQuorumEvidence(
+        "p1", 0,
+        Set(
+          { src: "p1", round: 0, id: BaselineNilSnapshot },
+          { src: "p2", round: 0, id: BaselineNilSnapshot },
+          { src: "p3", round: 0, id: BaselineNilSnapshot },
+        ),
+      ))
+      .then(all {
+        assert(BaselineNilPrecommitCert(0)),
+        assert(BaselineRoundOf("p1") == 1),
+        assert(BaselineStepOf("p1") == "propose"),
+        assert(BaselineSafety),
+        BaselineUnchangedAll,
+      })
+  }
+
+  run parameterizedShellPrecommitQuorumEvidenceRejectsSubThresholdTest = {
+    // An evidence set that does not carry THRESHOLD2 distinct sources must
+    // not enable the handler; this exercises the negative witness for the
+    // evidence-set parameter shape.
+    BaselineInitWithFaultyEvidence
+      .then(BaselineUponPrecommitQuorumEvidence(
+        "p1", 0,
+        Set({ src: "p1", round: 0, id: BaselineNilSnapshot }),
+      ))
+      .fail()
+  }
 }
 
 module CrosslinkBaselineN4F1StableTest {
