@@ -552,6 +552,51 @@ pub struct DynamicSigmaEconomicExposureUnits {
     pub max_acceptable_expected_loss_units: u128,
 }
 
+/// Invalid economic exposure policy configuration.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DynamicSigmaEconomicExposurePolicyError {
+    /// A consensus-critical exposure must declare a nonzero loss budget; a
+    /// zero budget would make every nonzero value-at-risk window force max
+    /// sigma regardless of risk-curve evidence. Configuring it that way
+    /// would silently disable dynamic sigma rather than smoothly raise it,
+    /// so we fail closed at construction time.
+    ConsensusCriticalZeroLossBudget,
+}
+
+impl DynamicSigmaEconomicExposurePolicy {
+    /// Default economic-exposure policy.
+    ///
+    /// Deployments default to [`Self::ServiceLocal`]: dynamic-sigma's economic
+    /// floor is treated as a service-local product policy and does NOT enter
+    /// consensus validity. This is the conservative choice because a
+    /// consensus-critical loss budget that diverges across validators makes
+    /// otherwise-honest validators reject each other's proposals. A
+    /// deployment that wants the loss budget to gate consensus opts in
+    /// explicitly through [`Self::try_consensus_critical`].
+    pub const fn service_local_default() -> Self {
+        Self::ServiceLocal
+    }
+
+    /// Construct a consensus-critical exposure policy.
+    ///
+    /// Fails closed when `max_acceptable_expected_loss_units == 0`: see
+    /// [`DynamicSigmaEconomicExposurePolicyError::ConsensusCriticalZeroLossBudget`].
+    pub fn try_consensus_critical(
+        value_at_risk_units: u128,
+        max_acceptable_expected_loss_units: u128,
+    ) -> Result<Self, DynamicSigmaEconomicExposurePolicyError> {
+        if max_acceptable_expected_loss_units == 0 {
+            return Err(
+                DynamicSigmaEconomicExposurePolicyError::ConsensusCriticalZeroLossBudget,
+            );
+        }
+        Ok(Self::ConsensusCritical {
+            value_at_risk_units,
+            max_acceptable_expected_loss_units,
+        })
+    }
+}
+
 impl DynamicSigmaEconomicExposurePolicy {
     /// Convert an exposure policy into the unit fields carried by telemetry.
     pub fn to_units(self) -> DynamicSigmaEconomicExposureUnits {
@@ -601,7 +646,7 @@ pub struct DynamicSigmaHysteresisParameters {
 }
 
 /// Hysteresis state for a dynamic-sigma controller.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DynamicSigmaHysteresisState {
     /// Currently applied sigma.
     pub current_sigma: u64,
@@ -2169,6 +2214,121 @@ fn ceil_mul_div(value: u128, multiplier: u128, divisor: u128) -> u128 {
 
 fn saturating_pct_add(raw_pct: u8, margin_pct: u8) -> u8 {
     raw_pct.saturating_add(margin_pct).min(100)
+}
+
+/// Typed policy for selecting the durable hysteresis state source.
+///
+/// A deployment chooses exactly one shape. `DurableLocal` keeps state on
+/// local disk and is appropriate when each validator owns its own
+/// service-local hysteresis state. `ProposalCarried` routes state through
+/// the proposal-evidence envelope so all validators see the same hysteresis
+/// state and cannot disagree about the smoothing of sigma decreases.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DynamicSigmaHysteresisStateSourcePolicy {
+    /// Hysteresis state is persisted to the local filesystem at this path.
+    DurableLocal {
+        /// Path to the serialized hysteresis state JSON file.
+        path: std::path::PathBuf,
+    },
+    /// Hysteresis state is carried inside proposal evidence (no local store).
+    ProposalCarried,
+}
+
+/// I/O errors raised by [`load_dynamic_sigma_hysteresis_state`] or
+/// [`save_dynamic_sigma_hysteresis_state`].
+#[derive(Debug)]
+pub enum DynamicSigmaHysteresisStatePersistenceError {
+    /// Filesystem I/O failed.
+    Io(std::io::Error),
+    /// The persisted JSON was malformed or did not match the expected shape.
+    Serde(serde_json::Error),
+}
+
+impl std::fmt::Display for DynamicSigmaHysteresisStatePersistenceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(err) => write!(f, "hysteresis state I/O error: {err}"),
+            Self::Serde(err) => write!(f, "hysteresis state serde error: {err}"),
+        }
+    }
+}
+
+impl std::error::Error for DynamicSigmaHysteresisStatePersistenceError {}
+
+impl From<std::io::Error> for DynamicSigmaHysteresisStatePersistenceError {
+    fn from(err: std::io::Error) -> Self {
+        Self::Io(err)
+    }
+}
+
+impl From<serde_json::Error> for DynamicSigmaHysteresisStatePersistenceError {
+    fn from(err: serde_json::Error) -> Self {
+        Self::Serde(err)
+    }
+}
+
+/// Load durable hysteresis state from disk, or `None` if no file exists yet.
+///
+/// Failure-closed semantics: any I/O or deserialization error is surfaced to
+/// the caller, who should treat it as an explicit configuration problem
+/// rather than silently falling back to a fresh state.
+pub fn load_dynamic_sigma_hysteresis_state(
+    path: &std::path::Path,
+) -> Result<Option<DynamicSigmaHysteresisState>, DynamicSigmaHysteresisStatePersistenceError> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err.into()),
+    }
+}
+
+/// Persist hysteresis state to disk via JSON.
+///
+/// The write is atomic at the file level by going through a temporary file
+/// and renaming it into place. Callers MUST handle errors explicitly; the
+/// helper does not retry or swallow failures.
+pub fn save_dynamic_sigma_hysteresis_state(
+    path: &std::path::Path,
+    state: &DynamicSigmaHysteresisState,
+) -> Result<(), DynamicSigmaHysteresisStatePersistenceError> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+
+    let encoded = serde_json::to_vec(state)?;
+    let mut tmp_path = path.to_path_buf();
+    tmp_path.set_extension("tmp");
+    std::fs::write(&tmp_path, encoded)?;
+    std::fs::rename(&tmp_path, path)?;
+    Ok(())
+}
+
+/// Resolve a [`DynamicSigmaHysteresisStateSourcePolicy`] into the in-memory
+/// [`DynamicSigmaHysteresisStateSource`] that proposal-evidence selection
+/// consumes.
+///
+/// For [`DynamicSigmaHysteresisStateSourcePolicy::DurableLocal`] this loads
+/// the state from disk (defaulting to a fresh `default_state` when no file
+/// exists yet). For [`DynamicSigmaHysteresisStateSourcePolicy::ProposalCarried`]
+/// the supplied `default_state` is returned, since the controller delegates
+/// the durable carry to the proposal-evidence envelope.
+pub fn resolve_dynamic_sigma_hysteresis_state_source(
+    policy: &DynamicSigmaHysteresisStateSourcePolicy,
+    default_state: DynamicSigmaHysteresisState,
+) -> Result<DynamicSigmaHysteresisStateSource, DynamicSigmaHysteresisStatePersistenceError> {
+    match policy {
+        DynamicSigmaHysteresisStateSourcePolicy::DurableLocal { path } => {
+            let loaded = load_dynamic_sigma_hysteresis_state(path)?;
+            Ok(DynamicSigmaHysteresisStateSource::DurableLocal(
+                loaded.unwrap_or(default_state),
+            ))
+        }
+        DynamicSigmaHysteresisStateSourcePolicy::ProposalCarried => Ok(
+            DynamicSigmaHysteresisStateSource::ProposalCarried(default_state),
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -4682,6 +4842,170 @@ mod tests {
         assert_eq!(
             select_dynamic_sigma(params(), telemetry),
             Err(DynamicSigmaError::RollbackRiskCurveNotMonotone)
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // B2: BestTipTransitionRecorder live hook
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn best_tip_recorder_advances_across_sequential_transitions() {
+        let mut recorder = DynamicSigmaBestTipTransitionRecorder::default();
+
+        // First observation seeds the recorder; no transition yet.
+        assert_eq!(recorder.record_best_tip(100, None), Ok(None));
+        assert_eq!(recorder.previous_tip_height, Some(100));
+
+        // Forward progress with explicit common ancestor.
+        let t1 = recorder
+            .record_best_tip(105, Some(100))
+            .expect("forward progress should record a transition")
+            .expect("a transition should be produced");
+        assert_eq!(t1.previous_tip_height, 100);
+        assert_eq!(t1.new_tip_height, 105);
+        assert_eq!(t1.rollback_depth(), Ok(0));
+
+        // Reorg: previous tip 105, new tip 107, common ancestor 102 -> depth 3.
+        let t2 = recorder
+            .record_best_tip(107, Some(102))
+            .expect("reorg transition should record")
+            .expect("a transition should be produced");
+        assert_eq!(t2.rollback_depth(), Ok(3));
+        assert_eq!(recorder.previous_tip_height, Some(107));
+
+        // Window-wide observed depth picks the deepest reorg in the window.
+        assert_eq!(
+            max_observed_rollback_depth(&[t1, t2]),
+            Ok(3),
+        );
+    }
+
+    #[test]
+    fn best_tip_recorder_rejects_invalid_transition_without_advancing() {
+        let mut recorder = DynamicSigmaBestTipTransitionRecorder::default();
+        recorder
+            .record_best_tip(100, None)
+            .expect("seed observation should succeed");
+        // common ancestor above previous tip -> reject, do not advance
+        assert!(recorder.record_best_tip(101, Some(150)).is_err());
+        assert_eq!(recorder.previous_tip_height, Some(100));
+
+        // missing common ancestor on a non-seed call -> reject
+        assert!(recorder.record_best_tip(101, None).is_err());
+        assert_eq!(recorder.previous_tip_height, Some(100));
+    }
+
+    // ---------------------------------------------------------------------
+    // B3: Hysteresis state persistence
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn hysteresis_state_serde_json_round_trips() {
+        let state = DynamicSigmaHysteresisState {
+            current_sigma: 5,
+            stable_windows_below_current: 7,
+        };
+        let encoded = serde_json::to_vec(&state).expect("serde JSON encoding should succeed");
+        let decoded: DynamicSigmaHysteresisState =
+            serde_json::from_slice(&encoded).expect("serde JSON decoding should succeed");
+        assert_eq!(decoded, state);
+    }
+
+    #[test]
+    fn durable_local_state_survives_simulated_process_restart() {
+        let dir = tempfile::tempdir().expect("tempdir should be available");
+        let path = dir.path().join("hysteresis.json");
+
+        // First "process" persists state.
+        let saved = DynamicSigmaHysteresisState {
+            current_sigma: 4,
+            stable_windows_below_current: 2,
+        };
+        save_dynamic_sigma_hysteresis_state(&path, &saved)
+            .expect("persisting hysteresis state should succeed");
+
+        // Simulated restart: a fresh resolver loads the persisted state.
+        let policy = DynamicSigmaHysteresisStateSourcePolicy::DurableLocal {
+            path: path.clone(),
+        };
+        let default_state = DynamicSigmaHysteresisState {
+            current_sigma: 1,
+            stable_windows_below_current: 0,
+        };
+        let resolved = resolve_dynamic_sigma_hysteresis_state_source(&policy, default_state)
+            .expect("resolving durable hysteresis state should succeed");
+        match resolved {
+            DynamicSigmaHysteresisStateSource::DurableLocal(loaded) => {
+                assert_eq!(loaded, saved);
+            }
+            _ => panic!("DurableLocal policy should resolve to DurableLocal source"),
+        }
+    }
+
+    #[test]
+    fn durable_local_state_defaults_when_no_file_exists_yet() {
+        let dir = tempfile::tempdir().expect("tempdir should be available");
+        let path = dir.path().join("missing.json");
+        let default_state = DynamicSigmaHysteresisState {
+            current_sigma: 3,
+            stable_windows_below_current: 1,
+        };
+
+        let policy = DynamicSigmaHysteresisStateSourcePolicy::DurableLocal { path };
+        let resolved = resolve_dynamic_sigma_hysteresis_state_source(&policy, default_state)
+            .expect("missing file should resolve to default state");
+        match resolved {
+            DynamicSigmaHysteresisStateSource::DurableLocal(loaded) => {
+                assert_eq!(loaded, default_state);
+            }
+            _ => panic!("DurableLocal policy should resolve to DurableLocal source"),
+        }
+    }
+
+    #[test]
+    fn proposal_carried_policy_uses_default_state() {
+        let default_state = DynamicSigmaHysteresisState {
+            current_sigma: 2,
+            stable_windows_below_current: 0,
+        };
+        let policy = DynamicSigmaHysteresisStateSourcePolicy::ProposalCarried;
+        let resolved = resolve_dynamic_sigma_hysteresis_state_source(&policy, default_state)
+            .expect("proposal-carried policy should resolve");
+        match resolved {
+            DynamicSigmaHysteresisStateSource::ProposalCarried(state) => {
+                assert_eq!(state, default_state);
+            }
+            _ => panic!("ProposalCarried policy should resolve to ProposalCarried source"),
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // B4: Economic exposure policy
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn service_local_default_carries_zero_consensus_exposure() {
+        let policy = DynamicSigmaEconomicExposurePolicy::service_local_default();
+        let units = policy.to_units();
+        assert_eq!(units.value_at_risk_units, 0);
+        assert_eq!(units.max_acceptable_expected_loss_units, 0);
+    }
+
+    #[test]
+    fn consensus_critical_exposure_flows_into_proposal_evidence() {
+        let policy = DynamicSigmaEconomicExposurePolicy::try_consensus_critical(100_000, 1)
+            .expect("nonzero loss budget should be accepted");
+        let units = policy.to_units();
+        assert_eq!(units.value_at_risk_units, 100_000);
+        assert_eq!(units.max_acceptable_expected_loss_units, 1);
+    }
+
+    #[test]
+    fn consensus_critical_zero_loss_budget_fails_closed() {
+        assert_eq!(
+            DynamicSigmaEconomicExposurePolicy::try_consensus_critical(100_000, 0),
+            Err(DynamicSigmaEconomicExposurePolicyError::ConsensusCriticalZeroLossBudget),
         );
     }
 }

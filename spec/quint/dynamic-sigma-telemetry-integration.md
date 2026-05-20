@@ -60,13 +60,13 @@ consensus-visible or proposal-verifiable telemetry.
 | Quint input | Production meaning | Current source | Missing production work |
 | --- | --- | --- | --- |
 | `TotalHashWork` | Total PoW work observed in the calibration window. | Block headers and chain work can be derived from validated PoW headers; the Rust telemetry assembly boundary now requires explicit total-work evidence before raw telemetry can be built. | Define the exact window and whether competing side-branch work is included or only best-chain work. |
-| `CrosslinkParticipatingHashWork` | PoW work from blocks whose miners are participating in Crosslink. | The production participation marker is the PoW header's `FatPointerToBftBlock`, validated by a conjunction of non-null + signatures + roster quorum + known-BFT-block checks (see `spec/dynamic-sigma-participation-marker.md`). The Rust source contracts derive a work-weighted participating numerator from observations or headers through the `_with_verifier` hooks. | Wire the concrete production verifier (combining `FatPointerToBftBlock2::validate_signatures`, `fat_pointer_has_roster_quorum`, and the known-BFT-block lookup) into the prototype proposer's source-window assembly. |
+| `CrosslinkParticipatingHashWork` | PoW work from blocks whose miners are participating in Crosslink. | The production participation marker is the PoW header's `FatPointerToBftBlock`, validated by a conjunction of non-null + signatures + roster quorum + known-BFT-block checks (see `spec/dynamic-sigma-participation-marker.md`). The Rust source contracts derive a work-weighted participating numerator from observations or headers through the `_with_verifier` hooks. The concrete production verifier `dynamic_sigma_production_marker_verifier` lives in `zebra-crosslink/src/lib.rs` and is wired into the prototype proposer's source-window assembly through `prototype_dynamic_sigma_telemetry_components_with_production_verifier`, which threads it through `telemetry_components_from_timed_header_observation_window_with_hash_work_policy_and_verifier`. | Replace prototype fixtures with live roster history and known-BFT-block lookups at the source-header height, so the verifier produces nonzero participating numerator on live chains. |
 | `EstimatedCoverageRiskPct` | Conservative upper bound on the non-participating or unseen-work share. | Can be computed from total and participating work once both are defined. | Add safety margin for hidden work, delayed propagation, peer eclipse, and incomplete fork visibility. |
 | `TotalTenderlinkRounds` | Count of Tenderlink rounds in the measurement window. | `DynamicSigmaRoundEvent` can accumulate started rounds into `DynamicSigmaRoundCounters`, but live Tenderlink event hooks are not wired yet. | Wire durable round-start events from Tenderlink into the counter window. |
 | `FailedTenderlinkRounds` | Rounds that do not decide a value and require recovery. | `DynamicSigmaRoundEvent` can accumulate nil-precommit, stale-proposal, timeout, invalid-proposal, and mixed-evidence failure labels, and validation rejects reason counters that outnumber failed rounds. | Wire those labels to live Tenderlink recovery and timeout paths. |
 | `EstimatedRoundFailureRatePct` | Conservative upper bound on failed-round frequency. | Derived from assembled round counters, with conservative margins applied by the raw telemetry conversion. | Decide smoothing, hysteresis, and window size so transient jitter does not create unstable sigma changes. |
 | `MeasuredBlockIntervalVariancePct` | PoW timing instability over the same window. | `measured_block_interval_variance_pct_from_headers` derives a conservative max adjacent-interval deviation from validated header times, and `DynamicSigmaTimedHeaderObservationWindow` composes that source with header-derived work participation. The policy-aware timed helper applies the same recent-window/minimum-work guardrail to the participation side, and target spacing can be derived from the active Zebra network upgrade. | Decide whether timestamp-manipulation handling should become stricter or be replaced by a calibrated model. |
-| `MeasuredObservedReorgDepth` | Maximum rollback depth observed across best-tip changes in the window. | `DynamicSigmaBestTipTransition` can derive rollback depth from old-tip, new-tip, and common-ancestor heights, but live state hooks are not wired yet. | Add a metric that records replaced prefix depth for best-tip changes and side-branch releases. |
+| `MeasuredObservedReorgDepth` | Maximum rollback depth observed across best-tip changes in the window. | `DynamicSigmaBestTipTransition` derives rollback depth from old-tip, new-tip, and common-ancestor heights, and `tfl_service_main_loop` now drives `DynamicSigmaBestTipTransitionRecorder` from each observed best-tip change. Forward progress records depth 0; reorgs with explicit common ancestors record real depth; missing ancestor evidence is dropped failure-closed. | Wire a state-service common-ancestor lookup so reorgs that change the new tip height non-monotonically still feed rollback-depth samples. |
 | `RollbackRiskPpmAtSigma` | Modelled rollback probability for each candidate sigma. | `rollback_risk_curve_from_observed_rollback_depths` can derive an empirical ppm exceedance curve from observed rollback-depth windows plus a conservative margin. | Define the production window/history policy and decide whether the empirical estimator is sufficient or should be replaced by a calibrated offline model. |
 | `ValueAtRiskUnits` | Economic value exposed to rollback if a finalized point is wrong or delayed. | The pure Rust controller now has an explicit `DynamicSigmaEconomicExposurePolicy` that distinguishes consensus-critical exposure from service-local exposure. | Wire a production source if exposure is consensus-critical, or keep service-local exposure outside proposal validity. |
 | `MaxAcceptableExpectedLossUnits` | Governance or operator budget for expected loss. | Consensus-critical policy carries this budget into proposal evidence; service-local policy maps to zero consensus exposure. | Decide the governance/operator source for consensus-critical budgets, if any. |
@@ -403,12 +403,17 @@ A production implementation of the dynamic-sigma variant should provide:
   and minimum-total-work policy checks before deriving participation
 - round-start, round-failure, nil-precommit, stale-proposal, and decision
   counters
-- best-tip rollback-depth telemetry derived from actual fork transitions
+- best-tip rollback-depth telemetry derived from actual fork transitions; the
+  Zebra service main loop now drives `DynamicSigmaBestTipTransitionRecorder`
+  from observed best-tip changes (forward progress records depth 0; reorgs
+  with explicit common ancestors record real rollback depth; missing ancestor
+  evidence is dropped failure-closed pending a state-service ancestor lookup)
 - an explicit rollback-risk estimator for each allowed sigma; the pure
   controller now includes an empirical observed-depth exceedance estimator and a
   bounded recent-history window policy fed by recorded best-tip transition
-  windows, but production still needs live state hooks that call the recorder
-  and may need a calibrated model
+  windows. The live recorder hook in `tfl_service_main_loop` now seeds and
+  advances the recorder on each best-tip change; a calibrated offline model
+  remains optional
 - a block-interval variance source; the pure controller now derives a
   conservative max adjacent-interval deviation from header timestamps and offers
   a timed header observation-window adapter with the same hash-work policy
@@ -417,13 +422,21 @@ A production implementation of the dynamic-sigma variant should provide:
   calibrated timestamp policy
 - an economic exposure model or a clear decision that expected loss is
   service-local rather than consensus-critical; the pure controller now has an
-  explicit policy split and tests for both paths, while production still needs a
-  deterministic or proposal-verifiable source if consensus-critical exposure is
-  enabled
+  explicit policy split and tests for both paths. The default is
+  `DynamicSigmaEconomicExposurePolicy::service_local_default()` (consensus
+  exposure stays zero). Deployments that want consensus-critical exposure
+  call `try_consensus_critical(value_at_risk, loss_budget)`, which fails
+  closed when `loss_budget == 0`. Production still needs a deterministic or
+  proposal-verifiable source for the consensus-critical units if that
+  policy is chosen
 - a durable or proposal-carried hysteresis state source if the dynamic variant
   should smooth sigma decreases across windows rather than selecting the raw
   required floor each time; the hysteresis policy/state now have deterministic
-  serialization, but production still needs to configure the typed source policy
+  Zcash and serde serialization, and `DynamicSigmaHysteresisStateSourcePolicy`
+  resolves a deployment-time choice (`DurableLocal { path }` reading and
+  writing JSON, or `ProposalCarried`) into the controller's existing
+  `DynamicSigmaHysteresisStateSource`. Persisted state survives a simulated
+  process restart in the unit tests
 - tests showing that lower hash participation never lowers sigma; the pure Rust
   controller now covers the bounded Quint telemetry fixture and raw-counter
   estimate construction, and the prototype-gated Tenderlink payload decoder now

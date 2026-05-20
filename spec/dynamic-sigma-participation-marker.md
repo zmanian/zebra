@@ -165,12 +165,14 @@ The participation-marker work is complete when:
 
 - [x] This decision document is committed.
 - [x] The verifier-contract test is in the dynamic_sigma test suite.
-- [ ] A concrete production verifier (composing
+- [x] A concrete production verifier (composing
       `FatPointerToBftBlock2::validate_signatures`,
       `fat_pointer_has_roster_quorum`, and the known-BFT-block lookup) lives in
-      `zebra-crosslink/src/lib.rs` and is passed to the prototype proposer's
-      source-window assembly.
-- [ ] The dynamic-sigma telemetry integration document is updated to reference
+      `zebra-crosslink/src/lib.rs` as
+      `dynamic_sigma_production_marker_verifier` and is wired into the
+      prototype proposer's source-window assembly via
+      `prototype_dynamic_sigma_telemetry_components_with_production_verifier`.
+- [x] The dynamic-sigma telemetry integration document is updated to reference
       this decision instead of describing the marker question as open.
 
-The third and fourth boxes are part of step B2-B4 (the Rust integration PR).
+All four boxes shipped in the B2-B4 Rust integration PR.

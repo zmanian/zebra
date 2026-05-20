@@ -165,6 +165,8 @@ pub fn spawn_new_tfl_service(
             crate::PROTOTYPE_DYNAMIC_SIGMA_PARAMETERS,
         ),
         prototype_dynamic_sigma_round_telemetry: Default::default(),
+        dynamic_sigma_best_tip_recorder: Default::default(),
+        dynamic_sigma_best_tip_transitions: Vec::new(),
     }));
 
     let handle_mtx = Arc::new(std::sync::Mutex::new(None));

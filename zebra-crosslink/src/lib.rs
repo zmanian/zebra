@@ -48,6 +48,7 @@ use crate::dynamic_sigma::{
     select_dynamic_sigma_proposal_evidence_with_hysteresis,
     target_block_spacing_seconds_from_network_upgrade,
     telemetry_components_from_timed_header_observation_window_with_hash_work_policy,
+    telemetry_components_from_timed_header_observation_window_with_hash_work_policy_and_verifier,
     DynamicSigmaHashWorkObservationWindowPolicy, DynamicSigmaHysteresisParameters,
     DynamicSigmaHysteresisState, DynamicSigmaProposalEvidence, DynamicSigmaRawTelemetry,
     DynamicSigmaRoundCounters, DynamicSigmaRoundEvent, DynamicSigmaTelemetryComponents,
@@ -208,6 +209,14 @@ pub(crate) struct TFLServiceInternal {
     // dynamic variant by default.
     prototype_dynamic_sigma_hysteresis_state: DynamicSigmaHysteresisState,
     prototype_dynamic_sigma_round_telemetry: PrototypeDynamicSigmaRoundTelemetry,
+    /// Best-tip transition recorder used to derive observed reorg depth for
+    /// the dynamic-sigma controller. The recorder is seeded by the first
+    /// observed tip and then advances on each new tip change.
+    dynamic_sigma_best_tip_recorder: dynamic_sigma::DynamicSigmaBestTipTransitionRecorder,
+    /// Transitions accumulated in the current rollback-depth window. The
+    /// window is consumed by source-window assembly when the controller
+    /// next builds telemetry components.
+    dynamic_sigma_best_tip_transitions: Vec<dynamic_sigma::DynamicSigmaBestTipTransition>,
 }
 
 #[derive(Debug, Default)]
@@ -618,6 +627,41 @@ async fn store_prototype_dynamic_sigma_hysteresis_state(
         .prototype_dynamic_sigma_hysteresis_state = next_hysteresis_state;
 }
 
+/// Record a best-tip change into the dynamic-sigma recorder.
+///
+/// The recorder seeds on the first call. Subsequent calls supply the
+/// common-ancestor height that the controller uses to derive observed
+/// reorg depth. Invalid transitions are dropped without advancing recorder
+/// state (failure-closed).
+///
+/// Returns the derived transition, if one was produced.
+async fn record_best_tip_transition(
+    tfl_handle: &TFLServiceHandle,
+    new_tip_height: u64,
+    common_ancestor_height: Option<u64>,
+) -> Option<dynamic_sigma::DynamicSigmaBestTipTransition> {
+    let mut internal = tfl_handle.internal.lock().await;
+    match internal
+        .dynamic_sigma_best_tip_recorder
+        .record_best_tip(new_tip_height, common_ancestor_height)
+    {
+        Ok(Some(transition)) => {
+            internal.dynamic_sigma_best_tip_transitions.push(transition);
+            Some(transition)
+        }
+        Ok(None) => None,
+        Err(err) => {
+            warn!(
+                ?err,
+                new_tip_height,
+                common_ancestor_height,
+                "Dropping invalid best-tip transition for dynamic-sigma recorder"
+            );
+            None
+        }
+    }
+}
+
 async fn malachite_wants_to_know_what_the_current_validator_set_is(
     tfl_handle: &TFLServiceHandle,
 ) -> Vec<MalValidator> {
@@ -855,12 +899,46 @@ fn prototype_dynamic_sigma_target_block_spacing_seconds(
 
 fn prototype_dynamic_sigma_telemetry_components(
 ) -> Result<DynamicSigmaTelemetryComponents, TenderlinkPayloadEncodeError> {
+    // The no-argument prototype helper keeps the prototype's
+    // default-marker bridge: a non-null fat pointer counts as participating.
+    // Production code paths MUST use
+    // [`prototype_dynamic_sigma_telemetry_components_with_production_verifier`]
+    // and supply the live roster and known BFT block index, otherwise the
+    // production participation contract is bypassed.
     let pow_headers = prototype_dynamic_sigma_timed_headers();
     let target_block_spacing_seconds = prototype_dynamic_sigma_target_block_spacing_seconds()?;
 
     telemetry_components_from_timed_header_observation_window_with_hash_work_policy(
         prototype_dynamic_sigma_observation_window(&pow_headers, target_block_spacing_seconds),
         prototype_dynamic_sigma_hash_work_policy(),
+    )
+    .map_err(|_| TenderlinkPayloadEncodeError::DynamicSigmaInvalid)
+}
+
+/// Production-shaped prototype telemetry components built with the production
+/// participation-marker verifier.
+///
+/// `active_roster` and `known_bft_blocks` are passed straight to
+/// [`dynamic_sigma_production_marker_verifier`]. With empty inputs, every
+/// header fails the four-check verifier (failure-closed) and the source
+/// window classifies all observed work as non-participating, raising sigma to
+/// the maximum floor.
+///
+/// This is the path the live proposer should use once source-window assembly
+/// is wired to live consensus state.
+fn prototype_dynamic_sigma_telemetry_components_with_production_verifier(
+    active_roster: &[MalValidator],
+    known_bft_blocks: &[BftBlock],
+) -> Result<DynamicSigmaTelemetryComponents, TenderlinkPayloadEncodeError> {
+    let pow_headers = prototype_dynamic_sigma_timed_headers();
+    let target_block_spacing_seconds = prototype_dynamic_sigma_target_block_spacing_seconds()?;
+
+    telemetry_components_from_timed_header_observation_window_with_hash_work_policy_and_verifier(
+        prototype_dynamic_sigma_observation_window(&pow_headers, target_block_spacing_seconds),
+        prototype_dynamic_sigma_hash_work_policy(),
+        |fat_pointer| {
+            dynamic_sigma_production_marker_verifier(fat_pointer, active_roster, known_bft_blocks)
+        },
     )
     .map_err(|_| TenderlinkPayloadEncodeError::DynamicSigmaInvalid)
 }
@@ -1087,6 +1165,64 @@ fn fat_pointer_has_roster_quorum(
         .sum();
 
     signed_voting_power * 3 > total_voting_power * 2
+}
+
+/// Production participation marker verifier for dynamic sigma.
+///
+/// This is the concrete `Fn(&FatPointerToBftBlock) -> bool` callable that
+/// production source-window assembly must thread through the `_with_verifier`
+/// helpers in [`dynamic_sigma`]. It composes the four checks specified in
+/// `spec/dynamic-sigma-participation-marker.md` as conjunction:
+///
+/// 1. Non-null marker. A `FatPointerToBftBlock::null()` short-circuits to
+///    `false` before any other check runs.
+/// 2. Valid ed25519 signatures, verified via
+///    [`FatPointerToBftBlock2::validate_signatures`].
+/// 3. Roster quorum at the source-header height, verified via
+///    [`fat_pointer_has_roster_quorum`] against `active_roster`.
+/// 4. The referenced BFT block is known locally, checked by matching
+///    `points_at_block_hash()` against the supplied `known_bft_blocks`.
+///
+/// This is failure-closed: any uncheckable input returns `false`. The function
+/// performs no network I/O and does not mutate any state.
+///
+/// This verifier is a *source-selection policy*, not a consensus rule.
+pub fn dynamic_sigma_production_marker_verifier(
+    fat_pointer: &zebra_chain::block::FatPointerToBftBlock,
+    active_roster: &[MalValidator],
+    known_bft_blocks: &[BftBlock],
+) -> bool {
+    // 1. Non-null marker. The upstream guard in `dynamic_sigma` already
+    // short-circuits null markers, but we repeat the check here so this
+    // function is self-contained and safe to call directly.
+    if *fat_pointer == zebra_chain::block::FatPointerToBftBlock::null() {
+        return false;
+    }
+
+    // Inflate the header-level marker to the lib-level type to reuse the
+    // existing signature and quorum helpers. The layouts are identical.
+    let fat_pointer_2: FatPointerToBftBlock2 = fat_pointer.into();
+
+    // 2. Valid ed25519 signatures.
+    if !fat_pointer_2.validate_signatures() {
+        return false;
+    }
+
+    // 3. Roster quorum at the source-header height. The caller is responsible
+    // for passing the roster active at the *source-header* height, not the
+    // controller's current height.
+    if !fat_pointer_has_roster_quorum(&fat_pointer_2, active_roster) {
+        return false;
+    }
+
+    // 4. Known referenced BFT block. The marker points at a BFT block hash;
+    // we accept only markers whose target hash matches a finalized BFT block
+    // the local node has observed. An empty `known_bft_blocks` slice causes
+    // every header to fail this check (failure-closed during bootstrap).
+    let referenced_hash = fat_pointer_2.points_at_block_hash();
+    known_bft_blocks
+        .iter()
+        .any(|block| block.blake3_hash() == referenced_hash)
 }
 
 async fn new_decided_bft_block_from_malachite(
@@ -2015,6 +2151,28 @@ async fn tfl_service_main_loop(internal_handle: TFLServiceHandle) -> Result<(), 
             }
         }
 
+        // Drive the dynamic-sigma best-tip transition recorder. Forward
+        // progress (height strictly greater than the previous tip) uses the
+        // previous tip height as the common ancestor. Other cases (reorgs,
+        // height regressions) are conservatively skipped: a future change
+        // can call into the state service for a real common-ancestor
+        // lookup. The recorder is failure-closed, so a skipped transition
+        // simply means no rollback-depth sample is added to this window.
+        let best_tip_transition_hook = match (current_bc_tip, new_bc_tip) {
+            (None, Some((new_height, _))) => Some((new_height.0 as u64, None)),
+            (Some((prev_height, prev_hash)), Some((new_height, new_hash)))
+                if (prev_height, prev_hash) != (new_height, new_hash)
+                    && new_height.0 > prev_height.0 =>
+            {
+                Some((new_height.0 as u64, Some(prev_height.0 as u64)))
+            }
+            _ => None,
+        };
+        drop(internal);
+        if let Some((new_height, common_ancestor)) = best_tip_transition_hook {
+            record_best_tip_transition(&internal_handle, new_height, common_ancestor).await;
+        }
+
         current_bc_tip = new_bc_tip;
     }
 }
@@ -2545,6 +2703,23 @@ impl From<tenderlink::FatPointerToBftBlock3> for FatPointerToBftBlock2 {
             signatures: fat_pointer
                 .signatures
                 .into_iter()
+                .map(|s| FatPointerSignature2 {
+                    public_key: s.public_key,
+                    vote_signature: s.vote_signature,
+                })
+                .collect(),
+        }
+    }
+}
+
+impl From<&zebra_chain::block::FatPointerToBftBlock> for FatPointerToBftBlock2 {
+    fn from(fat_pointer: &zebra_chain::block::FatPointerToBftBlock) -> FatPointerToBftBlock2 {
+        FatPointerToBftBlock2 {
+            vote_for_block_without_finalizer_public_key: fat_pointer
+                .vote_for_block_without_finalizer_public_key,
+            signatures: fat_pointer
+                .signatures
+                .iter()
                 .map(|s| FatPointerSignature2 {
                     public_key: s.public_key,
                     vote_signature: s.vote_signature,
@@ -3526,5 +3701,65 @@ mod tests {
                 .zcash_serialize_to_vec()
                 .expect("original dynamic block serialization should succeed"),
         );
+    }
+
+    // ---------------------------------------------------------------------
+    // B1 leftover: production participation-marker verifier
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn production_marker_verifier_rejects_null_marker() {
+        let null = FatPointerToBftBlock::null();
+        assert!(!dynamic_sigma_production_marker_verifier(
+            &null,
+            &[],
+            &[]
+        ));
+    }
+
+    #[test]
+    fn production_marker_verifier_rejects_sub_quorum_signature_set() {
+        // A non-null marker without signatures cannot meet the
+        // 3*signed > 2*total roster-quorum check against a nonempty roster.
+        let prototype = prototype_dynamic_sigma_participating_fat_pointer();
+        let roster = vec![
+            MalValidator::new(MalPublicKey::from([1; 32]), 1),
+            MalValidator::new(MalPublicKey::from([2; 32]), 1),
+            MalValidator::new(MalPublicKey::from([3; 32]), 1),
+        ];
+        assert!(!dynamic_sigma_production_marker_verifier(
+            &prototype,
+            &roster,
+            &[]
+        ));
+    }
+
+    #[test]
+    fn production_marker_verifier_fails_closed_when_referenced_block_unknown() {
+        // Even with an empty roster (which fails quorum), confirm the
+        // function returns false instead of panicking and that it remains
+        // false when the referenced BFT block is unknown.
+        let prototype = prototype_dynamic_sigma_participating_fat_pointer();
+        assert!(!dynamic_sigma_production_marker_verifier(
+            &prototype,
+            &[],
+            &[]
+        ));
+    }
+
+    #[test]
+    fn prototype_production_verifier_telemetry_assembles_under_strict_verifier() {
+        // With empty roster and empty known-BFT-block index the production
+        // verifier rejects every prototype header. The telemetry components
+        // still assemble: the prototype's non-null fat pointers contribute
+        // observed work to the denominator but not to the participating
+        // numerator. This is the documented failure-closed behavior.
+        let components = prototype_dynamic_sigma_telemetry_components_with_production_verifier(
+            &[],
+            &[],
+        )
+        .expect("production-verifier telemetry components should assemble");
+        assert_eq!(components.total_hash_work, Some(8));
+        assert_eq!(components.crosslink_participating_hash_work, Some(0));
     }
 }
