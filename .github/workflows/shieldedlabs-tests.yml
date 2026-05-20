@@ -47,6 +47,8 @@ jobs:
           tool: cargo-nextest
       - name: Run Crosslink tests with nextest
         run: cargo nextest run --locked --workspace --manifest-path=zebrad/Cargo.toml -- crosslink_
+      - name: Run zebra-crosslink dynamic-sigma unit tests
+        run: cargo nextest run --locked -p zebra-crosslink --lib -- dynamic_sigma::
 
   build:
     runs-on: blacksmith-8vcpu-ubuntu-2404
