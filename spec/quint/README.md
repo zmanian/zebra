@@ -97,7 +97,7 @@ powerset that exhausted Apalache in local probes.
 Single-, pair-, and triple-faulty `n5_f2` models carry the full-domain symbolic
 abstraction into the larger above-live-boundary f=2 surface where correct
 validators can form f+1 catchup evidence but not a 2f+1 value quorum.
-The single-faulty `n7_f2` model carries the same full-domain selected-evidence
+The single- and pair-faulty `n7_f2` models carry the same full-domain selected-evidence
 abstraction into the proper f=2 BFT-boundary surface where correct validators
 can form a 2f+1 value quorum.
 Additional quick-check harnesses run the full
@@ -208,6 +208,12 @@ and then only one ladder step at a time.
 `dynamic-sigma-telemetry-integration.md` maps those telemetry inputs to
 production data sources and documents the consensus-safety requirements before
 a deployed controller can replace the prototype's fixed sigma parameter.
+`../dynamic-sigma-participation-marker.md` is the matching production decision
+for the `CrosslinkParticipatingHashWork` input: it names the PoW header's
+`FatPointerToBftBlock` as the marker and specifies the four-check verifier
+contract (non-null, valid signatures, roster quorum at source-header height,
+known referenced BFT block) that production deployments MUST pass through
+`dynamic_sigma`'s `_with_verifier` hooks.
 `zebra-crosslink/src/dynamic_sigma.rs` is the matching pure Rust controller
 prototype: it derives conservative coverage and round-failure estimates from
 raw counters, validates telemetry windows, and selects the same sigma floor as
@@ -580,6 +586,11 @@ $QUINT test spec/quint/CrosslinkBaselineAccountability.qnt \
   --backend=rust
 
 $QUINT test spec/quint/CrosslinkBaselineAccountability.qnt \
+  --main=CrosslinkBaselinePairFaultyInitN7F2ForkingModel \
+  --max-samples=100 \
+  --backend=rust
+
+$QUINT test spec/quint/CrosslinkBaselineAccountability.qnt \
   --main=CrosslinkBaselineFullFaultyInitForkingModel \
   --max-samples=100 \
   --backend=rust
@@ -630,7 +641,7 @@ check to the above-live-boundary f=2 surface where correct validators can form
 f+1 catchup evidence but not a 2f+1 value quorum.
 The n7/f2 full forking faulty-init model applies the full-domain quick check to
 the proper f=2 BFT-boundary surface while the symbolic gate uses the
-representative bounded and single-selected domains. The counterexample model
+representative bounded and selected-evidence domains. The counterexample model
 uses `.fail()` witnesses for false
 no-conflicting-commit, no-amnesia, no-equivocation, agreement,
 agreement-or-amnesia, amnesia-implies-equivocation,
@@ -1542,6 +1553,10 @@ gate.
 `n7_f2` abstraction in both the quick gate and the symbolic baseline gate, by
 selecting one arbitrary faulty proposal, prevote, and precommit from the
 complete `n7_f2` faulty-evidence domain.
+`BaselinePairN7F2ForkingFaultyInitSafety` checks a full-domain pair-faulty
+`n7_f2` abstraction in both the quick gate and the symbolic baseline gate, by
+selecting up to two arbitrary faulty proposals, prevotes, and precommits from
+the complete `n7_f2` faulty-evidence domain.
 `BaselineFullForkingFaultyInitSafety` checks the same fixed-sigma/forking
 baseline parameter surface against the full faulty-init domain in the quick
 Rust-backed gate.
