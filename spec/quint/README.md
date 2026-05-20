@@ -93,6 +93,9 @@ domain.
 The triple-faulty `n4_f2` model extends the same tractable frontier to three
 arbitrary faulty proposals, prevotes, and precommits while avoiding the full
 powerset that exhausted Apalache in local probes.
+A single-faulty `n5_f2` model carries the full-domain symbolic abstraction into
+the larger above-live-boundary f=2 surface where correct validators can form
+f+1 catchup evidence but not a 2f+1 value quorum.
 Additional quick-check harnesses run the full
 faulty-evidence domain over the fixed-sigma/forking `n4_f1`, `n4_f2`, `n5_f1`,
 `n5_f2`, and proper `n7_f2` BFT-boundary surfaces so larger parameterized
@@ -532,6 +535,11 @@ $QUINT test spec/quint/CrosslinkBaselineAccountability.qnt \
   --backend=rust
 
 $QUINT test spec/quint/CrosslinkBaselineAccountability.qnt \
+  --main=CrosslinkBaselineSingleFaultyInitN5F2ForkingModel \
+  --max-samples=100 \
+  --backend=rust
+
+$QUINT test spec/quint/CrosslinkBaselineAccountability.qnt \
   --main=CrosslinkBaselineFullFaultyInitForkingModel \
   --max-samples=100 \
   --backend=rust
@@ -567,6 +575,9 @@ instance with bounded faulty proposal, prevote, and precommit powersets. The
 bounded n4/f2 and n5/f2 faulty-init models check representative f=2
 faulty-message domains in the symbolic gate, preserving the same
 fixed-sigma/forking value rule without attempting the full powerset.
+The n5/f2 single-faulty model then ranges over one arbitrary faulty proposal,
+prevote, and precommit from the complete n5/f2 faulty-message domain while
+remaining tractable for the symbolic baseline gate.
 The full forking faulty-init model keeps the complete faulty proposal, prevote,
 and precommit powerset domain alive as a Rust-backed quick check for the same
 `n4_f1` parameter surface. The n4/f2 full forking faulty-init model applies the
@@ -1470,6 +1481,10 @@ and precommits from the complete `n4_f2` faulty-evidence domain.
 `BaselineBoundedN5F2ForkingFaultyInitSafety` checks a representative bounded
 `n5_f2` faulty-init domain in both the quick gate and the symbolic baseline
 gate.
+`BaselineSingleN5F2ForkingFaultyInitSafety` checks a full-domain single-faulty
+`n5_f2` abstraction in both the quick gate and the symbolic baseline gate, by
+selecting one arbitrary faulty proposal, prevote, and precommit from the
+complete `n5_f2` faulty-evidence domain.
 `BaselineFullForkingFaultyInitSafety` checks the same fixed-sigma/forking
 baseline parameter surface against the full faulty-init domain in the quick
 Rust-backed gate.
