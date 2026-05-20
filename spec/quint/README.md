@@ -1,7 +1,64 @@
 # Crosslink Quint Specs
 
-This directory contains focused Quint models for Crosslink/Tenderlink round
-recovery and Crosslink finality value semantics.
+This directory contains the Quint specification suite for the Crosslink /
+Tenderlink finality gadget: the fixed-sigma/sticky baseline, the
+nil-precommit resampling variant, the dynamic-sigma controller, and the
+composed PoW + BFT models used for finality reasoning.
+
+## Status
+
+The canonical engineering arc through 2026-05-20 is recorded in
+[`../roadmap-completion-2026-05-19.md`](../roadmap-completion-2026-05-19.md).
+Highlights:
+
+- `quick-baseline`: **40 modules green** (cargo + Rust-backed witnesses).
+- `symbolic-baseline-core`: **15 invocations, all `Outcome: NoError`** at
+  depth 3 (most instances) and depth 5 (BFT heights / inductive finality).
+- `symbolic-baseline-accountability`: f=2 selected-evidence harnesses at
+  `n4_f2` / `n5_f2` / `n7_f2`. Full-powerset symbolic is intractable at depth
+  1 with 16 GB heap (verdict: [`n4f2-full-powerset-tractability.md`](n4f2-full-powerset-tractability.md))
+  so full-powerset stays quick-check-only.
+- `BaselineNext` is a **first-class transition system** (no longer delegates
+  to the focused-model `Next`); `BaselineUponPrecommitQuorumEvidence` matches
+  upstream's evidence-set parameter shape.
+- **Inductive multi-height finality** is structured as five named
+  consecutive-pair lemmas
+  (`CrosslinkBaselineInductiveFinality.qnt`,
+  [`inductive-finality.md`](inductive-finality.md)). Apalache cannot close
+  the induction natively, but the decomposition is the reviewable structure
+  for a future inductive proof in a different tool.
+- **Dynamic-sigma** has a pure Rust controller
+  (`zebra-crosslink/src/dynamic_sigma.rs`, 97 tests) with a production
+  participation-marker verifier wired through the prototype proposer.
+  Decision: [`../dynamic-sigma-participation-marker.md`](../dynamic-sigma-participation-marker.md);
+  telemetry integration: [`dynamic-sigma-telemetry-integration.md`](dynamic-sigma-telemetry-integration.md).
+
+Living trackers:
+
+- [`baseline-completeness-audit.md`](baseline-completeness-audit.md) — what
+  remains before upstream-quality completeness.
+- [`baseline-upstream-crosswalk.md`](baseline-upstream-crosswalk.md) —
+  line-item map from upstream Tendermint Quint to baseline Crosslink.
+
+## Contents
+
+- [Status](#status)
+- [Spec file reference](#spec-file-reference)
+  - [Focused / resampling model](#focused--resampling-model)
+  - [Baseline shell and tests](#baseline-shell-and-tests)
+  - [Baseline finality, BFT heights, and accountability](#baseline-finality-bft-heights-and-accountability)
+  - [Baseline tracking docs](#baseline-tracking-docs)
+  - [PoW sampling and fork-schedule models](#pow-sampling-and-fork-schedule-models)
+  - [Composed models](#composed-models)
+  - [Dynamic sigma](#dynamic-sigma)
+- [Upstream Base](#upstream-base)
+- [Toolchain](#toolchain)
+- [Checks](#checks)
+- [Open follow-ons](#open-follow-ons)
+
+## Spec file reference
+
+### Focused / resampling model
 
 `CrosslinkResampling.qnt` is not a full Tenderlink implementation spec yet. It
 isolates the Ebb-and-Flow-specific question that came up during fork recovery
@@ -26,6 +83,8 @@ upstream Tendermint accountability shape over the Crosslink evidence surface:
 transition-carried proposal, prevote, and precommit evidence feed equivocation
 and amnesia predicates, while a nil-precommit certificate for the abandoned
 round is treated as valid unlock evidence rather than amnesia.
+
+### Baseline shell and tests
 
 `CrosslinkBaseline.qnt` packages the current fixed-sigma/sticky behavior as a
 named baseline variant. It reuses the focused Tenderlink model with
@@ -68,6 +127,8 @@ fork switch, and the sticky baseline witness that still carries the stale
 fixed-sigma sample. The forking baseline test also includes a `.fail()` witness
 for the false claim that every proposal remains the current fixed-sigma sample
 after a stream switch.
+
+### Baseline finality, BFT heights, and accountability
 
 `CrosslinkBaselineAccountability.qnt` makes the baseline accountability
 projection explicit. It checks that a nil-precommit certificate does not clear
@@ -147,6 +208,8 @@ exceeds sigma, a generated work-competition fixture where an adversarially
 released branch becomes the selected best tip, and a repeated generated
 work-competition fixture with two adversarial fork switches.
 
+### Baseline tracking docs
+
 `baseline-completeness-audit.md` maps the current baseline artifacts against
 the upstream Tendermint Quint example and tracks the remaining work before the
 baseline reaches upstream-style completeness rather than focused witness
@@ -157,6 +220,8 @@ Tendermint Quint surface to the baseline Crosslink artifacts. Use it as the
 working checklist for deciding whether a baseline change is closing an upstream
 completeness gap, documenting an intentional Crosslink deviation, or adding a
 Crosslink-only proof obligation.
+
+### PoW sampling and fork-schedule models
 
 `CrosslinkForkFinality.qnt` is a separate value-semantics model. It abstracts
 PoW snapshots as a finite fork tree, then checks that Crosslink finality can skip
@@ -174,6 +239,8 @@ adversarial work, a hidden adversarial branch cannot become best until it is
 published, and releasing an outworking adversarial branch derives the same
 rollback-depth signal used by dynamic sigma.
 
+### Composed models
+
 `CrosslinkComposed.qnt` connects those two pieces: a Tenderlink decision over a
 resampled PoW snapshot becomes the input to Crosslink finality, which can then
 advance to a tail-confirmed snapshot while preserving the finalized prefix.
@@ -182,6 +249,8 @@ advance to a tail-confirmed snapshot while preserving the finalized prefix.
 It checks that successive Tenderlink decisions at consecutive consensus heights
 can update Crosslink finality directly, while rejecting skipped consensus
 heights and fork decisions after a prefix is final.
+
+### Dynamic sigma
 
 `CrosslinkDynamicSigma.qnt` sketches the third Crosslink variant: a
 dynamic-sigma controller. It treats the percentage of total PoW hash power that
@@ -1778,51 +1847,49 @@ nil-precommit/accountability evidence obligations. `FullFinalityProjectionSafety
 and `FullWorkCompetitionProjectionSafety` isolate the finalized-prefix and
 generated-work-competition obligations and run substantially faster.
 
-## Next Extensions
+## Open follow-ons
 
-This model is intentionally narrow. The next useful extensions are:
+The canonical engineering arc is complete (see
+[`../roadmap-completion-2026-05-19.md`](../roadmap-completion-2026-05-19.md)
+for the full landed-work table). Open work, in priority order:
 
-- wire the pure Rust dynamic-sigma controller, proposal-evidence verifier, and
-  selected-sigma BFT block constructor to production telemetry sources and live
-  proposal validation, including a consensus-safe Crosslink hash-participation
-  metric and a validated economic exposure model. The live prototype proposal
-  path now runs the controller over a policy-guarded timed-header fixture, and
-  the pure telemetry assembly boundary fails closed on missing participating-work
-  evidence or inconsistent round counters. The event accumulator now gives live
-  Tenderlink hooks an exact round-counter contract, the hash-work observation
-  accumulator gives source producers an exact participation-numerator contract,
-  the hash-work window policy bounds participation by minimum history, recent
-  window size, and total observed work, the header adapter derives a
-  work-weighted participation share from the current Crosslink fat-pointer
-  marker, custom verifier hooks can replace that prototype marker with stricter
-  production validation, the header
-  observation-window assembler composes those headers with round and fork
-  evidence into telemetry components, the timed header-window adapter derives
-  conservative block-interval variance from adjacent header timestamps and can
-  apply the same hash-work window policy in that timed path, the target-spacing
-  helper derives expected spacing from the active network upgrade, and
-  pure rollback-depth helpers record best-tip transitions, derive the current
-  observed reorg-depth input, and produce one rollback-depth history sample per
-  transition window from explicit best-tip transition evidence. The
-  pure rollback-risk estimator derives a monotone ppm curve from observed
-  rollback-depth windows plus a bounded margin, and the explicit window policy
-  requires enough history while truncating to the most recent bounded sample
-  window. The
-  economic exposure policy now explicitly separates consensus-critical exposure
-  from service-local risk, with proposal-evidence tests rejecting selected sigma
-  below a consensus-critical economic floor. The pure evidence-selection
-  helpers now construct proposal evidence from raw telemetry or assembled
-  components, with optional hysteresis, and the prototype proposal path uses
-  them. The pure hysteresis helper covers bounded sigma decreases for
-  short-window stability, and the prototype evidence builder now applies an
-  explicit hysteresis state before carrying `selected_sigma`. The proposal
-  callback reuses that planned evidence for both depth selection and payload
-  encoding, then advances the prototype service's in-process hysteresis state
-  after successful encoding. The hysteresis policy/state now have deterministic
-  Zcash serialization for a future durable or proposal-carried state source, and
-  the selection helper now models disabled, durable-local, and proposal-carried
-  source policies explicitly. The remaining work is replacing the fixture with
-  consensus-safe or proposal-verifiable input producers and configuring the
-  production hysteresis state source
-- refine the split projection checks into smaller inductive lemmas if bounds
-  beyond the checked depth-10 projections still need very large JVM/Z3 heaps
+1. **State-service common-ancestor lookup for reorgs.** The live best-tip
+   recorder hook in `tfl_service_main_loop` currently drops non-monotonic
+   reorgs failure-closed, since it has no way to compute a common ancestor
+   from raw old/new tips. Adding a state-service-backed common-ancestor
+   lookup will let real reorgs feed rollback-depth telemetry into the
+   dynamic-sigma controller.
+
+2. **Live-wire production verifier into proposal plan.**
+   `prototype_dynamic_sigma_telemetry_components_with_production_verifier`
+   exists and composes the four-check production verifier from
+   [`../dynamic-sigma-participation-marker.md`](../dynamic-sigma-participation-marker.md),
+   but `tenderlink_proposal_plan_from_hysteresis_state` does not call it yet.
+   The blocker is plumbing an async snapshot of the active roster and known
+   BFT blocks into the sync proposal-plan path.
+
+3. **Consume best-tip transitions in proposals.** The
+   `dynamic_sigma_best_tip_transitions` window is recorded by the recorder
+   hook but is not yet consumed when assembling proposal-carried
+   rollback-depth telemetry. Wiring this completes the rollback-risk signal
+   loop.
+
+4. **B5 — proposal-evidence validity rules** (gated on 1-3). Once real
+   telemetry flows through proposals, harden the consensus surface with
+   precise validity rules for proposal-carried evidence and explicit
+   failure-mode handling for adversarial telemetry shapes (see the
+   "Failure Modes" section of
+   [`dynamic-sigma-telemetry-integration.md`](dynamic-sigma-telemetry-integration.md)).
+
+5. **Symbolic frontier for full-powerset faulty evidence.** The full N4 F2
+   powerset is intractable at depth 1 even with 16 GB heap
+   ([`n4f2-full-powerset-tractability.md`](n4f2-full-powerset-tractability.md)).
+   A symmetry/quotient abstraction over faulty values could collapse the
+   powerset and lift the larger instances into symbolic gates; this is
+   research, not a baseline blocker.
+
+6. **Fully inductive multi-height finality proof.** The five named
+   consecutive-pair lemmas in `CrosslinkBaselineInductiveFinality.qnt` are
+   the *structure* of an inductive argument but Apalache cannot close the
+   induction. Porting the lemmas into a tool that supports induction (TLA+
+   with TLAPS, or Lean) is the path to a fully machine-checked proof.
