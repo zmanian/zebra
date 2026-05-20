@@ -199,6 +199,12 @@ module CrosslinkBaselineTenderlink {
   ): bool =
     CatchUpToRound(p, targetRound)
 
+  action BaselineApplyLateNilPrecommitCertificate(
+    p: BaselineProc_t,
+    certRound: BaselineRound_t,
+  ): bool =
+    ApplyLateNilPrecommitCertificate(p, certRound)
+
   action BaselineDecide(
     p: BaselineProc_t,
     r: BaselineRound_t,

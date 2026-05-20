@@ -114,6 +114,25 @@ module CrosslinkBaselineParameterizedShellTest {
       })
   }
 
+  run parameterizedShellLateNilCertificateAliasStaysDisabledTest = {
+    BaselineInitWithFaultyEvidence
+      .then(BaselineTimeoutProposePrevoteNil("p1"))
+      .then(BaselineTimeoutProposePrevoteNil("p2"))
+      .then(BaselineTimeoutProposePrevoteNil("p3"))
+      .then(BaselineUponNilPrevoteQuorum("p1"))
+      .then(BaselineUponNilPrevoteQuorum("p2"))
+      .then(BaselineUponNilPrevoteQuorum("p3"))
+      .then(BaselineStartNextRoundAfterPrecommitQuorum("p1"))
+      .then(all {
+        assert(BaselineNilPrecommitCert(0)),
+        assert(BaselineRoundOf("p1") == 1),
+        assert(BaselineFaultyInitSafety),
+        BaselineUnchangedAll,
+      })
+      .then(BaselineApplyLateNilPrecommitCertificate("p1", 0))
+      .fail()
+  }
+
   run parameterizedShellTimeoutPrecommitAndCatchupAliasesTest = {
     BaselineInitWithFaultyEvidence
       .then(BaselineTimeoutProposePrevoteNil("p1"))

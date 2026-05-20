@@ -485,7 +485,10 @@ quorum; `Next` uses that split. `CorrectValuePrevotesHaveJustifiedProposal` is
 also part of `Safety`, so every correct non-nil prevote must have a matching
 `HasPrevoteJustifiedProposal` witness. The forking `n4_f1` test checks that the
 shell derives the fresh `head - sigma` sample after a fork switch while the
-sticky baseline still carries the old sample into the next round. The `f = 2`
+sticky baseline still carries the old sample into the next round. The
+parameterized shell also exposes late nil-precommit certificate handling and
+checks that a real nil-precommit certificate remains disabled as unlock evidence
+under sticky baseline semantics. The `f = 2`
 tests record that `n4_f2` and `n5_f2` sit above the live fault boundary for
 correct-only value commits, while `n7_f2` still supports a 2f+1 correct decision
 path. These three `f = 2` safety invariants are also included in
