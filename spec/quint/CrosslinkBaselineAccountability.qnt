@@ -450,6 +450,120 @@ module CrosslinkBaselineBoundedFaultyInitN4F2ForkingModel {
   }
 }
 
+module CrosslinkBaselineSingleFaultyInitN4F2ForkingModel {
+  /*
+   A tractability probe between representative f=2 faulty evidence and the full
+   faulty-message powerset. It picks one arbitrary faulty proposal, prevote,
+   and precommit from the full N4/F2 domain, then checks the same baseline
+   safety shape symbolically.
+   */
+
+  import CrosslinkBaselineModels.* from "./CrosslinkBaselineModels"
+
+  pure val TestRounds = 0.to(4)
+
+  pure def TestHeadMinusSigma(r: int): str =
+    AncestorByHeight
+      .get(ForkingBestTip.get(r))
+      .get(HeightBySnapshot.get(ForkingBestTip.get(r)) - 1)
+
+  pure val TestStream: int -> str =
+    TestRounds.mapBy(r => TestHeadMinusSigma(r))
+
+  pure val TestStreamMatchesFixedSigma =
+    TestRounds.forall(r => TestStream.get(r) == TestHeadMinusSigma(r))
+
+  import CrosslinkResampling(
+    Corr = Set("p1", "p2"),
+    Faulty = Set("p3", "p4"),
+    N = 4,
+    T = 2,
+    MaxRound = 4,
+    Proposer = ProposerSchedule,
+    Stream = TestStream,
+    Snapshots = ValidSnapshots,
+    ResampleOnNilPrecommit = false,
+  ).* from "./CrosslinkResampling"
+
+  action unchangedAll = all {
+    round' = round,
+    step' = step,
+    decision' = decision,
+    lockedValue' = lockedValue,
+    lockedRound' = lockedRound,
+    validValue' = validValue,
+    validRound' = validRound,
+    cachedProposal' = cachedProposal,
+    cachedProposalRound' = cachedProposalRound,
+    msgsPropose' = msgsPropose,
+    msgsPrevote' = msgsPrevote,
+    msgsPrecommit' = msgsPrecommit,
+    evidencePropose' = evidencePropose,
+    evidencePrevote' = evidencePrevote,
+    evidencePrecommit' = evidencePrecommit,
+    firedAction' = firedAction,
+  }
+
+  pure val SingleN4F2FaultyInitDomainWellFormed =
+    AllFaultyProposals.forall(m =>
+      m.src.in(Faulty) and
+      m.round.in(Rounds) and
+      m.proposal.in(Snapshots) and
+      m.validRound.in(RoundsOrNil)
+    ) and
+    AllFaultyPrevotes.forall(m =>
+      m.src.in(Faulty) and m.round.in(Rounds) and m.id.in(SnapshotsOrNil)
+    ) and
+    AllFaultyPrecommits.forall(m =>
+      m.src.in(Faulty) and m.round.in(Rounds) and m.id.in(SnapshotsOrNil)
+    )
+
+  action InitWithSingleN4F2FaultyEvidence =
+    nondet faultyProposal = AllFaultyProposals.oneOf()
+    nondet faultyPrevote = AllFaultyPrevotes.oneOf()
+    nondet faultyPrecommit = AllFaultyPrecommits.oneOf()
+    all {
+      round' = Corr.mapBy(_ => 0),
+      step' = Corr.mapBy(_ => "propose"),
+      decision' = Corr.mapBy(_ => NilSnapshot),
+      lockedValue' = Corr.mapBy(_ => NilSnapshot),
+      lockedRound' = Corr.mapBy(_ => NilRound),
+      validValue' = Corr.mapBy(_ => NilSnapshot),
+      validRound' = Corr.mapBy(_ => NilRound),
+      cachedProposal' = Corr.mapBy(_ => NilSnapshot),
+      cachedProposalRound' = Corr.mapBy(_ => NilRound),
+      msgsPropose' = Rounds.mapBy(r =>
+        Set(faultyProposal).filter(m => m.round == r)
+      ),
+      msgsPrevote' = Rounds.mapBy(r =>
+        Set(faultyPrevote).filter(m => m.round == r)
+      ),
+      msgsPrecommit' = Rounds.mapBy(r =>
+        Set(faultyPrecommit).filter(m => m.round == r)
+      ),
+      evidencePropose' = Set(faultyProposal),
+      evidencePrevote' = Set(faultyPrevote),
+      evidencePrecommit' = Set(faultyPrecommit),
+      firedAction' = "InitWithSingleN4F2FaultyEvidence",
+    }
+
+  val BaselineSingleN4F2ForkingFaultyInitSafety =
+    Safety and
+    TestStreamMatchesFixedSigma and
+    SingleN4F2FaultyInitDomainWellFormed
+
+  run baselineSingleN4F2FaultyInitCoversEvidenceTest = {
+    InitWithSingleN4F2FaultyEvidence.then(all {
+      assert(size(EvidencePropose) == 1),
+      assert(size(EvidencePrevote) == 1),
+      assert(size(EvidencePrecommit) == 1),
+      assert(EvidenceCoversObservedMessages),
+      assert(BaselineSingleN4F2ForkingFaultyInitSafety),
+      unchangedAll,
+    })
+  }
+}
+
 module CrosslinkBaselineBoundedFaultyInitN5F2ForkingModel {
   /*
    A representative f=2 faulty-init symbolic harness. It uses the n5/f2
