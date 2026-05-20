@@ -43,9 +43,11 @@ Crosslink-specific fixed-sigma rule
 sigma)`. It now exposes the full faulty-init evidence surface through
 `BaselineInitWithFaultyEvidence`, `BaselineFaultyInitDomainWellFormed`, and
 `BaselineFaultyInitSafety` shell names, plus `BaselineNext` as the
-baseline-prefixed transition step. It still delegates the core sticky
-transition semantics to the focused model, so most of the full upstream
-Tendermint transition surface remains future work.
+baseline-prefixed transition step. It also exposes an upstream-shaped
+`BaselineStartRound` helper and round/step accessors so the shell can test
+round initialization directly. It still delegates the core sticky transition
+semantics to the focused model, so most of the full upstream Tendermint
+transition surface remains future work.
 
 `CrosslinkBaselineModels.qnt` adds small baseline instances over that shell,
 including stable and forking `n4_f1` fixtures, a forking `n5_f1` fixture,
@@ -56,13 +58,14 @@ available.
 
 `CrosslinkBaselineTest.qnt` adds upstream-style smoke tests for the baseline
 shell: parameterized faulty-init coverage, fixed-sigma sampling, normal
-decision, no double proposal, nil prevote quorum precommit-nil handling,
-the split nil-valid-round and concrete-valid-round proposal handlers,
-timeout-driven nil votes and round advance, future-round catchup, deriving a
-fresh `head - sigma` value after a fork switch, and the sticky baseline witness
-that still carries the stale fixed-sigma sample. The forking baseline test also
-includes a `.fail()` witness for the false claim that every proposal remains
-the current fixed-sigma sample after a stream switch.
+decision, no double proposal, StartRound-style round initialization, nil
+prevote quorum precommit-nil handling, the split nil-valid-round and
+concrete-valid-round proposal handlers, timeout-driven nil votes and round
+advance, future-round catchup, deriving a fresh `head - sigma` value after a
+fork switch, and the sticky baseline witness that still carries the stale
+fixed-sigma sample. The forking baseline test also includes a `.fail()` witness
+for the false claim that every proposal remains the current fixed-sigma sample
+after a stream switch.
 
 `CrosslinkBaselineAccountability.qnt` makes the baseline accountability
 projection explicit. It checks that a nil-precommit certificate does not clear

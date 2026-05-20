@@ -139,11 +139,23 @@ module CrosslinkBaselineTenderlink {
   action BaselineNext =
     Next
 
+  action BaselineStartRound(
+    p: BaselineProc_t,
+    targetRound: BaselineRound_t,
+  ): bool =
+    StartRound(p, targetRound)
+
   action BaselineInsertProposal(p: BaselineProc_t): bool =
     InsertProposal(p)
 
   action BaselineUnchangedAll =
     unchangedAll
+
+  def BaselineRoundOf(p: BaselineProc_t): BaselineRound_t =
+    round.get(p)
+
+  def BaselineStepOf(p: BaselineProc_t): str =
+    step.get(p)
 
   def BaselineHasProposal(
     r: BaselineRound_t,

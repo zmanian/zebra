@@ -50,6 +50,17 @@ module CrosslinkBaselineParameterizedShellTest {
         BaselineUnchangedAll,
       })
   }
+
+  run parameterizedShellStartRoundAdvancesToProposeTest = {
+    BaselineInitWithFaultyEvidence
+      .then(BaselineStartRound("p1", 1))
+      .then(all {
+        assert(BaselineRoundOf("p1") == 1),
+        assert(BaselineStepOf("p1") == "propose"),
+        assert(BaselineFaultyInitSafety),
+        BaselineUnchangedAll,
+      })
+  }
 }
 
 module CrosslinkBaselineN4F1StableTest {

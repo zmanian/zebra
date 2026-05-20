@@ -280,6 +280,28 @@ module CrosslinkResampling {
       firedAction' = "InitWithFaultyEvidence",
     }
 
+  action StartRound(p: Proc_t, targetRound: Round_t): bool =
+    all {
+      targetRound.in(Rounds),
+      step.get(p) != "decided",
+      round' = round.set(p, targetRound),
+      step' = step.set(p, "propose"),
+      firedAction' = "StartRound",
+      decision' = decision,
+      lockedValue' = lockedValue,
+      lockedRound' = lockedRound,
+      validValue' = validValue,
+      validRound' = validRound,
+      cachedProposal' = cachedProposal,
+      cachedProposalRound' = cachedProposalRound,
+      msgsPropose' = msgsPropose,
+      msgsPrevote' = msgsPrevote,
+      msgsPrecommit' = msgsPrecommit,
+      evidencePropose' = evidencePropose,
+      evidencePrevote' = evidencePrevote,
+      evidencePrecommit' = evidencePrecommit,
+    }
+
   action BroadcastProposal(p: Proc_t, r: Round_t, v: Snapshot_t, vr: Round_t): bool = {
     val m = {
       src: p,
