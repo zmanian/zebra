@@ -148,6 +148,64 @@ module CrosslinkBaselineTenderlink {
   action BaselineInsertProposal(p: BaselineProc_t): bool =
     InsertProposal(p)
 
+  action BaselineUponProposalPrevote(
+    p: BaselineProc_t,
+    v: BaselineSnapshot_t,
+  ): bool =
+    UponProposalPrevote(p, v)
+
+  action BaselineUponProposalInPropose(
+    p: BaselineProc_t,
+    v: BaselineSnapshot_t,
+  ): bool =
+    UponProposalInPropose(p, v)
+
+  action BaselineUponProposalInProposeAndPrevote(
+    p: BaselineProc_t,
+    v: BaselineSnapshot_t,
+    vr: BaselineRound_t,
+  ): bool =
+    UponProposalInProposeAndPrevote(p, v, vr)
+
+  action BaselineTimeoutProposePrevoteNil(p: BaselineProc_t): bool =
+    TimeoutProposePrevoteNil(p)
+
+  action BaselineUponValuePrevoteQuorum(
+    p: BaselineProc_t,
+    v: BaselineSnapshot_t,
+  ): bool =
+    UponValuePrevoteQuorum(p, v)
+
+  action BaselineTimeoutPrevotePrecommitNil(p: BaselineProc_t): bool =
+    TimeoutPrevotePrecommitNil(p)
+
+  action BaselineUponNilPrevoteQuorum(p: BaselineProc_t): bool =
+    UponNilPrevoteQuorum(p)
+
+  action BaselineUponStreamChangePrecommitNil(p: BaselineProc_t): bool =
+    UponStreamChangePrecommitNil(p)
+
+  action BaselineStartNextRoundAfterPrecommitQuorum(
+    p: BaselineProc_t,
+  ): bool =
+    StartNextRoundAfterPrecommitQuorum(p)
+
+  action BaselineTimeoutPrecommitStartNextRound(p: BaselineProc_t): bool =
+    TimeoutPrecommitStartNextRound(p)
+
+  action BaselineCatchUpToRound(
+    p: BaselineProc_t,
+    targetRound: BaselineRound_t,
+  ): bool =
+    CatchUpToRound(p, targetRound)
+
+  action BaselineDecide(
+    p: BaselineProc_t,
+    r: BaselineRound_t,
+    v: BaselineSnapshot_t,
+  ): bool =
+    Decide(p, r, v)
+
   action BaselineUnchangedAll =
     unchangedAll
 
@@ -157,9 +215,54 @@ module CrosslinkBaselineTenderlink {
   def BaselineStepOf(p: BaselineProc_t): str =
     step.get(p)
 
+  def BaselineDecisionOf(p: BaselineProc_t): BaselineSnapshot_t =
+    decision.get(p)
+
+  def BaselineLockedValueOf(p: BaselineProc_t): BaselineSnapshot_t =
+    lockedValue.get(p)
+
+  def BaselineLockedRoundOf(p: BaselineProc_t): BaselineRound_t =
+    lockedRound.get(p)
+
+  def BaselineValidValueOf(p: BaselineProc_t): BaselineSnapshot_t =
+    validValue.get(p)
+
+  def BaselineValidRoundOf(p: BaselineProc_t): BaselineRound_t =
+    validRound.get(p)
+
   def BaselineHasProposal(
     r: BaselineRound_t,
     v: BaselineSnapshot_t,
   ): bool =
     HasProposal(r, v)
+
+  def BaselinePrevoteQuorum(
+    r: BaselineRound_t,
+    v: BaselineSnapshot_t,
+  ): bool =
+    PrevoteQuorum(r, v)
+
+  def BaselinePrecommitQuorum(
+    r: BaselineRound_t,
+    v: BaselineSnapshot_t,
+  ): bool =
+    PrecommitQuorum(r, v)
+
+  def BaselineNilPrecommitCert(r: BaselineRound_t): bool =
+    NilPrecommitCert(r)
+
+  def BaselineRoundCatchupEvidence(r: BaselineRound_t): bool =
+    RoundCatchupEvidence(r)
+
+  def BaselineHasPrevoteFrom(
+    p: BaselineProc_t,
+    r: BaselineRound_t,
+  ): bool =
+    HasPrevoteFrom(p, r)
+
+  def BaselineHasPrecommitFrom(
+    p: BaselineProc_t,
+    r: BaselineRound_t,
+  ): bool =
+    HasPrecommitFrom(p, r)
 }

@@ -43,11 +43,13 @@ Crosslink-specific fixed-sigma rule
 sigma)`. It now exposes the full faulty-init evidence surface through
 `BaselineInitWithFaultyEvidence`, `BaselineFaultyInitDomainWellFormed`, and
 `BaselineFaultyInitSafety` shell names, plus `BaselineNext` as the
-baseline-prefixed transition step. It also exposes an upstream-shaped
-`BaselineStartRound` helper and round/step accessors so the shell can test
-round initialization directly. It still delegates the core sticky transition
-semantics to the focused model, so most of the full upstream Tendermint
-transition surface remains future work.
+baseline-prefixed transition step. It also exposes upstream-shaped
+baseline-prefixed aliases for round initialization, proposal handling, prevote
+and precommit quorum handlers, timeout paths, nil/stream-change precommit
+paths, round advance, catchup, decision, and state/quorum accessors so the shell
+can test those transition surfaces directly. It still delegates the core sticky
+transition semantics to the focused model, so a full upstream-identical
+Tendermint transition port remains future work.
 
 `CrosslinkBaselineModels.qnt` adds small baseline instances over that shell,
 including stable and forking `n4_f1` fixtures, a forking `n5_f1` fixture,

@@ -61,6 +61,103 @@ module CrosslinkBaselineParameterizedShellTest {
         BaselineUnchangedAll,
       })
   }
+
+  run parameterizedShellTransitionAliasesDriveDecisionPathTest = {
+    BaselineInitWithFaultyEvidence
+      .then(BaselineInsertProposal("p1"))
+      .then(BaselineUponProposalInPropose("p1", "a1"))
+      .then(BaselineUponProposalInPropose("p2", "a1"))
+      .then(BaselineUponProposalInPropose("p3", "a1"))
+      .then(BaselineUponValuePrevoteQuorum("p1", "a1"))
+      .then(BaselineUponValuePrevoteQuorum("p2", "a1"))
+      .then(BaselineUponValuePrevoteQuorum("p3", "a1"))
+      .then(BaselineDecide("p1", 0, "a1"))
+      .then(all {
+        assert(BaselineDecisionOf("p1") == "a1"),
+        assert(BaselinePrevoteQuorum(0, "a1")),
+        assert(BaselinePrecommitQuorum(0, "a1")),
+        assert(BaselineFaultyInitSafety),
+        BaselineUnchangedAll,
+      })
+  }
+
+  run parameterizedShellStreamChangeAliasPrecommitsNilTest = {
+    BaselineInitWithFaultyEvidence
+      .then(BaselineInsertProposal("p1"))
+      .then(BaselineUponProposalPrevote("p1", "a1"))
+      .then(BaselineUponStreamChangePrecommitNil("p1"))
+      .then(all {
+        assert(BaselineHasPrevoteFrom("p1", 0)),
+        assert(BaselineHasPrecommitFrom("p1", 0)),
+        assert(not(BaselineNilPrecommitCert(0))),
+        assert(BaselineFaultyInitSafety),
+        BaselineUnchangedAll,
+      })
+  }
+
+  run parameterizedShellNilTimeoutAliasesStartNextRoundTest = {
+    BaselineInitWithFaultyEvidence
+      .then(BaselineTimeoutProposePrevoteNil("p1"))
+      .then(BaselineTimeoutProposePrevoteNil("p2"))
+      .then(BaselineTimeoutProposePrevoteNil("p3"))
+      .then(BaselineUponNilPrevoteQuorum("p1"))
+      .then(BaselineUponNilPrevoteQuorum("p2"))
+      .then(BaselineUponNilPrevoteQuorum("p3"))
+      .then(BaselineStartNextRoundAfterPrecommitQuorum("p1"))
+      .then(all {
+        assert(BaselinePrevoteQuorum(0, BaselineNilSnapshot)),
+        assert(BaselineNilPrecommitCert(0)),
+        assert(BaselineRoundOf("p1") == 1),
+        assert(BaselineStepOf("p1") == "propose"),
+        assert(BaselineFaultyInitSafety),
+        BaselineUnchangedAll,
+      })
+  }
+
+  run parameterizedShellTimeoutPrecommitAndCatchupAliasesTest = {
+    BaselineInitWithFaultyEvidence
+      .then(BaselineTimeoutProposePrevoteNil("p1"))
+      .then(BaselineTimeoutPrevotePrecommitNil("p1"))
+      .then(BaselineTimeoutPrecommitStartNextRound("p1"))
+      .then(BaselineStartRound("p2", 2))
+      .then(BaselineTimeoutProposePrevoteNil("p2"))
+      .then(BaselineStartRound("p3", 2))
+      .then(BaselineTimeoutProposePrevoteNil("p3"))
+      .then(BaselineCatchUpToRound("p1", 2))
+      .then(all {
+        assert(BaselineHasPrevoteFrom("p2", 2)),
+        assert(BaselineHasPrevoteFrom("p3", 2)),
+        assert(BaselineRoundCatchupEvidence(2)),
+        assert(BaselineRoundOf("p1") == 2),
+        assert(BaselineStepOf("p1") == "propose"),
+        assert(BaselineFaultyInitSafety),
+        BaselineUnchangedAll,
+      })
+  }
+
+  run parameterizedShellConcreteValidRoundAliasAcceptsPrevoteQuorumTest = {
+    BaselineInitWithFaultyEvidence
+      .then(BaselineInsertProposal("p1"))
+      .then(BaselineUponProposalInPropose("p1", "a1"))
+      .then(BaselineUponProposalInPropose("p2", "a1"))
+      .then(BaselineUponProposalInPropose("p3", "a1"))
+      .then(BaselineUponValuePrevoteQuorum("p2", "a1"))
+      .then(BaselineTimeoutPrevotePrecommitNil("p1"))
+      .then(BaselineTimeoutPrecommitStartNextRound("p1"))
+      .then(BaselineTimeoutPrecommitStartNextRound("p2"))
+      .then(BaselineInsertProposal("p2"))
+      .then(BaselineUponProposalInProposeAndPrevote("p1", "a1", 0))
+      .then(all {
+        assert(BaselinePrevoteQuorum(0, "a1")),
+        assert(BaselineValidValueOf("p2") == "a1"),
+        assert(BaselineValidRoundOf("p2") == 0),
+        assert(BaselineLockedValueOf("p2") == "a1"),
+        assert(BaselineLockedRoundOf("p2") == 0),
+        assert(BaselineHasPrevoteFrom("p1", 1)),
+        assert(BaselineFaultyInitSafety),
+        BaselineUnchangedAll,
+      })
+  }
 }
 
 module CrosslinkBaselineN4F1StableTest {
