@@ -192,6 +192,7 @@ quick_checks() {
   test_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineFullFaultyInitN5F2ForkingModel
   test_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineFullFaultyInitN7F2ForkingModel
   test_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineCounterexampleModel
+  test_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineArbitraryCounterexampleModel
   test_model spec/quint/CrosslinkBaselineBftHeights.qnt CrosslinkBaselineBftHeightsModel
   test_model spec/quint/CrosslinkBaselineInductiveFinality.qnt CrosslinkBaselineInductiveFinalityModel
   test_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStableModel
@@ -306,6 +307,7 @@ baseline_quick_checks() {
   test_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineFullFaultyInitN5F2ForkingModel
   test_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineFullFaultyInitN7F2ForkingModel
   test_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineCounterexampleModel
+  test_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineArbitraryCounterexampleModel
   test_model spec/quint/CrosslinkBaselineBftHeights.qnt CrosslinkBaselineBftHeightsModel
   test_model spec/quint/CrosslinkBaselineInductiveFinality.qnt CrosslinkBaselineInductiveFinalityModel
   test_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStableModel

@@ -2641,3 +2641,115 @@ module CrosslinkBaselineCounterexampleModel {
       .fail()
   }
 }
+
+module CrosslinkBaselineArbitraryCounterexampleModel {
+  /*
+   Arbitrary-evidence false-invariant counterexample harnesses.
+
+   The seeded witnesses in CrosslinkBaselineCounterexampleModel pin every
+   validator, round, and snapshot to a single hand-authored fixture. The
+   harnesses here instead range over arbitrary evidence shapes:
+
+   - falseArbitraryNilPrecommitClearsSameRoundLockInvariantFailsTest
+       nondeterministically picks which correct validator carries the
+       same-round value lock, which other correct validators contribute
+       nil-precommit evidence, and which faulty validator nil-precommits.
+       Under the sticky baseline the same-round value lock survives, so the
+       false "nil-precommit clears same-round Tendermint state" invariant
+       still fails across the domain rather than only the one fixture.
+
+   - falseArbitraryNoAmnesiaEvidenceInvariantFailsTest
+       nondeterministically picks the two conflicting precommit rounds and
+       the conflicting commit values. The amnesia predicate fires whenever
+       a correct validator's precommit evidence in round r1 conflicts with
+       its later round-r2 precommit evidence, so the false claim that no
+       correct validator shows amnesia must fail across the entire
+       round/value choice space, not only the seeded (r1=0, r2=1, s0/s1)
+       fixture.
+
+   - falseArbitraryNoEquivocationEvidenceInvariantFailsTest
+       nondeterministically picks the round and the two distinct prevote
+       targets the faulty validator equivocates over. The false claim that
+       no faulty validator equivocates fails for every (round, value pair)
+       in the small domain, broadening the seeded round-0/s0-vs-s1
+       witness.
+   */
+
+  import CrosslinkResamplingTest(
+    Corr = Set("p1", "p2", "p3"),
+    Faulty = Set("p4"),
+    N = 4,
+    T = 1,
+    MaxRound = 2,
+    Proposer = Map(0 -> "p1", 1 -> "p2", 2 -> "p3"),
+    Stream = Map(0 -> "s0", 1 -> "s1", 2 -> "s2"),
+    Snapshots = Set("s0", "s1", "s2"),
+    ResampleOnNilPrecommit = false,
+    ExpectedRound1Proposal = "s0",
+  ).* from "./CrosslinkResampling"
+
+  val NilPrecommitClearsSameRoundTendermintState =
+    Corr.forall(p =>
+      Rounds.forall(r =>
+        (round.get(p) > r and NilPrecommitCert(r)) implies all {
+          not(validRound.get(p) == r and validValue.get(p) != NilSnapshot),
+          not(lockedRound.get(p) == r and lockedValue.get(p) != NilSnapshot),
+        }
+      )
+    )
+
+  run falseArbitraryNilPrecommitClearsSameRoundLockInvariantFailsTest = {
+    nondet locker = oneOf(Corr)
+    nondet nilA = oneOf(Corr.exclude(Set(locker)))
+    nondet nilB = oneOf(Corr.exclude(Set(locker, nilA)))
+    nondet faultyNil = oneOf(Faulty)
+    Init
+      .then(SeedValidNilPrecommitState(nilA))
+      .then(SeedValidNilPrecommitState(nilB))
+      .then(SeedFaultyNilPrecommit(faultyNil))
+      .then(SeedSameRoundValueLock(locker))
+      .then(StartNextRoundAfterPrecommitQuorum(locker))
+      .then(all {
+        NilPrecommitClearsSameRoundTendermintState,
+        unchangedAll,
+      })
+      .fail()
+  }
+
+  run falseArbitraryNoAmnesiaEvidenceInvariantFailsTest = {
+    nondet amnesiac = oneOf(Corr)
+    nondet supporter = oneOf(Corr.exclude(Set(amnesiac)))
+    nondet faulty = oneOf(Faulty)
+    nondet r1 = oneOf(Set(0, 1))
+    nondet r2 = oneOf(Set(1, 2).exclude(Set(r1)))
+    nondet v1 = oneOf(Snapshots)
+    nondet v2 = oneOf(Snapshots.exclude(Set(v1)))
+    Init
+      .then(SeedCorrectPrecommitEvidence(amnesiac, r1, v1))
+      .then(SeedCorrectPrecommitEvidence(supporter, r1, v1))
+      .then(SeedFaultyPrecommitEvidence(faulty, r1, v1))
+      .then(SeedCorrectPrecommitEvidence(amnesiac, r2, v2))
+      .then(SeedCorrectPrecommitEvidence(supporter, r2, v2))
+      .then(SeedFaultyPrecommitEvidence(faulty, r2, v2))
+      .then(all {
+        not(AmnesiaBy(amnesiac)),
+        unchangedAll,
+      })
+      .fail()
+  }
+
+  run falseArbitraryNoEquivocationEvidenceInvariantFailsTest = {
+    nondet faulty = oneOf(Faulty)
+    nondet r = oneOf(Rounds)
+    nondet v1 = oneOf(Snapshots)
+    nondet v2 = oneOf(Snapshots.exclude(Set(v1)))
+    Init
+      .then(SeedFaultyPrevoteEvidence(faulty, r, v1))
+      .then(SeedFaultyPrevoteEvidence(faulty, r, v2))
+      .then(all {
+        not(EquivocationBy(faulty)),
+        unchangedAll,
+      })
+      .fail()
+  }
+}

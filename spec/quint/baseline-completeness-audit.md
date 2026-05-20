@@ -164,7 +164,7 @@ The current branch has these baseline-specific files:
 | Full Tendermint transition surface | `BaselineNext` is now a first-class `any { ... }` transition system in `CrosslinkBaselineTenderlink.qnt`, with baseline-prefixed shell actions for proposal insertion, both proposal-handler steps, value/nil prevote quorums, propose/prevote/precommit timeouts, stream-change nil precommit, sticky round advance, late nil-precommit certificate (disabled under sticky baseline), round catchup, and decide. `BaselineUponPrecommitQuorumEvidence` exposes the upstream evidence-set parameter shape | Covered |
 | Full agreement/validity/accountability invariant suite over arbitrary evidence | `Safety` includes `Agreement`, `Validity`, and `Accountability` in the focused symbolic gates; current suite also has bounded faulty-init gates plus focused accountability witnesses | Partial; larger full-powerset faulty-evidence surfaces are still quick-check-only rather than symbolic |
 | False-invariant/counterexample harnesses for amnesia/equivocation/agreement | `CrosslinkBaselineCounterexampleModel`; `falseNoConflictingCommitsInvariantFailsTest`; `falseNoAmnesiaEvidenceInvariantFailsTest`; `falseNoEquivocationEvidenceInvariantFailsTest`; `falseAgreementInvariantFailsTest`; `falseAgreementOrAmnesiaInvariantFailsTest`; `falseAmnesiaImpliesEquivocationInvariantFailsTest`; `falseShowMeAmnesiaWithoutEquivocationInvariantFailsTest`; `falseNeverUndecidedInMaxRoundInvariantFailsTest`; `falseNilPrecommitClearsSameRoundLockInvariantFailsTest` | Covered as seeded Rust witnesses; not yet an arbitrary-evidence symbolic suite |
-| Crosslink-specific false-invariant witnesses | `falseNoStaleFixedSigmaProposalInvariantFailsTest`; `falseForkFinalityAttemptIsValidTest`; `falseNilPrecommitClearsSameRoundLockInvariantFailsTest` | Covered as seeded Rust witnesses |
+| Crosslink-specific false-invariant witnesses | Seeded fixtures: `falseNoStaleFixedSigmaProposalInvariantFailsTest`; `falseForkFinalityAttemptIsValidTest`; `falseNilPrecommitClearsSameRoundLockInvariantFailsTest`. Arbitrary-evidence harnesses (module `CrosslinkBaselineArbitraryCounterexampleModel`): `falseArbitraryNilPrecommitClearsSameRoundLockInvariantFailsTest`; `falseArbitraryNoAmnesiaEvidenceInvariantFailsTest`; `falseArbitraryNoEquivocationEvidenceInvariantFailsTest` — each ranges nondeterministically over validator/round/value choices and produces a `.fail()` counterexample for every sample of the domain | Covered as seeded Rust witnesses plus arbitrary-evidence Rust witnesses |
 | Generated/adversarial PoW schedule for baseline long reorgs | `CrosslinkBaselinePowSampling.qnt`; `CrosslinkBaselinePowSamplingModel`; `CrosslinkBaselinePowLongReorgModel`; `CrosslinkBaselinePowGeneratedScheduleModel`; `CrosslinkBaselinePowRepeatedGeneratedScheduleModel`; `BaselinePowSamplingSafety`; `BaselinePowLongReorgSafety`; `BaselinePowGeneratedScheduleSafety`; `BaselinePowRepeatedGeneratedScheduleSafety` | Covered, bounded; fork-switch, long-reorg, generated adversarial work-competition, and repeated generated stream-change fixtures are covered |
 | Stochastic PoW block-production model | `CrosslinkBaselinePowStochasticProductionModel`; `BaselinePowStochasticProductionSafety` | Covered, bounded; finite hash-participation, hidden-work-risk, and block-variance buckets derive honest extension and hidden-work release windows |
 | Inductive or deeper multi-height finality argument | `CrosslinkBaselineInductiveFinality.qnt` named lemmas plus `inductive-finality.md` argument shape; bounded at depth 5 symbolically | Covered as bounded named lemmas; full induction deferred to a separate prover |
@@ -263,8 +263,22 @@ remaining upstream-quality gaps.
    - Seeded witnesses now also cover the false claims that sticky baseline
      proposals always match the current fixed-sigma sample and that
      fork-finality attempts remain valid after prefix finality.
-   - Remaining work is to broaden those Crosslink-specific false invariants
-     beyond hand-authored fixtures.
+   - DONE for the first round of broadening:
+     `CrosslinkBaselineArbitraryCounterexampleModel` adds three
+     arbitrary-evidence harnesses
+     (`falseArbitraryNilPrecommitClearsSameRoundLockInvariantFailsTest`,
+     `falseArbitraryNoAmnesiaEvidenceInvariantFailsTest`,
+     `falseArbitraryNoEquivocationEvidenceInvariantFailsTest`) that range
+     nondeterministically over the locker/nil-precommit-supporter validator
+     choices, the two conflicting precommit rounds and conflicting commit
+     values, and the round/value pair the faulty validator equivocates over.
+     Each sample of the nondet domain still produces the expected `.fail()`
+     counterexample, so the falsehood is witnessed across the parameter
+     domain rather than one fixture. These run as `test_model` quick-gate
+     entries; they are intentionally not in the symbolic gate because
+     `verify_model` expects no counterexample.
+   - Remaining work is broader still: ranging arbitrary fork-tip schedules
+     and BFT-height fork-finality attempts inside the parameterized shell.
 7. Expand the PoW environment.
    - The baseline now has a generated bounded PoW schedule where published work
      selects `a3`, then `a4`, then an adversarially released `b4`.

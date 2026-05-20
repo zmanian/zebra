@@ -67,13 +67,14 @@ without clearing same-round value or proposal-cache state.
 | Agreement | `Agreement`, `BaselineAgreement`, symbolic `BaselineSafety`/`ComposedSafety` gates | Covered, bounded | Agreement is checked directly in the focused and composed baseline gates. |
 | Validity | `Validity`, `BaselineValidity`, `Safety` | Covered, bounded | Valid decisions must be modeled snapshots. |
 | Accountability | `EquivocationBy`, `AmnesiaBy`, `DetectableFaults`, `Accountability`, `ConflictingCommitsAccountable` | Partial | Baseline adapts accountability to Crosslink nil certificates; broader arbitrary-evidence checking remains incomplete. |
-| False invariant examples | `CrosslinkBaselineCounterexampleModel` | Covered as seeded witnesses | Covers false no-conflicting-commit, no-amnesia, no-equivocation, agreement, agreement-or-amnesia, amnesia-implies-equivocation, amnesia-without-equivocation, undecided max-round, and sticky-baseline nil-precommit unlock witnesses. |
+| False invariant examples | `CrosslinkBaselineCounterexampleModel`; `CrosslinkBaselineArbitraryCounterexampleModel` | Covered as seeded witnesses plus arbitrary-evidence witnesses | Seeded fixtures cover false no-conflicting-commit, no-amnesia, no-equivocation, agreement, agreement-or-amnesia, amnesia-implies-equivocation, amnesia-without-equivocation, undecided max-round, and sticky-baseline nil-precommit unlock witnesses. `CrosslinkBaselineArbitraryCounterexampleModel` adds three nondet arbitrary-evidence Crosslink-specific harnesses (`falseArbitraryNilPrecommitClearsSameRoundLockInvariantFailsTest`, `falseArbitraryNoAmnesiaEvidenceInvariantFailsTest`, `falseArbitraryNoEquivocationEvidenceInvariantFailsTest`) that range over validator/round/value choices instead of one hand-authored shape. |
 | Small `n4_f1`, `n4_f2`, `n5_f2` model handles | `CrosslinkBaselineModels.qnt` has `n4_f1_stable`, `n4_f1_forking`, `n5_f1_forking`, `n4_f2_forking`, `n5_f2_forking`, `n7_f2_forking` | Covered with Crosslink variants | `n4_f2` and `n5_f2` are above the live BFT boundary for correct-only value commits under `T = 2`; `n7_f2` records the corresponding decision path. |
 | Normal decision test | `decisionTest`, `baselineStableStreamDecidesSampledSnapshotTest`, `n7F2DecisionPathTest` | Covered | Baseline decision values are stream snapshots. |
 | No double proposal test | `noProposeTwiceTest` | Covered | Checks a correct proposer cannot insert two proposals for the same round. |
 | Timeout progress test | `timeoutPrevotePathFormsNilPrecommitCertTest`, `timeoutPrecommitAdvancesWithoutPrecommitQuorumTest` | Covered | The baseline splits upstream timeout behavior into prevote-nil and precommit-timeout paths. |
 | Crosslink-specific stale-sample negative witness | `falseNoStaleFixedSigmaProposalInvariantFailsTest` | Covered as seeded witness | Shows the sticky baseline violates the false claim that proposals always equal the current `head - sigma` sample. |
 | Crosslink-specific fork-finality negative witness | `falseForkFinalityAttemptIsValidTest` | Covered as seeded witness | Shows a fork-finality attempt is invalid once the prefix has finalized on the other branch. |
+| Crosslink-specific arbitrary-evidence negative witnesses | `CrosslinkBaselineArbitraryCounterexampleModel`; `falseArbitraryNilPrecommitClearsSameRoundLockInvariantFailsTest`; `falseArbitraryNoAmnesiaEvidenceInvariantFailsTest`; `falseArbitraryNoEquivocationEvidenceInvariantFailsTest` | Covered as arbitrary-evidence Rust witnesses | Each test nondeterministically picks the validators, rounds, and snapshot values driving the seeded counterexample. The falsehood holds across the entire small nondet domain — `falseArbitraryNilPrecommitClearsSameRoundLockInvariantFailsTest` ranges the locker and the two nil-precommit supporters; `falseArbitraryNoAmnesiaEvidenceInvariantFailsTest` ranges the two precommit rounds and conflicting commit values; `falseArbitraryNoEquivocationEvidenceInvariantFailsTest` ranges the round and the two distinct prevote targets. |
 
 ## Proof Gate Crosswalk
 
@@ -130,5 +131,9 @@ The crosswalk leaves these concrete gaps:
    depth 3.
 5. Broaden Crosslink-specific false-invariant witnesses beyond the current
    seeded stale-sample, fork-finality, and sticky nil-precommit fixtures.
+   First-round broadening is now landed in
+   `CrosslinkBaselineArbitraryCounterexampleModel` with three nondet
+   arbitrary-evidence harnesses. Remaining work is to range fork-tip schedules
+   and BFT-height fork-finality attempts in the same arbitrary-evidence shape.
 6. Strengthen finalized-prefix reasoning beyond bounded fixtures, either with
    deeper symbolic projections or smaller lemmas.
