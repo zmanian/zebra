@@ -621,20 +621,26 @@ async fn propose_new_bft_block_with_confirmation_depth(
 async fn propose_new_tenderlink_payload(
     tfl_handle: &TFLServiceHandle,
 ) -> Option<tenderlink::BlockValue> {
-    let prototype_hysteresis_state = if tfl_handle.config.dynamic_sigma_prototype {
-        Some(
-            tfl_handle
-                .internal
-                .lock()
-                .await
-                .prototype_dynamic_sigma_hysteresis_state,
-        )
-    } else {
-        None
+    // Snapshot the live consensus state needed by the production
+    // participation-marker verifier before constructing the proposal plan.
+    // The plan path is sync and cannot await on the internal lock itself, so
+    // we copy the relevant fields under one short critical section.
+    let (prototype_hysteresis_state, active_roster, known_bft_blocks) = {
+        let internal = tfl_handle.internal.lock().await;
+        let prototype_hysteresis_state = if tfl_handle.config.dynamic_sigma_prototype {
+            Some(internal.prototype_dynamic_sigma_hysteresis_state)
+        } else {
+            None
+        };
+        let active_roster = internal.validators_at_current_height.clone();
+        let known_bft_blocks = internal.bft_blocks.clone();
+        (prototype_hysteresis_state, active_roster, known_bft_blocks)
     };
-    let proposal_plan = match tenderlink_proposal_plan_from_hysteresis_state(
+    let proposal_plan = match tenderlink_proposal_plan_from_hysteresis_state_with_production_verifier(
         &tfl_handle.config,
         prototype_hysteresis_state,
+        &active_roster,
+        &known_bft_blocks,
     ) {
         Ok(proposal_plan) => proposal_plan,
         Err(err) => {
@@ -1061,6 +1067,37 @@ fn prototype_dynamic_sigma_proposal_evidence_from_hysteresis_state(
     Ok((evidence, _next_hysteresis_state))
 }
 
+/// Production-verifier proposal-evidence path.
+///
+/// Identical to [`prototype_dynamic_sigma_proposal_evidence_from_hysteresis_state`]
+/// except the telemetry components are built with the four-check production
+/// verifier in [`dynamic_sigma_production_marker_verifier`] instead of the
+/// default-marker bridge. With empty roster / bft_blocks slices the verifier
+/// rejects every header and the participating numerator is zero
+/// (failure-closed); once live state-snapshot wiring lands those slices reflect
+/// the actual active roster and known BFT blocks.
+fn production_dynamic_sigma_proposal_evidence_from_hysteresis_state(
+    params: dynamic_sigma::DynamicSigmaParameters,
+    hysteresis_state: DynamicSigmaHysteresisState,
+    active_roster: &[MalValidator],
+    known_bft_blocks: &[BftBlock],
+) -> Result<(DynamicSigmaProposalEvidence, DynamicSigmaHysteresisState), TenderlinkPayloadEncodeError>
+{
+    let (evidence, next_hysteresis_state) =
+        dynamic_sigma_proposal_evidence_from_telemetry_components_with_hysteresis(
+            params,
+            prototype_dynamic_sigma_telemetry_components_with_production_verifier(
+                active_roster,
+                known_bft_blocks,
+            )?,
+            prototype_dynamic_sigma_telemetry_margins(),
+            prototype_dynamic_sigma_hysteresis_policy(),
+            hysteresis_state,
+        )?;
+
+    Ok((evidence, next_hysteresis_state))
+}
+
 fn prototype_dynamic_sigma_next_hysteresis_state(
     params: dynamic_sigma::DynamicSigmaParameters,
 ) -> Result<DynamicSigmaHysteresisState, TenderlinkPayloadEncodeError> {
@@ -1097,6 +1134,39 @@ fn tenderlink_proposal_plan_from_hysteresis_state(
         prototype_dynamic_sigma_proposal_evidence_from_hysteresis_state(
             params,
             hysteresis_state.unwrap_or_else(|| prototype_dynamic_sigma_hysteresis_state(params)),
+        )?;
+
+    Ok(TenderlinkProposalPlan::DynamicSigma {
+        evidence,
+        next_hysteresis_state,
+    })
+}
+
+/// Production-shaped variant of [`tenderlink_proposal_plan_from_hysteresis_state`].
+///
+/// Uses [`dynamic_sigma_production_marker_verifier`] composed with the active
+/// roster and known BFT block index instead of the prototype's default-marker
+/// bridge. Callers MUST snapshot `active_roster` and `known_bft_blocks` from
+/// live consensus state (i.e. `internal.validators_at_current_height` and
+/// `internal.bft_blocks`) before invoking this sync function.
+fn tenderlink_proposal_plan_from_hysteresis_state_with_production_verifier(
+    config: &config::Config,
+    hysteresis_state: Option<DynamicSigmaHysteresisState>,
+    active_roster: &[MalValidator],
+    known_bft_blocks: &[BftBlock],
+) -> Result<TenderlinkProposalPlan, TenderlinkPayloadEncodeError> {
+    let Some(params) = dynamic_sigma_params_from_config(config) else {
+        return Ok(TenderlinkProposalPlan::FixedSigma {
+            confirmation_depth: PROTOTYPE_PARAMETERS.bc_confirmation_depth_sigma,
+        });
+    };
+
+    let (evidence, next_hysteresis_state) =
+        production_dynamic_sigma_proposal_evidence_from_hysteresis_state(
+            params,
+            hysteresis_state.unwrap_or_else(|| prototype_dynamic_sigma_hysteresis_state(params)),
+            active_roster,
+            known_bft_blocks,
         )?;
 
     Ok(TenderlinkProposalPlan::DynamicSigma {
