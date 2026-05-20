@@ -622,10 +622,11 @@ async fn propose_new_tenderlink_payload(
     tfl_handle: &TFLServiceHandle,
 ) -> Option<tenderlink::BlockValue> {
     // Snapshot the live consensus state needed by the production
-    // participation-marker verifier before constructing the proposal plan.
-    // The plan path is sync and cannot await on the internal lock itself, so
-    // we copy the relevant fields under one short critical section.
-    let (prototype_hysteresis_state, active_roster, known_bft_blocks) = {
+    // participation-marker verifier and the rollback-depth telemetry before
+    // constructing the proposal plan. The plan path is sync and cannot await
+    // on the internal lock itself, so we copy the relevant fields under one
+    // short critical section.
+    let (prototype_hysteresis_state, active_roster, known_bft_blocks, best_tip_transitions) = {
         let internal = tfl_handle.internal.lock().await;
         let prototype_hysteresis_state = if tfl_handle.config.dynamic_sigma_prototype {
             Some(internal.prototype_dynamic_sigma_hysteresis_state)
@@ -634,13 +635,20 @@ async fn propose_new_tenderlink_payload(
         };
         let active_roster = internal.validators_at_current_height.clone();
         let known_bft_blocks = internal.bft_blocks.clone();
-        (prototype_hysteresis_state, active_roster, known_bft_blocks)
+        let best_tip_transitions = internal.dynamic_sigma_best_tip_transitions.clone();
+        (
+            prototype_hysteresis_state,
+            active_roster,
+            known_bft_blocks,
+            best_tip_transitions,
+        )
     };
     let proposal_plan = match tenderlink_proposal_plan_from_hysteresis_state_with_production_verifier(
         &tfl_handle.config,
         prototype_hysteresis_state,
         &active_roster,
         &known_bft_blocks,
+        &best_tip_transitions,
     ) {
         Ok(proposal_plan) => proposal_plan,
         Err(err) => {
@@ -961,7 +969,7 @@ fn prototype_dynamic_sigma_telemetry_components(
     let target_block_spacing_seconds = prototype_dynamic_sigma_target_block_spacing_seconds()?;
 
     telemetry_components_from_timed_header_observation_window_with_hash_work_policy(
-        prototype_dynamic_sigma_observation_window(&pow_headers, target_block_spacing_seconds),
+        prototype_dynamic_sigma_observation_window(&pow_headers, target_block_spacing_seconds, &[]),
         prototype_dynamic_sigma_hash_work_policy(),
     )
     .map_err(|_| TenderlinkPayloadEncodeError::DynamicSigmaInvalid)
@@ -981,12 +989,17 @@ fn prototype_dynamic_sigma_telemetry_components(
 fn prototype_dynamic_sigma_telemetry_components_with_production_verifier(
     active_roster: &[MalValidator],
     known_bft_blocks: &[BftBlock],
+    best_tip_transitions: &[dynamic_sigma::DynamicSigmaBestTipTransition],
 ) -> Result<DynamicSigmaTelemetryComponents, TenderlinkPayloadEncodeError> {
     let pow_headers = prototype_dynamic_sigma_timed_headers();
     let target_block_spacing_seconds = prototype_dynamic_sigma_target_block_spacing_seconds()?;
 
     telemetry_components_from_timed_header_observation_window_with_hash_work_policy_and_verifier(
-        prototype_dynamic_sigma_observation_window(&pow_headers, target_block_spacing_seconds),
+        prototype_dynamic_sigma_observation_window(
+            &pow_headers,
+            target_block_spacing_seconds,
+            best_tip_transitions,
+        ),
         prototype_dynamic_sigma_hash_work_policy(),
         |fat_pointer| {
             dynamic_sigma_production_marker_verifier(fat_pointer, active_roster, known_bft_blocks)
@@ -995,15 +1008,16 @@ fn prototype_dynamic_sigma_telemetry_components_with_production_verifier(
     .map_err(|_| TenderlinkPayloadEncodeError::DynamicSigmaInvalid)
 }
 
-fn prototype_dynamic_sigma_observation_window(
-    pow_headers: &[BlockHeader],
+fn prototype_dynamic_sigma_observation_window<'a>(
+    pow_headers: &'a [BlockHeader],
     target_block_spacing_seconds: u64,
-) -> DynamicSigmaTimedHeaderObservationWindow<'_> {
+    best_tip_transitions: &'a [dynamic_sigma::DynamicSigmaBestTipTransition],
+) -> DynamicSigmaTimedHeaderObservationWindow<'a> {
     DynamicSigmaTimedHeaderObservationWindow {
         pow_headers,
         target_block_spacing_seconds,
         round_counters: prototype_dynamic_sigma_round_counters(),
-        best_tip_transitions: &[],
+        best_tip_transitions,
         rollback_risk: RollbackRiskCurve {
             base_sigma_ppm: 20,
             raised_sigma_ppm: 10,
@@ -1081,6 +1095,7 @@ fn production_dynamic_sigma_proposal_evidence_from_hysteresis_state(
     hysteresis_state: DynamicSigmaHysteresisState,
     active_roster: &[MalValidator],
     known_bft_blocks: &[BftBlock],
+    best_tip_transitions: &[dynamic_sigma::DynamicSigmaBestTipTransition],
 ) -> Result<(DynamicSigmaProposalEvidence, DynamicSigmaHysteresisState), TenderlinkPayloadEncodeError>
 {
     let (evidence, next_hysteresis_state) =
@@ -1089,6 +1104,7 @@ fn production_dynamic_sigma_proposal_evidence_from_hysteresis_state(
             prototype_dynamic_sigma_telemetry_components_with_production_verifier(
                 active_roster,
                 known_bft_blocks,
+                best_tip_transitions,
             )?,
             prototype_dynamic_sigma_telemetry_margins(),
             prototype_dynamic_sigma_hysteresis_policy(),
@@ -1154,6 +1170,7 @@ fn tenderlink_proposal_plan_from_hysteresis_state_with_production_verifier(
     hysteresis_state: Option<DynamicSigmaHysteresisState>,
     active_roster: &[MalValidator],
     known_bft_blocks: &[BftBlock],
+    best_tip_transitions: &[dynamic_sigma::DynamicSigmaBestTipTransition],
 ) -> Result<TenderlinkProposalPlan, TenderlinkPayloadEncodeError> {
     let Some(params) = dynamic_sigma_params_from_config(config) else {
         return Ok(TenderlinkProposalPlan::FixedSigma {
@@ -1167,6 +1184,7 @@ fn tenderlink_proposal_plan_from_hysteresis_state_with_production_verifier(
             hysteresis_state.unwrap_or_else(|| prototype_dynamic_sigma_hysteresis_state(params)),
             active_roster,
             known_bft_blocks,
+            best_tip_transitions,
         )?;
 
     Ok(TenderlinkProposalPlan::DynamicSigma {
@@ -3879,6 +3897,7 @@ mod tests {
         // observed work to the denominator but not to the participating
         // numerator. This is the documented failure-closed behavior.
         let components = prototype_dynamic_sigma_telemetry_components_with_production_verifier(
+            &[],
             &[],
             &[],
         )
