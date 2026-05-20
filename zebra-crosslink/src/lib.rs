@@ -273,6 +273,52 @@ async fn block_height_from_hash(call: &TFLServiceCalls, hash: BlockHash) -> Opti
     }
 }
 
+/// Find the height of the common ancestor between a previous best tip and the
+/// current canonical chain.
+///
+/// Walks back from `prev_hash` following each block header's
+/// `previous_block_hash`, checking at each step whether the canonical chain at
+/// that height contains the same hash. Returns the height of the first
+/// ancestor that does, or `None` if no common ancestor is found within
+/// `zebra_state::MAX_BLOCK_REORG_HEIGHT` steps (failure-closed for the
+/// dynamic-sigma rollback-depth telemetry).
+async fn find_common_ancestor_height(
+    call: &TFLServiceCalls,
+    prev_hash: BlockHash,
+) -> Option<u64> {
+    let mut current_hash = prev_hash;
+    for _ in 0..zebra_state::MAX_BLOCK_REORG_HEIGHT {
+        let StateResponse::BlockHeader {
+            header,
+            hash,
+            height,
+            ..
+        } = (call.state)(StateRequest::BlockHeader(current_hash.into()))
+            .await
+            .ok()?
+        else {
+            return None;
+        };
+        debug_assert_eq!(hash, current_hash);
+
+        if let Ok(StateResponse::BlockHeader {
+            hash: canonical_hash,
+            ..
+        }) = (call.state)(StateRequest::BlockHeader(height.into())).await
+        {
+            if canonical_hash == current_hash {
+                return Some(height.0 as u64);
+            }
+        }
+
+        if height.0 == 0 {
+            return None;
+        }
+        current_hash = header.previous_block_hash;
+    }
+    None
+}
+
 async fn block_height_hash_from_hash(
     call: &TFLServiceCalls,
     hash: BlockHash,
@@ -2151,26 +2197,34 @@ async fn tfl_service_main_loop(internal_handle: TFLServiceHandle) -> Result<(), 
             }
         }
 
-        // Drive the dynamic-sigma best-tip transition recorder. Forward
-        // progress (height strictly greater than the previous tip) uses the
-        // previous tip height as the common ancestor. Other cases (reorgs,
-        // height regressions) are conservatively skipped: a future change
-        // can call into the state service for a real common-ancestor
-        // lookup. The recorder is failure-closed, so a skipped transition
-        // simply means no rollback-depth sample is added to this window.
-        let best_tip_transition_hook = match (current_bc_tip, new_bc_tip) {
-            (None, Some((new_height, _))) => Some((new_height.0 as u64, None)),
-            (Some((prev_height, prev_hash)), Some((new_height, new_hash)))
-                if (prev_height, prev_hash) != (new_height, new_hash)
-                    && new_height.0 > prev_height.0 =>
-            {
-                Some((new_height.0 as u64, Some(prev_height.0 as u64)))
-            }
-            _ => None,
-        };
+        // Drive the dynamic-sigma best-tip transition recorder. Three cases:
+        //
+        // - First observation: seed the recorder with `None` common ancestor.
+        // - Subsequent transition: walk back from the previous tip via
+        //   `find_common_ancestor_height` to locate the common ancestor on
+        //   the new canonical chain. Forward progress on the same chain
+        //   returns the previous tip itself; reorgs return the actual fork
+        //   point. If the walk exceeds `MAX_BLOCK_REORG_HEIGHT` without
+        //   finding one, the recorder is told `None` and the transition is
+        //   dropped failure-closed.
         drop(internal);
-        if let Some((new_height, common_ancestor)) = best_tip_transition_hook {
-            record_best_tip_transition(&internal_handle, new_height, common_ancestor).await;
+        match (current_bc_tip, new_bc_tip) {
+            (None, Some((new_height, _new_hash))) => {
+                record_best_tip_transition(&internal_handle, new_height.0 as u64, None).await;
+            }
+            (Some((_prev_height, prev_hash)), Some((new_height, new_hash)))
+                if prev_hash != new_hash =>
+            {
+                let common_ancestor =
+                    find_common_ancestor_height(&internal_handle.call, prev_hash).await;
+                record_best_tip_transition(
+                    &internal_handle,
+                    new_height.0 as u64,
+                    common_ancestor,
+                )
+                .await;
+            }
+            _ => {}
         }
 
         current_bc_tip = new_bc_tip;
