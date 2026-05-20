@@ -161,7 +161,7 @@ The current branch has these baseline-specific files:
 | Fault-boundary behavior for `f = 2` | `CrosslinkBaselineTest.qnt`; `n4F2DocumentsAboveLiveFaultBoundaryTest`; `n5F2CatchupEvidenceButNoCorrectValueQuorumTest`; `n7F2DecisionPathTest`; `symbolic-baseline` depth-3 checks for `BaselineN4F2ForkingSafety`, `BaselineN5F2ForkingSafety`, and `BaselineN7F2ForkingSafety` | Covered by Rust-backed witnesses and bounded symbolic gates |
 | Faulty proposal/prevote/precommit evidence reaches equivocation predicates | `CrosslinkBaselineAccountability.qnt`; `baselineFaultyProposalEvidenceFeedsEquivocationTest`; `baselineFaultyPrevoteEvidenceFeedsEquivocationTest`; `baselineFaultyNilValuePrecommitEvidenceFeedsEquivocationTest` | Covered as witnesses |
 | Nondeterministic faulty message injection in `Init` | `BaselineInitWithFaultyEvidence`; `BaselineNext`; `CrosslinkBaselineParameterizedShellTest`; `InitWithFaultyEvidence`; `InitWithSingleN4F2FaultyEvidence`; `InitWithPairN4F2FaultyEvidence`; `InitWithTripleN4F2FaultyEvidence`; `InitWithSingleN5F2FaultyEvidence`; `InitWithPairN5F2FaultyEvidence`; `InitWithTripleN5F2FaultyEvidence`; `InitWithSingleN7F2FaultyEvidence`; `InitWithPairN7F2FaultyEvidence`; `InitWithTripleN7F2FaultyEvidence`; `CrosslinkBaselineFaultyInitTinyModel`; `CrosslinkBaselineFaultyInitForkingModel`; `CrosslinkBaselineBoundedFaultyInitN4F2ForkingModel`; `CrosslinkBaselineSingleFaultyInitN4F2ForkingModel`; `CrosslinkBaselinePairFaultyInitN4F2ForkingModel`; `CrosslinkBaselineTripleFaultyInitN4F2ForkingModel`; `CrosslinkBaselineBoundedFaultyInitN5F2ForkingModel`; `CrosslinkBaselineSingleFaultyInitN5F2ForkingModel`; `CrosslinkBaselinePairFaultyInitN5F2ForkingModel`; `CrosslinkBaselineTripleFaultyInitN5F2ForkingModel`; `CrosslinkBaselineBoundedFaultyInitN7F2ForkingModel`; `CrosslinkBaselineSingleFaultyInitN7F2ForkingModel`; `CrosslinkBaselinePairFaultyInitN7F2ForkingModel`; `CrosslinkBaselineTripleFaultyInitN7F2ForkingModel`; `CrosslinkBaselineFullFaultyInitForkingModel`; `CrosslinkBaselineFullFaultyInitN4F2ForkingModel`; `CrosslinkBaselineFullFaultyInitN5F1ForkingModel`; `CrosslinkBaselineFullFaultyInitN5F2ForkingModel`; `CrosslinkBaselineFullFaultyInitN7F2ForkingModel`; `BaselineFaultyInitSafety`; `BaselineForkingFaultyInitSafety`; `BaselineBoundedN4F2ForkingFaultyInitSafety`; `BaselineSingleN4F2ForkingFaultyInitSafety`; `BaselinePairN4F2ForkingFaultyInitSafety`; `BaselineTripleN4F2ForkingFaultyInitSafety`; `BaselineBoundedN5F2ForkingFaultyInitSafety`; `BaselineSingleN5F2ForkingFaultyInitSafety`; `BaselinePairN5F2ForkingFaultyInitSafety`; `BaselineTripleN5F2ForkingFaultyInitSafety`; `BaselineBoundedN7F2ForkingFaultyInitSafety`; `BaselineSingleN7F2ForkingFaultyInitSafety`; `BaselinePairN7F2ForkingFaultyInitSafety`; `BaselineTripleN7F2ForkingFaultyInitSafety`; `BaselineFullForkingFaultyInitSafety`; `BaselineFullN4F2ForkingFaultyInitSafety`; `BaselineFullN5F1ForkingFaultyInitSafety`; `BaselineFullN5F2ForkingFaultyInitSafety`; `BaselineFullN7F2ForkingFaultyInitSafety` | Partial; exposed through the parameterized shell and covered by a tiny full-powerset instance, bounded symbolic fixed-sigma/forking instances for `n4_f1`, representative `n4_f2`, `n5_f2`, and `n7_f2`, single-/pair-/triple-faulty full-domain `n4_f2` abstractions, single-/pair-/triple-faulty full-domain `n5_f2` abstractions, single-/pair-/triple-faulty full-domain `n7_f2` abstractions, and quick-check full-powerset fixed-sigma/forking `n4_f1`, `n4_f2`, `n5_f1`, `n5_f2`, and `n7_f2` instances; not yet lifted into symbolic gates for the full-powerset larger instances |
-| Full Tendermint transition surface | Current model covers StartRound-style round initialization, value prevote quorum, nil prevote quorum, split nil-valid-round and concrete-valid-round proposal handlers, validRound proposal justification, correct-value-prevote proposal provenance, propose/prevote/precommit timeout paths, stream-change nil precommit, late nil-precommit certificate handling as a disabled sticky-baseline alias, round advance after precommit quorum, timeout round advance, future-round catchup, and decision | Covered for the focused baseline shell; still not a full upstream port |
+| Full Tendermint transition surface | `BaselineNext` is now a first-class `any { ... }` transition system in `CrosslinkBaselineTenderlink.qnt`, with baseline-prefixed shell actions for proposal insertion, both proposal-handler steps, value/nil prevote quorums, propose/prevote/precommit timeouts, stream-change nil precommit, sticky round advance, late nil-precommit certificate (disabled under sticky baseline), round catchup, and decide. `BaselineUponPrecommitQuorumEvidence` exposes the upstream evidence-set parameter shape | Covered |
 | Full agreement/validity/accountability invariant suite over arbitrary evidence | `Safety` includes `Agreement`, `Validity`, and `Accountability` in the focused symbolic gates; current suite also has bounded faulty-init gates plus focused accountability witnesses | Partial; larger full-powerset faulty-evidence surfaces are still quick-check-only rather than symbolic |
 | False-invariant/counterexample harnesses for amnesia/equivocation/agreement | `CrosslinkBaselineCounterexampleModel`; `falseNoConflictingCommitsInvariantFailsTest`; `falseNoAmnesiaEvidenceInvariantFailsTest`; `falseNoEquivocationEvidenceInvariantFailsTest`; `falseAgreementInvariantFailsTest`; `falseAgreementOrAmnesiaInvariantFailsTest`; `falseAmnesiaImpliesEquivocationInvariantFailsTest`; `falseShowMeAmnesiaWithoutEquivocationInvariantFailsTest`; `falseNeverUndecidedInMaxRoundInvariantFailsTest`; `falseNilPrecommitClearsSameRoundLockInvariantFailsTest` | Covered as seeded Rust witnesses; not yet an arbitrary-evidence symbolic suite |
 | Crosslink-specific false-invariant witnesses | `falseNoStaleFixedSigmaProposalInvariantFailsTest`; `falseForkFinalityAttemptIsValidTest`; `falseNilPrecommitClearsSameRoundLockInvariantFailsTest` | Covered as seeded Rust witnesses |
@@ -226,13 +226,29 @@ remaining upstream-quality gaps.
      full-powerset instances is a real tractability limit rather than an
      omitted proof gate.
 4. Port the full transition surface.
-   - Include proposer selection, proposal insertion, proposal handling,
-     prevote quorum handling, precommit quorum handling, timeouts, nil prevotes,
-     and round catchup. The current baseline model now covers StartRound-style
-     round initialization plus the timeout and catchup paths for the focused
-     shell.
-   - Preserve the baseline sticky rule: nil precommit does not clear same-round
-     valid or locked state.
+   - DONE. `BaselineNext` is now a first-class `any { ... }` transition system
+     in `CrosslinkBaselineTenderlink.qnt` mirroring the upstream
+     `Tendermint.qnt` `Next` shape: proposal insertion, propose-step and
+     propose-and-prevote-step proposal handlers, value prevote quorum, nil
+     prevote quorum, propose/prevote/precommit timeouts, stream-change nil
+     precommit, sticky round advance, late nil-precommit certificate (disabled
+     under sticky baseline), round catchup, and value decide.
+   - The shell also adds `BaselineUponPrecommitQuorumEvidence(p, r, evidence)`
+     in the upstream evidence-set-parameter shape, so symbolic gates can range
+     over arbitrary precommit-evidence subsets while preserving sticky
+     baseline behavior.
+   - The Crosslink-specific rules are preserved by construction: `head - sigma`
+     value selection via `BaselineInsertProposal -> StickyOrStreamProposal`,
+     sticky nil-precommit semantics via
+     `BaselineStartNextRoundAfterPrecommitQuorum` and
+     `BaselineApplyLateNilPrecommitCertificate`, and decision freshness via
+     `BaselineDecide`'s `IsFreshForRound` precondition.
+   - Five new tests in `CrosslinkBaselineParameterizedShellTest` exercise the
+     inlined `BaselineNext` decision path, the evidence-set precommit-quorum
+     value-commit branch, the sticky nil-round-advance dispatch, and the
+     sub-threshold rejection.
+   - `BaselineSafety` alias is exposed at shell scope for the inlined
+     transition system's safety reasoning.
 5. Strengthen properties.
    - The focused and larger-instance `Safety` gates already include agreement,
      validity, and accountability; remaining work is to broaden the
@@ -299,10 +315,10 @@ remaining upstream-quality gaps.
      and `n7_f2` harnesses now cover the full faulty-evidence domain. The
      missing piece is finding tractable symbolic abstractions beyond the
      representative bounded and selected-evidence domains.
-2. Continue porting the full Tendermint transition surface into the
-   parameterized shell while preserving the baseline sticky nil-precommit rule.
-   The shell now exposes baseline-prefixed aliases for the focused transition
-   surface, but it is still not an upstream-identical transition system.
+2. DONE. `BaselineNext` is now a first-class transition system inlined in
+   `CrosslinkBaselineTenderlink.qnt`, with `BaselineUponPrecommitQuorumEvidence`
+   providing the upstream evidence-set parameter shape. Sticky nil-precommit
+   semantics are preserved by construction.
 3. Broaden the full-powerset faulty-evidence shapes that can be checked
    symbolically, without dropping agreement, validity, or accountability from
    the checked invariant.
