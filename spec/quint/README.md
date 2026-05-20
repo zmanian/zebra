@@ -93,7 +93,7 @@ domain.
 The triple-faulty `n4_f2` model extends the same tractable frontier to three
 arbitrary faulty proposals, prevotes, and precommits while avoiding the full
 powerset that exhausted Apalache in local probes.
-Single- and pair-faulty `n5_f2` models carry the full-domain symbolic
+Single-, pair-, and triple-faulty `n5_f2` models carry the full-domain symbolic
 abstraction into the larger above-live-boundary f=2 surface where correct
 validators can form f+1 catchup evidence but not a 2f+1 value quorum.
 Additional quick-check harnesses run the full
@@ -338,7 +338,7 @@ the Rust backend with `--backend=rust`. On this machine, Node `26.0.0` exposes a
 command is:
 
 ```sh
-QUINT="node /private/tmp/quint-global-patched/dist/src/cli.js"
+QUINT="node /private/tmp/quint-node26-patched-validround/dist/src/cli.js"
 ```
 
 If the global CLI works in your shell, use `quint` instead.
@@ -369,6 +369,9 @@ QUINT="$QUINT" JVM_ARGS=-Xmx8192m spec/quint/check.sh symbolic-baseline
 This typechecks the shared sticky Tenderlink model plus the named baseline
 Crosslink specs, runs the Rust witness tests, runs the Rust safety checks, and
 then runs the bounded Apalache checks for the baseline-only proof obligations.
+The CI workflow runs the symbolic baseline gate as two parallel slices:
+`symbolic-baseline-core` for the non-accountability finality/PoW checks and
+`symbolic-baseline-accountability` for the heavier faulty-evidence checks.
 
 Run the quick local sweep:
 
@@ -388,6 +391,8 @@ half of that baseline sweep:
 ```sh
 QUINT="$QUINT" spec/quint/check.sh quick-baseline
 QUINT="$QUINT" JVM_ARGS=-Xmx8192m spec/quint/check.sh symbolic-baseline
+QUINT="$QUINT" JVM_ARGS=-Xmx8192m spec/quint/check.sh symbolic-baseline-core
+QUINT="$QUINT" JVM_ARGS=-Xmx8192m spec/quint/check.sh symbolic-baseline-accountability
 ```
 
 If a local symbolic run reports an Apalache port collision, rerun with a fresh
@@ -545,6 +550,11 @@ $QUINT test spec/quint/CrosslinkBaselineAccountability.qnt \
   --backend=rust
 
 $QUINT test spec/quint/CrosslinkBaselineAccountability.qnt \
+  --main=CrosslinkBaselineTripleFaultyInitN5F2ForkingModel \
+  --max-samples=100 \
+  --backend=rust
+
+$QUINT test spec/quint/CrosslinkBaselineAccountability.qnt \
   --main=CrosslinkBaselineFullFaultyInitForkingModel \
   --max-samples=100 \
   --backend=rust
@@ -580,8 +590,8 @@ instance with bounded faulty proposal, prevote, and precommit powersets. The
 bounded n4/f2 and n5/f2 faulty-init models check representative f=2
 faulty-message domains in the symbolic gate, preserving the same
 fixed-sigma/forking value rule without attempting the full powerset.
-The n5/f2 single- and pair-faulty models then range over one or two arbitrary
-faulty proposals, prevotes, and precommits from the complete n5/f2
+The n5/f2 single-, pair-, and triple-faulty models then range over one, two, or
+three arbitrary faulty proposals, prevotes, and precommits from the complete n5/f2
 faulty-message domain while remaining tractable for the symbolic baseline gate.
 The full forking faulty-init model keeps the complete faulty proposal, prevote,
 and precommit powerset domain alive as a Rust-backed quick check for the same
@@ -1493,6 +1503,10 @@ complete `n5_f2` faulty-evidence domain.
 `BaselinePairN5F2ForkingFaultyInitSafety` checks a full-domain pair-faulty
 `n5_f2` abstraction in both the quick gate and the symbolic baseline gate, by
 selecting up to two arbitrary faulty proposals, prevotes, and precommits from
+the complete `n5_f2` faulty-evidence domain.
+`BaselineTripleN5F2ForkingFaultyInitSafety` checks a full-domain triple-faulty
+`n5_f2` abstraction in both the quick gate and the symbolic baseline gate, by
+selecting up to three arbitrary faulty proposals, prevotes, and precommits from
 the complete `n5_f2` faulty-evidence domain.
 `BaselineFullForkingFaultyInitSafety` checks the same fixed-sigma/forking
 baseline parameter surface against the full faulty-init domain in the quick

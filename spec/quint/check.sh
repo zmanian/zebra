@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: spec/quint/check.sh [quick|symbolic|all|quick-baseline|symbolic-baseline]
+Usage: spec/quint/check.sh [quick|symbolic|all|quick-baseline|symbolic-baseline|symbolic-baseline-core|symbolic-baseline-accountability]
 
 Modes:
   quick              typecheck all specs, run witness tests, and run Rust safety checks
@@ -11,9 +11,13 @@ Modes:
   all                run quick and symbolic
   quick-baseline     run only the baseline Crosslink quick checks
   symbolic-baseline  run only the baseline Crosslink bounded Apalache checks
+  symbolic-baseline-core
+                     run baseline non-accountability bounded Apalache checks
+  symbolic-baseline-accountability
+                     run baseline accountability bounded Apalache checks
 
 Set QUINT to override the command, for example:
-  QUINT="node /private/tmp/quint-global-patched/dist/src/cli.js" spec/quint/check.sh quick
+  QUINT="node /private/tmp/quint-node26-patched-validround/dist/src/cli.js" spec/quint/check.sh quick
 
 Set APALACHE_PORT_BASE to give each symbolic check a sequential local checker
 port, for example:
@@ -27,7 +31,9 @@ if [[
   "${mode}" != "symbolic" &&
   "${mode}" != "all" &&
   "${mode}" != "quick-baseline" &&
-  "${mode}" != "symbolic-baseline"
+  "${mode}" != "symbolic-baseline" &&
+  "${mode}" != "symbolic-baseline-core" &&
+  "${mode}" != "symbolic-baseline-accountability"
 ]]; then
   usage
   exit 2
@@ -173,6 +179,7 @@ quick_checks() {
   test_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineBoundedFaultyInitN5F2ForkingModel
   test_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineSingleFaultyInitN5F2ForkingModel
   test_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselinePairFaultyInitN5F2ForkingModel
+  test_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineTripleFaultyInitN5F2ForkingModel
   test_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineFullFaultyInitForkingModel
   test_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineFullFaultyInitN4F2ForkingModel
   test_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineFullFaultyInitN5F1ForkingModel
@@ -221,6 +228,7 @@ quick_checks() {
   run_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineBoundedFaultyInitN5F2ForkingModel InitWithRepresentativeN5F2FaultyEvidence Next 2 1000 BaselineBoundedN5F2ForkingFaultyInitSafety
   run_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineSingleFaultyInitN5F2ForkingModel InitWithSingleN5F2FaultyEvidence Next 2 1000 BaselineSingleN5F2ForkingFaultyInitSafety
   run_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselinePairFaultyInitN5F2ForkingModel InitWithPairN5F2FaultyEvidence Next 2 1000 BaselinePairN5F2ForkingFaultyInitSafety
+  run_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineTripleFaultyInitN5F2ForkingModel InitWithTripleN5F2FaultyEvidence Next 2 1000 BaselineTripleN5F2ForkingFaultyInitSafety
   run_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineFullFaultyInitForkingModel InitWithFaultyEvidence Next 2 100 BaselineFullForkingFaultyInitSafety
   run_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineFullFaultyInitN4F2ForkingModel InitWithFaultyEvidence Next 2 100 BaselineFullN4F2ForkingFaultyInitSafety
   run_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineFullFaultyInitN5F1ForkingModel InitWithFaultyEvidence Next 2 100 BaselineFullN5F1ForkingFaultyInitSafety
@@ -275,6 +283,7 @@ baseline_quick_checks() {
   test_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineBoundedFaultyInitN5F2ForkingModel
   test_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineSingleFaultyInitN5F2ForkingModel
   test_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselinePairFaultyInitN5F2ForkingModel
+  test_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineTripleFaultyInitN5F2ForkingModel
   test_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineFullFaultyInitForkingModel
   test_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineFullFaultyInitN4F2ForkingModel
   test_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineFullFaultyInitN5F1ForkingModel
@@ -309,6 +318,7 @@ baseline_quick_checks() {
   run_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineBoundedFaultyInitN5F2ForkingModel InitWithRepresentativeN5F2FaultyEvidence Next 2 1000 BaselineBoundedN5F2ForkingFaultyInitSafety
   run_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineSingleFaultyInitN5F2ForkingModel InitWithSingleN5F2FaultyEvidence Next 2 1000 BaselineSingleN5F2ForkingFaultyInitSafety
   run_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselinePairFaultyInitN5F2ForkingModel InitWithPairN5F2FaultyEvidence Next 2 1000 BaselinePairN5F2ForkingFaultyInitSafety
+  run_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineTripleFaultyInitN5F2ForkingModel InitWithTripleN5F2FaultyEvidence Next 2 1000 BaselineTripleN5F2ForkingFaultyInitSafety
   run_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineFullFaultyInitForkingModel InitWithFaultyEvidence Next 2 100 BaselineFullForkingFaultyInitSafety
   run_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineFullFaultyInitN4F2ForkingModel InitWithFaultyEvidence Next 2 100 BaselineFullN4F2ForkingFaultyInitSafety
   run_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineFullFaultyInitN5F1ForkingModel InitWithFaultyEvidence Next 2 100 BaselineFullN5F1ForkingFaultyInitSafety
@@ -344,6 +354,7 @@ symbolic_checks() {
   verify_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineBoundedFaultyInitN5F2ForkingModel 2 InitWithRepresentativeN5F2FaultyEvidence Next BaselineBoundedN5F2ForkingFaultyInitSafety
   verify_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineSingleFaultyInitN5F2ForkingModel 2 InitWithSingleN5F2FaultyEvidence Next BaselineSingleN5F2ForkingFaultyInitSafety
   verify_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselinePairFaultyInitN5F2ForkingModel 2 InitWithPairN5F2FaultyEvidence Next BaselinePairN5F2ForkingFaultyInitSafety
+  verify_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineTripleFaultyInitN5F2ForkingModel 2 InitWithTripleN5F2FaultyEvidence Next BaselineTripleN5F2ForkingFaultyInitSafety
   verify_model spec/quint/CrosslinkBaselineBftHeights.qnt CrosslinkBaselineBftHeightsModel 5 Init Next BaselineBftHeightSafety
   verify_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStableModel 5 ComposedInit ComposedNext ComposedSafety
   verify_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStreamChangeModel 5 ComposedInit ComposedNext ComposedSafety
@@ -374,7 +385,7 @@ symbolic_checks() {
   verify_model spec/quint/CrosslinkDynamicSigmaFinality.qnt CrosslinkDynamicSigmaFinalityModel 10 FullComposedInit FullComposedNext FullWorkCompetitionProjectionSafety
 }
 
-baseline_symbolic_checks() {
+baseline_symbolic_core_checks() {
   verify_model spec/quint/CrosslinkResampling.qnt CrosslinkStickyModel 3 Init Next Safety
   verify_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStableModel 3 Init Next BaselineSafety
   verify_model spec/quint/CrosslinkBaseline.qnt CrosslinkBaselineStreamChangeModel 3 Init Next BaselineSafety
@@ -383,6 +394,18 @@ baseline_symbolic_checks() {
   verify_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN4F2ForkingTest 2 Init Next BaselineN4F2ForkingSafety
   verify_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN5F2ForkingTest 2 Init Next BaselineN5F2ForkingSafety
   verify_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN7F2ForkingTest 2 Init Next BaselineN7F2ForkingSafety
+  verify_model spec/quint/CrosslinkBaselineBftHeights.qnt CrosslinkBaselineBftHeightsModel 5 Init Next BaselineBftHeightSafety
+  verify_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStableModel 5 ComposedInit ComposedNext ComposedSafety
+  verify_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStreamChangeModel 5 ComposedInit ComposedNext ComposedSafety
+  verify_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityLivenessModel 9 LivenessInit LivenessStep LivenessSafety
+  verify_model spec/quint/CrosslinkBaselinePowSampling.qnt CrosslinkBaselinePowSamplingModel 3 Init Next BaselinePowSamplingSafety
+  verify_model spec/quint/CrosslinkBaselinePowSampling.qnt CrosslinkBaselinePowLongReorgModel 3 Init Next BaselinePowLongReorgSafety
+  verify_model spec/quint/CrosslinkBaselinePowSampling.qnt CrosslinkBaselinePowGeneratedScheduleModel 3 Init Next BaselinePowGeneratedScheduleSafety
+  verify_model spec/quint/CrosslinkBaselinePowSampling.qnt CrosslinkBaselinePowRepeatedGeneratedScheduleModel 3 Init Next BaselinePowRepeatedGeneratedScheduleSafety
+  verify_model spec/quint/CrosslinkBaselinePowSampling.qnt CrosslinkBaselinePowStochasticProductionModel 3 Init Next BaselinePowStochasticProductionSafety
+}
+
+baseline_symbolic_accountability_checks() {
   verify_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineAccountabilityModel 3 Init Next BaselineAccountabilitySafety
   verify_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineFaultyInitTinyModel 2 InitWithFaultyEvidence Next BaselineFaultyInitSafety
   verify_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineFaultyInitForkingModel 2 InitWithBoundedForkingFaultyEvidence Next BaselineForkingFaultyInitSafety
@@ -393,15 +416,12 @@ baseline_symbolic_checks() {
   verify_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineBoundedFaultyInitN5F2ForkingModel 2 InitWithRepresentativeN5F2FaultyEvidence Next BaselineBoundedN5F2ForkingFaultyInitSafety
   verify_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineSingleFaultyInitN5F2ForkingModel 2 InitWithSingleN5F2FaultyEvidence Next BaselineSingleN5F2ForkingFaultyInitSafety
   verify_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselinePairFaultyInitN5F2ForkingModel 2 InitWithPairN5F2FaultyEvidence Next BaselinePairN5F2ForkingFaultyInitSafety
-  verify_model spec/quint/CrosslinkBaselineBftHeights.qnt CrosslinkBaselineBftHeightsModel 5 Init Next BaselineBftHeightSafety
-  verify_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStableModel 5 ComposedInit ComposedNext ComposedSafety
-  verify_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStreamChangeModel 5 ComposedInit ComposedNext ComposedSafety
-  verify_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityLivenessModel 9 LivenessInit LivenessStep LivenessSafety
-  verify_model spec/quint/CrosslinkBaselinePowSampling.qnt CrosslinkBaselinePowSamplingModel 3 Init Next BaselinePowSamplingSafety
-  verify_model spec/quint/CrosslinkBaselinePowSampling.qnt CrosslinkBaselinePowLongReorgModel 3 Init Next BaselinePowLongReorgSafety
-  verify_model spec/quint/CrosslinkBaselinePowSampling.qnt CrosslinkBaselinePowGeneratedScheduleModel 3 Init Next BaselinePowGeneratedScheduleSafety
-  verify_model spec/quint/CrosslinkBaselinePowSampling.qnt CrosslinkBaselinePowRepeatedGeneratedScheduleModel 3 Init Next BaselinePowRepeatedGeneratedScheduleSafety
-  verify_model spec/quint/CrosslinkBaselinePowSampling.qnt CrosslinkBaselinePowStochasticProductionModel 3 Init Next BaselinePowStochasticProductionSafety
+  verify_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineTripleFaultyInitN5F2ForkingModel 2 InitWithTripleN5F2FaultyEvidence Next BaselineTripleN5F2ForkingFaultyInitSafety
+}
+
+baseline_symbolic_checks() {
+  baseline_symbolic_core_checks
+  baseline_symbolic_accountability_checks
 }
 
 case "${mode}" in
@@ -416,6 +436,12 @@ case "${mode}" in
     ;;
   symbolic-baseline)
     baseline_symbolic_checks
+    ;;
+  symbolic-baseline-core)
+    baseline_symbolic_core_checks
+    ;;
+  symbolic-baseline-accountability)
+    baseline_symbolic_accountability_checks
     ;;
   all)
     quick_checks

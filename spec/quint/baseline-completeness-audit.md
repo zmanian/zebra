@@ -98,9 +98,9 @@ The current branch has these baseline-specific files:
   - adds single-/pair-/triple-faulty `n4_f2` symbolic harnesses that select
     one to three arbitrary faulty proposals, prevotes, and precommits from the
     full `n4_f2` faulty evidence domains
-  - adds single-/pair-faulty `n5_f2` symbolic harnesses that select one or two
-    arbitrary faulty proposals, prevotes, and precommits from the larger full
-    `n5_f2` faulty evidence domains
+  - adds single-/pair-/triple-faulty `n5_f2` symbolic harnesses that select one
+    to three arbitrary faulty proposals, prevotes, and precommits from the
+    larger full `n5_f2` faulty evidence domains
   - adds quick-check-only fixed-sigma/forking faulty-init harnesses for `n4_f1`,
     `n4_f2`, `n5_f1`, `n5_f2`, and `n7_f2` using the full faulty proposal,
     prevote, and precommit powerset domains
@@ -120,11 +120,13 @@ The current branch has these baseline-specific files:
   - shared focused Tenderlink model used by both baseline and proposed
     nil-precommit resampling variants
 - `check.sh`
-  - provides `quick-baseline` and `symbolic-baseline` gates
+  - provides `quick-baseline`, `symbolic-baseline`,
+    `symbolic-baseline-core`, and `symbolic-baseline-accountability` gates
   - supports `APALACHE_PORT_BASE` for sequential symbolic checker ports during
     long local runs
 - `.github/workflows/quint-crosslink.yml`
-  - runs baseline quick and symbolic checks on the personal fork
+  - runs baseline quick checks and parallel core/accountability symbolic checks
+    on the personal fork
 - `baseline-upstream-crosswalk.md`
   - maps the upstream Tendermint Quint surface to the baseline Crosslink
     artifacts and names the remaining upstream-quality gaps
@@ -147,7 +149,7 @@ The current branch has these baseline-specific files:
 | Baseline nil precommit preserves same-round value locks | `baselineNilPrecommitDoesNotClearSameRoundValueLockTest` | Covered |
 | Conflicting commits expose accountability evidence | `baselineConflictingCommitsWithoutUnlockExposeAmnesiaTest` | Covered as a witness |
 | Automated local baseline quick gate | `check.sh quick-baseline` | Covered |
-| Automated local baseline symbolic gate | `check.sh symbolic-baseline` | Covered |
+| Automated local baseline symbolic gate | `check.sh symbolic-baseline`; `check.sh symbolic-baseline-core`; `check.sh symbolic-baseline-accountability` | Covered |
 | Automated CI baseline gates | `.github/workflows/quint-crosslink.yml` | Covered structurally; requires green run evidence per commit |
 | Parameterized `Corr/Faulty/N/T` validator model | `CrosslinkBaselineTenderlink.qnt`; `BaselineInitWithFaultyEvidence`; `BaselineStartRound`; `BaselineNext`; baseline-prefixed proposal, vote, timeout, nil, round-advance, catchup, and decision aliases; `BaselineFaultyInitSafety`; `CrosslinkBaselineParameterizedShellTest` | Partial; parameter shell now exposes the full faulty-init evidence surface plus the focused transition surface through baseline-prefixed aliases, while the full upstream-identical transition surface is still not ported |
 | Upstream-style model instances (`n4_f1`, `n4_f2`, `n5_f2`) | `CrosslinkBaselineModels.qnt`; `n4_f1_stable`, `n4_f1_forking`, `n5_f1_forking`, `n4_f2_forking`, `n5_f2_forking`, `n7_f2_forking` | Covered as named focused instances with shallow symbolic coverage for the `f = 2` safety gates |
@@ -155,7 +157,7 @@ The current branch has these baseline-specific files:
 | Upstream-style stream-change/sticky-sample test | `CrosslinkBaselineTest.qnt`; `streamChangeDerivesFreshHeadMinusSigmaTest`; `stickyBaselineCarriesStaleFixedSigmaSampleTest` | Covered for `n4_f1_forking` |
 | Fault-boundary behavior for `f = 2` | `CrosslinkBaselineTest.qnt`; `n4F2DocumentsAboveLiveFaultBoundaryTest`; `n5F2CatchupEvidenceButNoCorrectValueQuorumTest`; `n7F2DecisionPathTest`; `symbolic-baseline` depth-2 checks for `BaselineN4F2ForkingSafety`, `BaselineN5F2ForkingSafety`, and `BaselineN7F2ForkingSafety` | Covered by Rust-backed witnesses and shallow symbolic gates |
 | Faulty proposal/prevote/precommit evidence reaches equivocation predicates | `CrosslinkBaselineAccountability.qnt`; `baselineFaultyProposalEvidenceFeedsEquivocationTest`; `baselineFaultyPrevoteEvidenceFeedsEquivocationTest`; `baselineFaultyNilValuePrecommitEvidenceFeedsEquivocationTest` | Covered as witnesses |
-| Nondeterministic faulty message injection in `Init` | `BaselineInitWithFaultyEvidence`; `BaselineNext`; `CrosslinkBaselineParameterizedShellTest`; `InitWithFaultyEvidence`; `InitWithSingleN4F2FaultyEvidence`; `InitWithPairN4F2FaultyEvidence`; `InitWithTripleN4F2FaultyEvidence`; `InitWithSingleN5F2FaultyEvidence`; `InitWithPairN5F2FaultyEvidence`; `CrosslinkBaselineFaultyInitTinyModel`; `CrosslinkBaselineFaultyInitForkingModel`; `CrosslinkBaselineBoundedFaultyInitN4F2ForkingModel`; `CrosslinkBaselineSingleFaultyInitN4F2ForkingModel`; `CrosslinkBaselinePairFaultyInitN4F2ForkingModel`; `CrosslinkBaselineTripleFaultyInitN4F2ForkingModel`; `CrosslinkBaselineBoundedFaultyInitN5F2ForkingModel`; `CrosslinkBaselineSingleFaultyInitN5F2ForkingModel`; `CrosslinkBaselinePairFaultyInitN5F2ForkingModel`; `CrosslinkBaselineFullFaultyInitForkingModel`; `CrosslinkBaselineFullFaultyInitN4F2ForkingModel`; `CrosslinkBaselineFullFaultyInitN5F1ForkingModel`; `CrosslinkBaselineFullFaultyInitN5F2ForkingModel`; `CrosslinkBaselineFullFaultyInitN7F2ForkingModel`; `BaselineFaultyInitSafety`; `BaselineForkingFaultyInitSafety`; `BaselineBoundedN4F2ForkingFaultyInitSafety`; `BaselineSingleN4F2ForkingFaultyInitSafety`; `BaselinePairN4F2ForkingFaultyInitSafety`; `BaselineTripleN4F2ForkingFaultyInitSafety`; `BaselineBoundedN5F2ForkingFaultyInitSafety`; `BaselineSingleN5F2ForkingFaultyInitSafety`; `BaselinePairN5F2ForkingFaultyInitSafety`; `BaselineFullForkingFaultyInitSafety`; `BaselineFullN4F2ForkingFaultyInitSafety`; `BaselineFullN5F1ForkingFaultyInitSafety`; `BaselineFullN5F2ForkingFaultyInitSafety`; `BaselineFullN7F2ForkingFaultyInitSafety` | Partial; exposed through the parameterized shell and covered by a tiny full-powerset instance, bounded symbolic fixed-sigma/forking instances for `n4_f1`, representative `n4_f2` and `n5_f2`, single-/pair-/triple-faulty full-domain `n4_f2` abstractions, single-/pair-faulty full-domain `n5_f2` abstractions, and quick-check full-powerset fixed-sigma/forking `n4_f1`, `n4_f2`, `n5_f1`, `n5_f2`, and `n7_f2` instances; not yet lifted into symbolic gates for the full-powerset larger instances |
+| Nondeterministic faulty message injection in `Init` | `BaselineInitWithFaultyEvidence`; `BaselineNext`; `CrosslinkBaselineParameterizedShellTest`; `InitWithFaultyEvidence`; `InitWithSingleN4F2FaultyEvidence`; `InitWithPairN4F2FaultyEvidence`; `InitWithTripleN4F2FaultyEvidence`; `InitWithSingleN5F2FaultyEvidence`; `InitWithPairN5F2FaultyEvidence`; `InitWithTripleN5F2FaultyEvidence`; `CrosslinkBaselineFaultyInitTinyModel`; `CrosslinkBaselineFaultyInitForkingModel`; `CrosslinkBaselineBoundedFaultyInitN4F2ForkingModel`; `CrosslinkBaselineSingleFaultyInitN4F2ForkingModel`; `CrosslinkBaselinePairFaultyInitN4F2ForkingModel`; `CrosslinkBaselineTripleFaultyInitN4F2ForkingModel`; `CrosslinkBaselineBoundedFaultyInitN5F2ForkingModel`; `CrosslinkBaselineSingleFaultyInitN5F2ForkingModel`; `CrosslinkBaselinePairFaultyInitN5F2ForkingModel`; `CrosslinkBaselineTripleFaultyInitN5F2ForkingModel`; `CrosslinkBaselineFullFaultyInitForkingModel`; `CrosslinkBaselineFullFaultyInitN4F2ForkingModel`; `CrosslinkBaselineFullFaultyInitN5F1ForkingModel`; `CrosslinkBaselineFullFaultyInitN5F2ForkingModel`; `CrosslinkBaselineFullFaultyInitN7F2ForkingModel`; `BaselineFaultyInitSafety`; `BaselineForkingFaultyInitSafety`; `BaselineBoundedN4F2ForkingFaultyInitSafety`; `BaselineSingleN4F2ForkingFaultyInitSafety`; `BaselinePairN4F2ForkingFaultyInitSafety`; `BaselineTripleN4F2ForkingFaultyInitSafety`; `BaselineBoundedN5F2ForkingFaultyInitSafety`; `BaselineSingleN5F2ForkingFaultyInitSafety`; `BaselinePairN5F2ForkingFaultyInitSafety`; `BaselineTripleN5F2ForkingFaultyInitSafety`; `BaselineFullForkingFaultyInitSafety`; `BaselineFullN4F2ForkingFaultyInitSafety`; `BaselineFullN5F1ForkingFaultyInitSafety`; `BaselineFullN5F2ForkingFaultyInitSafety`; `BaselineFullN7F2ForkingFaultyInitSafety` | Partial; exposed through the parameterized shell and covered by a tiny full-powerset instance, bounded symbolic fixed-sigma/forking instances for `n4_f1`, representative `n4_f2` and `n5_f2`, single-/pair-/triple-faulty full-domain `n4_f2` abstractions, single-/pair-/triple-faulty full-domain `n5_f2` abstractions, and quick-check full-powerset fixed-sigma/forking `n4_f1`, `n4_f2`, `n5_f1`, `n5_f2`, and `n7_f2` instances; not yet lifted into symbolic gates for the full-powerset larger instances |
 | Full Tendermint transition surface | Current model covers StartRound-style round initialization, value prevote quorum, nil prevote quorum, split nil-valid-round and concrete-valid-round proposal handlers, validRound proposal justification, correct-value-prevote proposal provenance, propose/prevote/precommit timeout paths, stream-change nil precommit, late nil-precommit certificate handling as a disabled sticky-baseline alias, round advance after precommit quorum, timeout round advance, future-round catchup, and decision | Covered for the focused baseline shell; still not a full upstream port |
 | Full agreement/validity/accountability invariant suite over arbitrary evidence | `Safety` includes `Agreement`, `Validity`, and `Accountability` in the focused symbolic gates; current suite also has bounded faulty-init gates plus focused accountability witnesses | Partial; larger full-powerset faulty-evidence surfaces are still quick-check-only rather than symbolic |
 | False-invariant/counterexample harnesses for amnesia/equivocation/agreement | `CrosslinkBaselineCounterexampleModel`; `falseNoConflictingCommitsInvariantFailsTest`; `falseNoAmnesiaEvidenceInvariantFailsTest`; `falseNoEquivocationEvidenceInvariantFailsTest`; `falseAgreementInvariantFailsTest`; `falseAgreementOrAmnesiaInvariantFailsTest`; `falseAmnesiaImpliesEquivocationInvariantFailsTest`; `falseShowMeAmnesiaWithoutEquivocationInvariantFailsTest`; `falseNeverUndecidedInMaxRoundInvariantFailsTest` | Covered as seeded Rust witnesses; not yet an arbitrary-evidence symbolic suite |
@@ -168,8 +170,9 @@ The current branch has these baseline-specific files:
 
 To finish a focused baseline artifact, the remaining work is:
 
-1. Keep `quick-baseline` and `symbolic-baseline` green locally and in CI for the
-   current commit.
+1. Keep `quick-baseline`, `symbolic-baseline-core`, and
+   `symbolic-baseline-accountability` green locally and in CI for the current
+   commit.
 2. Keep the baseline limitation explicit: stream changes between prevote and
    precommit can leave the sticky baseline carrying a stale fixed-sigma sample
    and can halt fresh finality.
@@ -209,7 +212,7 @@ remaining upstream-quality gaps.
      `quick-baseline`.
    - The single-/pair-/triple-faulty `n4_f2` harnesses symbolically range over one
      to three arbitrary faulty proposals, prevotes, and precommits from the full
-     `n4_f2` domain at max depth 2, and single-/pair-faulty `n5_f2`
+     `n4_f2` domain at max depth 2, and single-/pair-/triple-faulty `n5_f2`
      harnesses range over the larger full `n5_f2` domain at max depth 2;
      remaining work is broader symbolic coverage that stays tractable. A local
      Apalache probe of
@@ -272,8 +275,8 @@ remaining upstream-quality gaps.
      idea into f=2 symbolic checks without expanding the full powerset.
    - Single-/pair-/triple-faulty `n4_f2` harnesses now symbolically range over the
      full faulty-evidence domain while bounding the selected evidence set size.
-   - Single-/pair-faulty `n5_f2` harnesses now range over the larger full
-     faulty-evidence domain at max depth 2.
+   - Single-/pair-/triple-faulty `n5_f2` harnesses now range over the larger
+     full faulty-evidence domain at max depth 2.
    - The parameterized shell now exposes the full faulty-init surface and
      transition step through baseline-prefixed aliases.
    - Quick-check-only fixed-sigma/forking `n4_f1`, `n4_f2`, `n5_f1`, `n5_f2`,
@@ -287,8 +290,10 @@ remaining upstream-quality gaps.
 3. Broaden the full-powerset faulty-evidence shapes that can be checked
    symbolically, without dropping agreement, validity, or accountability from
    the checked invariant.
-4. Revisit CI timeout and split symbolic jobs if the parameterized model makes
-   Apalache too heavy.
+4. Keep watching CI runtime as the symbolic frontier expands. The workflow now
+   splits baseline symbolic checks into core and accountability matrix jobs, so
+   additional work should preserve that parallel structure or add further
+   slices before the 20-minute timeout becomes tight again.
 
 ## Completion Standard
 

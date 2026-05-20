@@ -37,9 +37,17 @@ jobs:
         run: spec/quint/check.sh quick-baseline
 
   baseline-symbolic:
-    name: Baseline symbolic checks
+    name: Baseline symbolic checks (${{ matrix.name }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: core
+            mode: symbolic-baseline-core
+          - name: accountability
+            mode: symbolic-baseline-accountability
     steps:
       - uses: actions/checkout@v4
         with:
@@ -63,4 +71,4 @@ jobs:
       - name: Run baseline symbolic checks
         env:
           JVM_ARGS: -Xmx8192m
-        run: spec/quint/check.sh symbolic-baseline
+        run: spec/quint/check.sh ${{ matrix.mode }}
