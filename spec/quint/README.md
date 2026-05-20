@@ -609,7 +609,8 @@ the proper f=2 BFT-boundary surface while the symbolic gate stays bounded. The
 counterexample model uses `.fail()` witnesses for false
 no-conflicting-commit, no-amnesia, no-equivocation, agreement,
 agreement-or-amnesia, amnesia-implies-equivocation,
-amnesia-without-equivocation, and undecided max-round claims.
+amnesia-without-equivocation, undecided max-round, and sticky-baseline
+nil-precommit unlock claims.
 
 Witness baseline BFT-heighted finality:
 

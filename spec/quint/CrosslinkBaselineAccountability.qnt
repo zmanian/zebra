@@ -1935,6 +1935,16 @@ module CrosslinkBaselineCounterexampleModel {
     Corr.forall(p => round.get(p) == MaxRound) implies
       Corr.forall(p => decision.get(p) != NilSnapshot)
 
+  val NilPrecommitClearsSameRoundTendermintState =
+    Corr.forall(p =>
+      Rounds.forall(r =>
+        (round.get(p) > r and NilPrecommitCert(r)) implies all {
+          not(validRound.get(p) == r and validValue.get(p) != NilSnapshot),
+          not(lockedRound.get(p) == r and lockedValue.get(p) != NilSnapshot),
+        }
+      )
+    )
+
   action SeedConflictingDecisions: bool =
     all {
       decision' = decision.set("p1", "s0").set("p2", "s1"),
@@ -2066,6 +2076,20 @@ module CrosslinkBaselineCounterexampleModel {
       .then(SeedAllCorrectAtMaxRoundWithoutDecision)
       .then(all {
         NeverUndecidedInMaxRound,
+        unchangedAll,
+      })
+      .fail()
+  }
+
+  run falseNilPrecommitClearsSameRoundLockInvariantFailsTest = {
+    Init
+      .then(SeedValidNilPrecommitState("p1"))
+      .then(SeedValidNilPrecommitState("p2"))
+      .then(SeedFaultyNilPrecommit("p4"))
+      .then(SeedSameRoundValueLock("p3"))
+      .then(StartNextRoundAfterPrecommitQuorum("p3"))
+      .then(all {
+        NilPrecommitClearsSameRoundTendermintState,
         unchangedAll,
       })
       .fail()
