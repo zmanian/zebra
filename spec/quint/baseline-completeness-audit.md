@@ -95,9 +95,12 @@ The current branch has these baseline-specific files:
   - adds representative bounded `n4_f2` and `n5_f2` faulty-init harnesses to
     the symbolic gate so f=2 faulty evidence is checked beyond the
     tiny/one-fault shape
-  - adds a single-faulty `n4_f2` symbolic harness that selects one arbitrary
-    faulty proposal, prevote, and precommit from the full `n4_f2` faulty
-    evidence domains
+  - adds single-/pair-/triple-faulty `n4_f2` symbolic harnesses that select
+    one to three arbitrary faulty proposals, prevotes, and precommits from the
+    full `n4_f2` faulty evidence domains
+  - adds single-/pair-faulty `n5_f2` symbolic harnesses that select one or two
+    arbitrary faulty proposals, prevotes, and precommits from the larger full
+    `n5_f2` faulty evidence domains
   - adds quick-check-only fixed-sigma/forking faulty-init harnesses for `n4_f1`,
     `n4_f2`, `n5_f1`, `n5_f2`, and `n7_f2` using the full faulty proposal,
     prevote, and precommit powerset domains
@@ -152,7 +155,7 @@ The current branch has these baseline-specific files:
 | Upstream-style stream-change/sticky-sample test | `CrosslinkBaselineTest.qnt`; `streamChangeDerivesFreshHeadMinusSigmaTest`; `stickyBaselineCarriesStaleFixedSigmaSampleTest` | Covered for `n4_f1_forking` |
 | Fault-boundary behavior for `f = 2` | `CrosslinkBaselineTest.qnt`; `n4F2DocumentsAboveLiveFaultBoundaryTest`; `n5F2CatchupEvidenceButNoCorrectValueQuorumTest`; `n7F2DecisionPathTest`; `symbolic-baseline` depth-2 checks for `BaselineN4F2ForkingSafety`, `BaselineN5F2ForkingSafety`, and `BaselineN7F2ForkingSafety` | Covered by Rust-backed witnesses and shallow symbolic gates |
 | Faulty proposal/prevote/precommit evidence reaches equivocation predicates | `CrosslinkBaselineAccountability.qnt`; `baselineFaultyProposalEvidenceFeedsEquivocationTest`; `baselineFaultyPrevoteEvidenceFeedsEquivocationTest`; `baselineFaultyNilValuePrecommitEvidenceFeedsEquivocationTest` | Covered as witnesses |
-| Nondeterministic faulty message injection in `Init` | `BaselineInitWithFaultyEvidence`; `BaselineNext`; `CrosslinkBaselineParameterizedShellTest`; `InitWithFaultyEvidence`; `InitWithSingleN4F2FaultyEvidence`; `InitWithPairN4F2FaultyEvidence`; `InitWithTripleN4F2FaultyEvidence`; `InitWithSingleN5F2FaultyEvidence`; `CrosslinkBaselineFaultyInitTinyModel`; `CrosslinkBaselineFaultyInitForkingModel`; `CrosslinkBaselineBoundedFaultyInitN4F2ForkingModel`; `CrosslinkBaselineSingleFaultyInitN4F2ForkingModel`; `CrosslinkBaselinePairFaultyInitN4F2ForkingModel`; `CrosslinkBaselineTripleFaultyInitN4F2ForkingModel`; `CrosslinkBaselineBoundedFaultyInitN5F2ForkingModel`; `CrosslinkBaselineSingleFaultyInitN5F2ForkingModel`; `CrosslinkBaselineFullFaultyInitForkingModel`; `CrosslinkBaselineFullFaultyInitN4F2ForkingModel`; `CrosslinkBaselineFullFaultyInitN5F1ForkingModel`; `CrosslinkBaselineFullFaultyInitN5F2ForkingModel`; `CrosslinkBaselineFullFaultyInitN7F2ForkingModel`; `BaselineFaultyInitSafety`; `BaselineForkingFaultyInitSafety`; `BaselineBoundedN4F2ForkingFaultyInitSafety`; `BaselineSingleN4F2ForkingFaultyInitSafety`; `BaselinePairN4F2ForkingFaultyInitSafety`; `BaselineTripleN4F2ForkingFaultyInitSafety`; `BaselineBoundedN5F2ForkingFaultyInitSafety`; `BaselineSingleN5F2ForkingFaultyInitSafety`; `BaselineFullForkingFaultyInitSafety`; `BaselineFullN4F2ForkingFaultyInitSafety`; `BaselineFullN5F1ForkingFaultyInitSafety`; `BaselineFullN5F2ForkingFaultyInitSafety`; `BaselineFullN7F2ForkingFaultyInitSafety` | Partial; exposed through the parameterized shell and covered by a tiny full-powerset instance, bounded symbolic fixed-sigma/forking instances for `n4_f1`, representative `n4_f2` and `n5_f2`, single-/pair-/triple-faulty full-domain `n4_f2` abstractions, a single-faulty full-domain `n5_f2` abstraction, and quick-check full-powerset fixed-sigma/forking `n4_f1`, `n4_f2`, `n5_f1`, `n5_f2`, and `n7_f2` instances; not yet lifted into symbolic gates for the full-powerset larger instances |
+| Nondeterministic faulty message injection in `Init` | `BaselineInitWithFaultyEvidence`; `BaselineNext`; `CrosslinkBaselineParameterizedShellTest`; `InitWithFaultyEvidence`; `InitWithSingleN4F2FaultyEvidence`; `InitWithPairN4F2FaultyEvidence`; `InitWithTripleN4F2FaultyEvidence`; `InitWithSingleN5F2FaultyEvidence`; `InitWithPairN5F2FaultyEvidence`; `CrosslinkBaselineFaultyInitTinyModel`; `CrosslinkBaselineFaultyInitForkingModel`; `CrosslinkBaselineBoundedFaultyInitN4F2ForkingModel`; `CrosslinkBaselineSingleFaultyInitN4F2ForkingModel`; `CrosslinkBaselinePairFaultyInitN4F2ForkingModel`; `CrosslinkBaselineTripleFaultyInitN4F2ForkingModel`; `CrosslinkBaselineBoundedFaultyInitN5F2ForkingModel`; `CrosslinkBaselineSingleFaultyInitN5F2ForkingModel`; `CrosslinkBaselinePairFaultyInitN5F2ForkingModel`; `CrosslinkBaselineFullFaultyInitForkingModel`; `CrosslinkBaselineFullFaultyInitN4F2ForkingModel`; `CrosslinkBaselineFullFaultyInitN5F1ForkingModel`; `CrosslinkBaselineFullFaultyInitN5F2ForkingModel`; `CrosslinkBaselineFullFaultyInitN7F2ForkingModel`; `BaselineFaultyInitSafety`; `BaselineForkingFaultyInitSafety`; `BaselineBoundedN4F2ForkingFaultyInitSafety`; `BaselineSingleN4F2ForkingFaultyInitSafety`; `BaselinePairN4F2ForkingFaultyInitSafety`; `BaselineTripleN4F2ForkingFaultyInitSafety`; `BaselineBoundedN5F2ForkingFaultyInitSafety`; `BaselineSingleN5F2ForkingFaultyInitSafety`; `BaselinePairN5F2ForkingFaultyInitSafety`; `BaselineFullForkingFaultyInitSafety`; `BaselineFullN4F2ForkingFaultyInitSafety`; `BaselineFullN5F1ForkingFaultyInitSafety`; `BaselineFullN5F2ForkingFaultyInitSafety`; `BaselineFullN7F2ForkingFaultyInitSafety` | Partial; exposed through the parameterized shell and covered by a tiny full-powerset instance, bounded symbolic fixed-sigma/forking instances for `n4_f1`, representative `n4_f2` and `n5_f2`, single-/pair-/triple-faulty full-domain `n4_f2` abstractions, single-/pair-faulty full-domain `n5_f2` abstractions, and quick-check full-powerset fixed-sigma/forking `n4_f1`, `n4_f2`, `n5_f1`, `n5_f2`, and `n7_f2` instances; not yet lifted into symbolic gates for the full-powerset larger instances |
 | Full Tendermint transition surface | Current model covers StartRound-style round initialization, value prevote quorum, nil prevote quorum, split nil-valid-round and concrete-valid-round proposal handlers, validRound proposal justification, correct-value-prevote proposal provenance, propose/prevote/precommit timeout paths, stream-change nil precommit, late nil-precommit certificate handling as a disabled sticky-baseline alias, round advance after precommit quorum, timeout round advance, future-round catchup, and decision | Covered for the focused baseline shell; still not a full upstream port |
 | Full agreement/validity/accountability invariant suite over arbitrary evidence | `Safety` includes `Agreement`, `Validity`, and `Accountability` in the focused symbolic gates; current suite also has bounded faulty-init gates plus focused accountability witnesses | Partial; larger full-powerset faulty-evidence surfaces are still quick-check-only rather than symbolic |
 | False-invariant/counterexample harnesses for amnesia/equivocation/agreement | `CrosslinkBaselineCounterexampleModel`; `falseNoConflictingCommitsInvariantFailsTest`; `falseNoAmnesiaEvidenceInvariantFailsTest`; `falseNoEquivocationEvidenceInvariantFailsTest`; `falseAgreementInvariantFailsTest`; `falseAgreementOrAmnesiaInvariantFailsTest`; `falseAmnesiaImpliesEquivocationInvariantFailsTest`; `falseShowMeAmnesiaWithoutEquivocationInvariantFailsTest`; `falseNeverUndecidedInMaxRoundInvariantFailsTest` | Covered as seeded Rust witnesses; not yet an arbitrary-evidence symbolic suite |
@@ -206,9 +209,10 @@ remaining upstream-quality gaps.
      `quick-baseline`.
    - The single-/pair-/triple-faulty `n4_f2` harnesses symbolically range over one
      to three arbitrary faulty proposals, prevotes, and precommits from the full
-     `n4_f2` domain at max depth 2, and a single-faulty `n5_f2` harness ranges
-     over the larger full `n5_f2` domain at max depth 2; remaining work is broader symbolic
-     coverage that stays tractable. A local Apalache probe of
+     `n4_f2` domain at max depth 2, and single-/pair-faulty `n5_f2`
+     harnesses range over the larger full `n5_f2` domain at max depth 2;
+     remaining work is broader symbolic coverage that stays tractable. A local
+     Apalache probe of
      `CrosslinkBaselineFullFaultyInitN4F2ForkingModel` at max depth 1 exhausted
      the default 4GB JVM heap, so the current quick-only boundary for larger
      full-powerset instances is a real tractability limit rather than an
@@ -268,7 +272,7 @@ remaining upstream-quality gaps.
      idea into f=2 symbolic checks without expanding the full powerset.
    - Single-/pair-/triple-faulty `n4_f2` harnesses now symbolically range over the
      full faulty-evidence domain while bounding the selected evidence set size.
-   - A single-faulty `n5_f2` harness now ranges over the larger full
+   - Single-/pair-faulty `n5_f2` harnesses now range over the larger full
      faulty-evidence domain at max depth 2.
    - The parameterized shell now exposes the full faulty-init surface and
      transition step through baseline-prefixed aliases.
