@@ -81,8 +81,9 @@ faulty proposal, prevote, and precommit powersets in the initial state, while
 keeping the instance small enough for the baseline proof gate. A second
 faulty-init model lifts the same idea into the fixed-sigma/forking `n4_f1`
 parameter surface with a bounded faulty-evidence domain so symbolic checking
-remains tractable. Representative bounded `n4_f2` and `n5_f2` faulty-init
-models add tractable f=2 symbolic gates without using the full powerset.
+remains tractable. Representative bounded `n4_f2`, `n5_f2`, and `n7_f2`
+faulty-init models add tractable f=2 symbolic gates without using the full
+powerset.
 The single-faulty `n4_f2` model then ranges over one arbitrary faulty
 proposal, prevote, and precommit from the full `n4_f2` domain, giving a
 stronger symbolic abstraction than the representative fixtures while still
@@ -526,6 +527,11 @@ $QUINT test spec/quint/CrosslinkBaselineAccountability.qnt \
   --backend=rust
 
 $QUINT test spec/quint/CrosslinkBaselineAccountability.qnt \
+  --main=CrosslinkBaselineBoundedFaultyInitN4F2ForkingModel \
+  --max-samples=100 \
+  --backend=rust
+
+$QUINT test spec/quint/CrosslinkBaselineAccountability.qnt \
   --main=CrosslinkBaselineSingleFaultyInitN4F2ForkingModel \
   --max-samples=100 \
   --backend=rust
@@ -541,6 +547,11 @@ $QUINT test spec/quint/CrosslinkBaselineAccountability.qnt \
   --backend=rust
 
 $QUINT test spec/quint/CrosslinkBaselineAccountability.qnt \
+  --main=CrosslinkBaselineBoundedFaultyInitN5F2ForkingModel \
+  --max-samples=100 \
+  --backend=rust
+
+$QUINT test spec/quint/CrosslinkBaselineAccountability.qnt \
   --main=CrosslinkBaselineSingleFaultyInitN5F2ForkingModel \
   --max-samples=100 \
   --backend=rust
@@ -552,6 +563,11 @@ $QUINT test spec/quint/CrosslinkBaselineAccountability.qnt \
 
 $QUINT test spec/quint/CrosslinkBaselineAccountability.qnt \
   --main=CrosslinkBaselineTripleFaultyInitN5F2ForkingModel \
+  --max-samples=100 \
+  --backend=rust
+
+$QUINT test spec/quint/CrosslinkBaselineAccountability.qnt \
+  --main=CrosslinkBaselineBoundedFaultyInitN7F2ForkingModel \
   --max-samples=100 \
   --backend=rust
 
@@ -588,7 +604,7 @@ faulty-init model checks the upstream-style
 `InitWithFaultyEvidence` path with nondeterministic faulty message powersets.
 The forking faulty-init model checks a larger fixed-sigma/forking baseline
 instance with bounded faulty proposal, prevote, and precommit powersets. The
-bounded n4/f2 and n5/f2 faulty-init models check representative f=2
+bounded n4/f2, n5/f2, and n7/f2 faulty-init models check representative f=2
 faulty-message domains in the symbolic gate, preserving the same
 fixed-sigma/forking value rule without attempting the full powerset.
 The n5/f2 single-, pair-, and triple-faulty models then range over one, two, or
@@ -605,8 +621,9 @@ The n5/f2 full forking faulty-init model applies the same full-domain quick
 check to the above-live-boundary f=2 surface where correct validators can form
 f+1 catchup evidence but not a 2f+1 value quorum.
 The n7/f2 full forking faulty-init model applies the full-domain quick check to
-the proper f=2 BFT-boundary surface while the symbolic gate stays bounded. The
-counterexample model uses `.fail()` witnesses for false
+the proper f=2 BFT-boundary surface while the symbolic gate uses the
+representative bounded domain. The counterexample model uses `.fail()` witnesses
+for false
 no-conflicting-commit, no-amnesia, no-equivocation, agreement,
 agreement-or-amnesia, amnesia-implies-equivocation,
 amnesia-without-equivocation, undecided max-round, and sticky-baseline
@@ -1510,6 +1527,9 @@ the complete `n5_f2` faulty-evidence domain.
 `n5_f2` abstraction in both the quick gate and the symbolic baseline gate, by
 selecting up to three arbitrary faulty proposals, prevotes, and precommits from
 the complete `n5_f2` faulty-evidence domain.
+`BaselineBoundedN7F2ForkingFaultyInitSafety` checks a representative bounded
+`n7_f2` faulty-init domain in both the quick gate and the symbolic baseline
+gate.
 `BaselineFullForkingFaultyInitSafety` checks the same fixed-sigma/forking
 baseline parameter surface against the full faulty-init domain in the quick
 Rust-backed gate.
@@ -1530,7 +1550,7 @@ claims about conflicting commits, amnesia, equivocation, and agreement are
 rejected by the harness.
 
 The bounded upstream-shaped baseline checks report no violation for the
-`n4_f1` safety witnesses and the shallow `n4_f2`, `n5_f2`, and `n7_f2`
+`n4_f1` safety witnesses plus the bounded `n4_f2`, `n5_f2`, and `n7_f2`
 symbolic safety gates. The stable
 `n4_f1` instance keeps the normal fixed-sigma decision path,
 no-double-proposal witness, nil-prevote quorum path, and timeout-driven nil
