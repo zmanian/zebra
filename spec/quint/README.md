@@ -87,6 +87,9 @@ The single-faulty `n4_f2` model then ranges over one arbitrary faulty
 proposal, prevote, and precommit from the full `n4_f2` domain, giving a
 stronger symbolic abstraction than the representative fixtures while still
 avoiding the full-powerset blowup.
+The pair-faulty `n4_f2` model extends that tractable symbolic abstraction to
+two arbitrary faulty proposals, prevotes, and precommits from the same full
+domain.
 Additional quick-check harnesses run the full
 faulty-evidence domain over the fixed-sigma/forking `n4_f1`, `n4_f2`, `n5_f1`,
 `n5_f2`, and proper `n7_f2` BFT-boundary surfaces so larger parameterized
@@ -509,6 +512,11 @@ $QUINT test spec/quint/CrosslinkBaselineAccountability.qnt \
 
 $QUINT test spec/quint/CrosslinkBaselineAccountability.qnt \
   --main=CrosslinkBaselineSingleFaultyInitN4F2ForkingModel \
+  --max-samples=100 \
+  --backend=rust
+
+$QUINT test spec/quint/CrosslinkBaselineAccountability.qnt \
+  --main=CrosslinkBaselinePairFaultyInitN4F2ForkingModel \
   --max-samples=100 \
   --backend=rust
 
@@ -1440,6 +1448,10 @@ gate.
 single-faulty `n4_f2` abstraction in both the quick gate and the symbolic
 baseline gate, by selecting one arbitrary faulty proposal, prevote, and
 precommit from the complete `n4_f2` faulty-evidence domain.
+`BaselinePairN4F2ForkingFaultyInitSafety` checks the next tractable
+full-domain `n4_f2` abstraction in both the quick gate and the symbolic
+baseline gate, by selecting up to two arbitrary faulty proposals, prevotes, and
+precommits from the complete `n4_f2` faulty-evidence domain.
 `BaselineBoundedN5F2ForkingFaultyInitSafety` checks a representative bounded
 `n5_f2` faulty-init domain in both the quick gate and the symbolic baseline
 gate.

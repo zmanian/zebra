@@ -564,6 +564,132 @@ module CrosslinkBaselineSingleFaultyInitN4F2ForkingModel {
   }
 }
 
+module CrosslinkBaselinePairFaultyInitN4F2ForkingModel {
+  /*
+   A tractability step beyond the single-message abstraction. It chooses two
+   arbitrary faulty proposals, prevotes, and precommits from the full N4/F2
+   domain, allowing symbolic checks over paired faulty evidence without
+   expanding the full powerset.
+   */
+
+  import CrosslinkBaselineModels.* from "./CrosslinkBaselineModels"
+
+  pure val TestRounds = 0.to(4)
+
+  pure def TestHeadMinusSigma(r: int): str =
+    AncestorByHeight
+      .get(ForkingBestTip.get(r))
+      .get(HeightBySnapshot.get(ForkingBestTip.get(r)) - 1)
+
+  pure val TestStream: int -> str =
+    TestRounds.mapBy(r => TestHeadMinusSigma(r))
+
+  pure val TestStreamMatchesFixedSigma =
+    TestRounds.forall(r => TestStream.get(r) == TestHeadMinusSigma(r))
+
+  import CrosslinkResampling(
+    Corr = Set("p1", "p2"),
+    Faulty = Set("p3", "p4"),
+    N = 4,
+    T = 2,
+    MaxRound = 4,
+    Proposer = ProposerSchedule,
+    Stream = TestStream,
+    Snapshots = ValidSnapshots,
+    ResampleOnNilPrecommit = false,
+  ).* from "./CrosslinkResampling"
+
+  action unchangedAll = all {
+    round' = round,
+    step' = step,
+    decision' = decision,
+    lockedValue' = lockedValue,
+    lockedRound' = lockedRound,
+    validValue' = validValue,
+    validRound' = validRound,
+    cachedProposal' = cachedProposal,
+    cachedProposalRound' = cachedProposalRound,
+    msgsPropose' = msgsPropose,
+    msgsPrevote' = msgsPrevote,
+    msgsPrecommit' = msgsPrecommit,
+    evidencePropose' = evidencePropose,
+    evidencePrevote' = evidencePrevote,
+    evidencePrecommit' = evidencePrecommit,
+    firedAction' = firedAction,
+  }
+
+  pure val PairN4F2FaultyInitDomainWellFormed =
+    AllFaultyProposals.forall(m =>
+      m.src.in(Faulty) and
+      m.round.in(Rounds) and
+      m.proposal.in(Snapshots) and
+      m.validRound.in(RoundsOrNil)
+    ) and
+    AllFaultyPrevotes.forall(m =>
+      m.src.in(Faulty) and m.round.in(Rounds) and m.id.in(SnapshotsOrNil)
+    ) and
+    AllFaultyPrecommits.forall(m =>
+      m.src.in(Faulty) and m.round.in(Rounds) and m.id.in(SnapshotsOrNil)
+    )
+
+  action InitWithPairN4F2FaultyEvidence =
+    nondet faultyProposalA = AllFaultyProposals.oneOf()
+    nondet faultyProposalB = AllFaultyProposals.oneOf()
+    nondet faultyPrevoteA = AllFaultyPrevotes.oneOf()
+    nondet faultyPrevoteB = AllFaultyPrevotes.oneOf()
+    nondet faultyPrecommitA = AllFaultyPrecommits.oneOf()
+    nondet faultyPrecommitB = AllFaultyPrecommits.oneOf()
+    val faultyProposals = Set(faultyProposalA, faultyProposalB)
+    val faultyPrevotes = Set(faultyPrevoteA, faultyPrevoteB)
+    val faultyPrecommits = Set(faultyPrecommitA, faultyPrecommitB)
+    all {
+      round' = Corr.mapBy(_ => 0),
+      step' = Corr.mapBy(_ => "propose"),
+      decision' = Corr.mapBy(_ => NilSnapshot),
+      lockedValue' = Corr.mapBy(_ => NilSnapshot),
+      lockedRound' = Corr.mapBy(_ => NilRound),
+      validValue' = Corr.mapBy(_ => NilSnapshot),
+      validRound' = Corr.mapBy(_ => NilRound),
+      cachedProposal' = Corr.mapBy(_ => NilSnapshot),
+      cachedProposalRound' = Corr.mapBy(_ => NilRound),
+      msgsPropose' = Rounds.mapBy(r =>
+        faultyProposals.filter(m => m.round == r)
+      ),
+      msgsPrevote' = Rounds.mapBy(r =>
+        faultyPrevotes.filter(m => m.round == r)
+      ),
+      msgsPrecommit' = Rounds.mapBy(r =>
+        faultyPrecommits.filter(m => m.round == r)
+      ),
+      evidencePropose' = faultyProposals,
+      evidencePrevote' = faultyPrevotes,
+      evidencePrecommit' = faultyPrecommits,
+      firedAction' = "InitWithPairN4F2FaultyEvidence",
+    }
+
+  val BaselinePairN4F2ForkingFaultyInitSafety =
+    Safety and
+    TestStreamMatchesFixedSigma and
+    PairN4F2FaultyInitDomainWellFormed
+
+  run baselinePairN4F2FaultyInitCoversEvidenceTest = {
+    InitWithPairN4F2FaultyEvidence.then(all {
+      assert(size(EvidencePropose) >= 1),
+      assert(size(EvidencePropose) <= 2),
+      assert(size(EvidencePrevote) >= 1),
+      assert(size(EvidencePrevote) <= 2),
+      assert(size(EvidencePrecommit) >= 1),
+      assert(size(EvidencePrecommit) <= 2),
+      assert(EvidencePropose.subseteq(AllFaultyProposals)),
+      assert(EvidencePrevote.subseteq(AllFaultyPrevotes)),
+      assert(EvidencePrecommit.subseteq(AllFaultyPrecommits)),
+      assert(EvidenceCoversObservedMessages),
+      assert(BaselinePairN4F2ForkingFaultyInitSafety),
+      unchangedAll,
+    })
+  }
+}
+
 module CrosslinkBaselineBoundedFaultyInitN5F2ForkingModel {
   /*
    A representative f=2 faulty-init symbolic harness. It uses the n5/f2
