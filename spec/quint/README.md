@@ -97,9 +97,9 @@ powerset that exhausted Apalache in local probes.
 Single-, pair-, and triple-faulty `n5_f2` models carry the full-domain symbolic
 abstraction into the larger above-live-boundary f=2 surface where correct
 validators can form f+1 catchup evidence but not a 2f+1 value quorum.
-The single- and pair-faulty `n7_f2` models carry the same full-domain selected-evidence
-abstraction into the proper f=2 BFT-boundary surface where correct validators
-can form a 2f+1 value quorum.
+Single-, pair-, and triple-faulty `n7_f2` models carry the same full-domain
+selected-evidence abstraction into the proper f=2 BFT-boundary surface where
+correct validators can form a 2f+1 value quorum.
 Additional quick-check harnesses run the full
 faulty-evidence domain over the fixed-sigma/forking `n4_f1`, `n4_f2`, `n5_f1`,
 `n5_f2`, and proper `n7_f2` BFT-boundary surfaces so larger parameterized
@@ -587,6 +587,11 @@ $QUINT test spec/quint/CrosslinkBaselineAccountability.qnt \
 
 $QUINT test spec/quint/CrosslinkBaselineAccountability.qnt \
   --main=CrosslinkBaselinePairFaultyInitN7F2ForkingModel \
+  --max-samples=100 \
+  --backend=rust
+
+$QUINT test spec/quint/CrosslinkBaselineAccountability.qnt \
+  --main=CrosslinkBaselineTripleFaultyInitN7F2ForkingModel \
   --max-samples=100 \
   --backend=rust
 
@@ -1556,6 +1561,10 @@ complete `n7_f2` faulty-evidence domain.
 `BaselinePairN7F2ForkingFaultyInitSafety` checks a full-domain pair-faulty
 `n7_f2` abstraction in both the quick gate and the symbolic baseline gate, by
 selecting up to two arbitrary faulty proposals, prevotes, and precommits from
+the complete `n7_f2` faulty-evidence domain.
+`BaselineTripleN7F2ForkingFaultyInitSafety` checks a full-domain triple-faulty
+`n7_f2` abstraction in both the quick gate and the symbolic baseline gate, by
+selecting up to three arbitrary faulty proposals, prevotes, and precommits from
 the complete `n7_f2` faulty-evidence domain.
 `BaselineFullForkingFaultyInitSafety` checks the same fixed-sigma/forking
 baseline parameter surface against the full faulty-init domain in the quick
