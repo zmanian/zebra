@@ -503,8 +503,9 @@ under sticky baseline semantics. The `f = 2`
 tests record that `n4_f2` and `n5_f2` sit above the live fault boundary for
 correct-only value commits, while `n7_f2` still supports a 2f+1 correct decision
 path. These three `f = 2` safety invariants are also included in
-`symbolic-baseline` at max depth 2; the shallow bound is deliberate because
-`n7_f2` is materially more expensive than the smaller boundary instances.
+`symbolic-baseline` at max depth 3. The `n7_f2` instance is materially more
+expensive than the smaller boundary instances, but it remains tractable at this
+depth.
 
 Witness the named baseline accountability behavior:
 

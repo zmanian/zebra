@@ -83,7 +83,7 @@ without clearing same-round value or proposal-cache state.
 | Run witness tests | `check.sh quick-baseline` runs baseline, accountability, BFT-height, finality, PoW-sampling, and `f = 2` witness modules | Covered |
 | Bounded agreement/validity/accountability checks | `check.sh symbolic-baseline` verifies focused baseline safety invariants, and CI splits the same gate through `symbolic-baseline-core` plus `symbolic-baseline-accountability`; `Safety` includes `Agreement`, `Validity`, and `Accountability` | Covered, bounded |
 | Faulty init symbolic checking | Tiny full-powerset faulty init plus bounded forking faulty init for `n4_f1`, representative `n4_f2`/`n5_f2`, single-/pair-/triple-faulty full-domain `n4_f2` abstractions, and single-/pair-/triple-faulty full-domain `n5_f2` abstractions; full forking faulty init remains quick-check-only for `n4_f1`, `n4_f2`, `n5_f1`, `n5_f2`, and `n7_f2` | Partial |
-| `f = 2` symbolic checking | `symbolic-baseline-core` verifies `n4_f2`, `n5_f2`, and `n7_f2` safety invariants at depth 2; `symbolic-baseline-accountability` verifies the f=2 faulty-evidence abstractions | Covered, shallow |
+| `f = 2` symbolic checking | `symbolic-baseline-core` verifies `n4_f2`, `n5_f2`, and `n7_f2` safety invariants at depth 3; `symbolic-baseline-accountability` verifies the f=2 faulty-evidence abstractions | Covered, bounded |
 | Full arbitrary-evidence accountability checking | Focused witnesses, upstream-shaped negative witnesses, and bounded faulty-init gates | Partial |
 | Full PoW environment checking | Fixed fork switch, long-reorg, generated adversarial work-competition, repeated generated stream-change, finite stochastic-production, and fixed-sigma sampling fixtures | Partial; bounded fixtures rather than an unbounded PoW environment |
 | Stochastic or adversarial block production | `CrosslinkBaselinePowStochasticProductionModel`; generated and repeated generated work-competition fixtures | Covered, bounded |
@@ -125,8 +125,8 @@ The crosswalk leaves these concrete gaps:
    focused and larger-instance `Safety` gates already include agreement,
    validity, and accountability, but the larger full-powerset faulty-evidence
    surfaces are still quick-check-only.
-4. Decide whether the `n4_f2`, `n5_f2`, and `n7_f2` symbolic gates should be
-   deepened beyond max depth 2.
+4. Decide whether any `f = 2` symbolic gates should be deepened beyond max
+   depth 3.
 5. Broaden Crosslink-specific false-invariant witnesses beyond hand-authored
    stale-sample and fork-finality fixtures.
 6. Strengthen finalized-prefix reasoning beyond bounded fixtures, either with
