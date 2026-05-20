@@ -2052,6 +2052,126 @@ module CrosslinkBaselineBoundedFaultyInitN7F2ForkingModel {
   }
 }
 
+module CrosslinkBaselineSingleFaultyInitN7F2ForkingModel {
+  /*
+   A full-domain single-message faulty-init harness for the n7/f2
+   fixed-sigma/forking surface. This is the first selected-evidence abstraction
+   for the proper f=2 BFT-boundary instance.
+   */
+
+  import CrosslinkBaselineModels.* from "./CrosslinkBaselineModels"
+
+  pure val TestRounds = 0.to(4)
+
+  pure def TestHeadMinusSigma(r: int): str =
+    AncestorByHeight
+      .get(ForkingBestTip.get(r))
+      .get(HeightBySnapshot.get(ForkingBestTip.get(r)) - 1)
+
+  pure val TestStream: int -> str =
+    TestRounds.mapBy(r => TestHeadMinusSigma(r))
+
+  pure val TestStreamMatchesFixedSigma =
+    TestRounds.forall(r => TestStream.get(r) == TestHeadMinusSigma(r))
+
+  import CrosslinkResampling(
+    Corr = Set("p1", "p2", "p3", "p4", "p5"),
+    Faulty = Set("p6", "p7"),
+    N = 7,
+    T = 2,
+    MaxRound = 4,
+    Proposer = ProposerSchedule,
+    Stream = TestStream,
+    Snapshots = ValidSnapshots,
+    ResampleOnNilPrecommit = false,
+  ).* from "./CrosslinkResampling"
+
+  action unchangedAll = all {
+    round' = round,
+    step' = step,
+    decision' = decision,
+    lockedValue' = lockedValue,
+    lockedRound' = lockedRound,
+    validValue' = validValue,
+    validRound' = validRound,
+    cachedProposal' = cachedProposal,
+    cachedProposalRound' = cachedProposalRound,
+    msgsPropose' = msgsPropose,
+    msgsPrevote' = msgsPrevote,
+    msgsPrecommit' = msgsPrecommit,
+    evidencePropose' = evidencePropose,
+    evidencePrevote' = evidencePrevote,
+    evidencePrecommit' = evidencePrecommit,
+    firedAction' = firedAction,
+  }
+
+  pure val SingleN7F2FaultyInitDomainWellFormed =
+    AllFaultyProposals.forall(m =>
+      m.src.in(Faulty) and
+      m.round.in(Rounds) and
+      m.proposal.in(Snapshots) and
+      m.validRound.in(RoundsOrNil)
+    ) and
+    AllFaultyPrevotes.forall(m =>
+      m.src.in(Faulty) and m.round.in(Rounds) and m.id.in(SnapshotsOrNil)
+    ) and
+    AllFaultyPrecommits.forall(m =>
+      m.src.in(Faulty) and m.round.in(Rounds) and m.id.in(SnapshotsOrNil)
+    )
+
+  action InitWithSingleN7F2FaultyEvidence =
+    nondet faultyProposal = AllFaultyProposals.oneOf()
+    nondet faultyPrevote = AllFaultyPrevotes.oneOf()
+    nondet faultyPrecommit = AllFaultyPrecommits.oneOf()
+    all {
+      round' = Corr.mapBy(_ => 0),
+      step' = Corr.mapBy(_ => "propose"),
+      decision' = Corr.mapBy(_ => NilSnapshot),
+      lockedValue' = Corr.mapBy(_ => NilSnapshot),
+      lockedRound' = Corr.mapBy(_ => NilRound),
+      validValue' = Corr.mapBy(_ => NilSnapshot),
+      validRound' = Corr.mapBy(_ => NilRound),
+      cachedProposal' = Corr.mapBy(_ => NilSnapshot),
+      cachedProposalRound' = Corr.mapBy(_ => NilRound),
+      msgsPropose' = Rounds.mapBy(r =>
+        Set(faultyProposal).filter(m => m.round == r)
+      ),
+      msgsPrevote' = Rounds.mapBy(r =>
+        Set(faultyPrevote).filter(m => m.round == r)
+      ),
+      msgsPrecommit' = Rounds.mapBy(r =>
+        Set(faultyPrecommit).filter(m => m.round == r)
+      ),
+      evidencePropose' = Set(faultyProposal),
+      evidencePrevote' = Set(faultyPrevote),
+      evidencePrecommit' = Set(faultyPrecommit),
+      firedAction' = "InitWithSingleN7F2FaultyEvidence",
+    }
+
+  val BaselineSingleN7F2ForkingFaultyInitSafety =
+    Safety and
+    TestStreamMatchesFixedSigma and
+    SingleN7F2FaultyInitDomainWellFormed
+
+  run baselineSingleN7F2FaultyInitCoversEvidenceTest = {
+    InitWithSingleN7F2FaultyEvidence.then(all {
+      assert(THRESHOLD1 == 3),
+      assert(THRESHOLD2 == 5),
+      assert(size(Corr) >= THRESHOLD1),
+      assert(size(Corr) >= THRESHOLD2),
+      assert(size(EvidencePropose) == 1),
+      assert(size(EvidencePrevote) == 1),
+      assert(size(EvidencePrecommit) == 1),
+      assert(EvidencePropose.subseteq(AllFaultyProposals)),
+      assert(EvidencePrevote.subseteq(AllFaultyPrevotes)),
+      assert(EvidencePrecommit.subseteq(AllFaultyPrecommits)),
+      assert(EvidenceCoversObservedMessages),
+      assert(BaselineSingleN7F2ForkingFaultyInitSafety),
+      unchangedAll,
+    })
+  }
+}
+
 module CrosslinkBaselineCounterexampleModel {
   /*
    False-invariant harnesses. These are intentionally bad claims that should

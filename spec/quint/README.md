@@ -97,6 +97,9 @@ powerset that exhausted Apalache in local probes.
 Single-, pair-, and triple-faulty `n5_f2` models carry the full-domain symbolic
 abstraction into the larger above-live-boundary f=2 surface where correct
 validators can form f+1 catchup evidence but not a 2f+1 value quorum.
+The single-faulty `n7_f2` model carries the same full-domain selected-evidence
+abstraction into the proper f=2 BFT-boundary surface where correct validators
+can form a 2f+1 value quorum.
 Additional quick-check harnesses run the full
 faulty-evidence domain over the fixed-sigma/forking `n4_f1`, `n4_f2`, `n5_f1`,
 `n5_f2`, and proper `n7_f2` BFT-boundary surfaces so larger parameterized
@@ -572,6 +575,11 @@ $QUINT test spec/quint/CrosslinkBaselineAccountability.qnt \
   --backend=rust
 
 $QUINT test spec/quint/CrosslinkBaselineAccountability.qnt \
+  --main=CrosslinkBaselineSingleFaultyInitN7F2ForkingModel \
+  --max-samples=100 \
+  --backend=rust
+
+$QUINT test spec/quint/CrosslinkBaselineAccountability.qnt \
   --main=CrosslinkBaselineFullFaultyInitForkingModel \
   --max-samples=100 \
   --backend=rust
@@ -622,8 +630,8 @@ check to the above-live-boundary f=2 surface where correct validators can form
 f+1 catchup evidence but not a 2f+1 value quorum.
 The n7/f2 full forking faulty-init model applies the full-domain quick check to
 the proper f=2 BFT-boundary surface while the symbolic gate uses the
-representative bounded domain. The counterexample model uses `.fail()` witnesses
-for false
+representative bounded and single-selected domains. The counterexample model
+uses `.fail()` witnesses for false
 no-conflicting-commit, no-amnesia, no-equivocation, agreement,
 agreement-or-amnesia, amnesia-implies-equivocation,
 amnesia-without-equivocation, undecided max-round, and sticky-baseline
@@ -1530,6 +1538,10 @@ the complete `n5_f2` faulty-evidence domain.
 `BaselineBoundedN7F2ForkingFaultyInitSafety` checks a representative bounded
 `n7_f2` faulty-init domain in both the quick gate and the symbolic baseline
 gate.
+`BaselineSingleN7F2ForkingFaultyInitSafety` checks a full-domain single-faulty
+`n7_f2` abstraction in both the quick gate and the symbolic baseline gate, by
+selecting one arbitrary faulty proposal, prevote, and precommit from the
+complete `n7_f2` faulty-evidence domain.
 `BaselineFullForkingFaultyInitSafety` checks the same fixed-sigma/forking
 baseline parameter surface against the full faulty-init domain in the quick
 Rust-backed gate.
