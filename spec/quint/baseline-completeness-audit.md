@@ -167,7 +167,7 @@ The current branch has these baseline-specific files:
 | Crosslink-specific false-invariant witnesses | `falseNoStaleFixedSigmaProposalInvariantFailsTest`; `falseForkFinalityAttemptIsValidTest`; `falseNilPrecommitClearsSameRoundLockInvariantFailsTest` | Covered as seeded Rust witnesses |
 | Generated/adversarial PoW schedule for baseline long reorgs | `CrosslinkBaselinePowSampling.qnt`; `CrosslinkBaselinePowSamplingModel`; `CrosslinkBaselinePowLongReorgModel`; `CrosslinkBaselinePowGeneratedScheduleModel`; `CrosslinkBaselinePowRepeatedGeneratedScheduleModel`; `BaselinePowSamplingSafety`; `BaselinePowLongReorgSafety`; `BaselinePowGeneratedScheduleSafety`; `BaselinePowRepeatedGeneratedScheduleSafety` | Covered, bounded; fork-switch, long-reorg, generated adversarial work-competition, and repeated generated stream-change fixtures are covered |
 | Stochastic PoW block-production model | `CrosslinkBaselinePowStochasticProductionModel`; `BaselinePowStochasticProductionSafety` | Covered, bounded; finite hash-participation, hidden-work-risk, and block-variance buckets derive honest extension and hidden-work release windows |
-| Inductive or deeper multi-height finality argument | Current BFT-height model is bounded | Partial |
+| Inductive or deeper multi-height finality argument | `CrosslinkBaselineInductiveFinality.qnt` named lemmas plus `inductive-finality.md` argument shape; bounded at depth 5 symbolically | Covered as bounded named lemmas; full induction deferred to a separate prover |
 
 ## Remaining Work
 
@@ -262,9 +262,17 @@ remaining upstream-quality gaps.
      participation, hidden-work risk, and block-time variance, then derives
      honest extension and hidden-work release windows from those buckets.
 8. Push finality beyond a bounded fixture.
-   - Either add deeper symbolic projection checks or split the model into
-     smaller lemmas that make the multi-height finalized-prefix argument more
-     obviously inductive.
+   - `CrosslinkBaselineInductiveFinality.qnt` splits the multi-height
+     finalized-prefix argument into five named consecutive-pair lemmas
+     (`BaselineHeightSuccessorExtendsPrefix`,
+     `BaselineNoForkFinalityAtSuccessorHeight`,
+     `BaselineStickyBaselineDoesNotFinalizeForkAtSuccessor`,
+     `BaselineSuccessorHeightIsConsecutive`, and
+     `BaselineRecordedDecisionsAreAncestors`), each individually checkable
+     as a bounded invariant and composed into
+     `BaselineInductiveFinalitySafety`. `inductive-finality.md` records the
+     inductive shape and explicitly notes that Apalache cannot close the
+     induction; full induction is deferred to a separate prover.
 
 ## Recommended Order
 

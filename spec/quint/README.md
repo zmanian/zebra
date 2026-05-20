@@ -117,6 +117,21 @@ fork decisions after a prefix is final, and includes a `.fail()` witness for
 the false claim that a fork-finality attempt remains valid after prefix
 finality.
 
+`CrosslinkBaselineInductiveFinality.qnt` reshapes the baseline BFT-height
+monolithic safety invariant into five named consecutive-pair lemmas
+(`BaselineHeightSuccessorExtendsPrefix`,
+`BaselineNoForkFinalityAtSuccessorHeight`,
+`BaselineStickyBaselineDoesNotFinalizeForkAtSuccessor`,
+`BaselineSuccessorHeightIsConsecutive`, and
+`BaselineRecordedDecisionsAreAncestors`) whose conjunction is the would-be
+inductive invariant for multi-height prefix finality. Each lemma is checked
+as a bounded invariant individually and as part of the compound
+`BaselineInductiveFinalitySafety`, with a Rust-backed positive witness plus
+four `.fail()` negative witnesses. The companion file `inductive-finality.md`
+records the inductive argument shape and notes that Apalache cannot close
+the induction natively; the lemma decomposition is the reviewable structure
+for a later fully inductive proof in a different tool.
+
 `CrosslinkBaselineFinality.qnt` composes that baseline Tenderlink behavior with
 Crosslink finality. It shows that the fixed-sigma/sticky protocol can finalize a
 tail-confirmed stable-stream decision, and records the Crosslink-level failure

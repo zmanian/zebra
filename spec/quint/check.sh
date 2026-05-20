@@ -63,6 +63,7 @@ typecheck_all() {
     spec/quint/CrosslinkBaselineTest.qnt
     spec/quint/CrosslinkBaselineAccountability.qnt
     spec/quint/CrosslinkBaselineBftHeights.qnt
+    spec/quint/CrosslinkBaselineInductiveFinality.qnt
     spec/quint/CrosslinkBaselineFinality.qnt
     spec/quint/CrosslinkBaselinePowSampling.qnt
     spec/quint/CrosslinkResampling.qnt
@@ -95,6 +96,7 @@ typecheck_baseline() {
     spec/quint/CrosslinkBaselineTest.qnt
     spec/quint/CrosslinkBaselineAccountability.qnt
     spec/quint/CrosslinkBaselineBftHeights.qnt
+    spec/quint/CrosslinkBaselineInductiveFinality.qnt
     spec/quint/CrosslinkBaselineFinality.qnt
     spec/quint/CrosslinkBaselinePowSampling.qnt
   )
@@ -191,6 +193,7 @@ quick_checks() {
   test_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineFullFaultyInitN7F2ForkingModel
   test_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineCounterexampleModel
   test_model spec/quint/CrosslinkBaselineBftHeights.qnt CrosslinkBaselineBftHeightsModel
+  test_model spec/quint/CrosslinkBaselineInductiveFinality.qnt CrosslinkBaselineInductiveFinalityModel
   test_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStableModel
   test_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStreamChangeModel
   test_model spec/quint/CrosslinkBaselinePowSampling.qnt CrosslinkBaselinePowSamplingModel
@@ -243,6 +246,7 @@ quick_checks() {
   run_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineFullFaultyInitN5F2ForkingModel InitWithFaultyEvidence Next 2 100 BaselineFullN5F2ForkingFaultyInitSafety
   run_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineFullFaultyInitN7F2ForkingModel InitWithFaultyEvidence Next 2 100 BaselineFullN7F2ForkingFaultyInitSafety
   run_model spec/quint/CrosslinkBaselineBftHeights.qnt CrosslinkBaselineBftHeightsModel Init Next 5 1000 BaselineBftHeightSafety
+  run_model spec/quint/CrosslinkBaselineInductiveFinality.qnt CrosslinkBaselineInductiveFinalityModel InductiveInit InductiveNext 5 1000 BaselineInductiveFinalitySafety
   run_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStableModel ComposedInit ComposedNext 10 1000 ComposedSafety
   run_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStreamChangeModel ComposedInit ComposedNext 10 1000 ComposedSafety
   run_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityLivenessModel LivenessInit LivenessStep 9 1 LivenessSafety
@@ -303,6 +307,7 @@ baseline_quick_checks() {
   test_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineFullFaultyInitN7F2ForkingModel
   test_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineCounterexampleModel
   test_model spec/quint/CrosslinkBaselineBftHeights.qnt CrosslinkBaselineBftHeightsModel
+  test_model spec/quint/CrosslinkBaselineInductiveFinality.qnt CrosslinkBaselineInductiveFinalityModel
   test_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStableModel
   test_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStreamChangeModel
   test_model spec/quint/CrosslinkBaselinePowSampling.qnt CrosslinkBaselinePowSamplingModel
@@ -341,6 +346,7 @@ baseline_quick_checks() {
   run_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineFullFaultyInitN5F2ForkingModel InitWithFaultyEvidence Next 2 100 BaselineFullN5F2ForkingFaultyInitSafety
   run_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineFullFaultyInitN7F2ForkingModel InitWithFaultyEvidence Next 2 100 BaselineFullN7F2ForkingFaultyInitSafety
   run_model spec/quint/CrosslinkBaselineBftHeights.qnt CrosslinkBaselineBftHeightsModel Init Next 5 1000 BaselineBftHeightSafety
+  run_model spec/quint/CrosslinkBaselineInductiveFinality.qnt CrosslinkBaselineInductiveFinalityModel InductiveInit InductiveNext 5 1000 BaselineInductiveFinalitySafety
   run_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStableModel ComposedInit ComposedNext 10 1000 ComposedSafety
   run_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStreamChangeModel ComposedInit ComposedNext 10 1000 ComposedSafety
   run_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityLivenessModel LivenessInit LivenessStep 9 1 LivenessSafety
@@ -376,6 +382,7 @@ symbolic_checks() {
   verify_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselinePairFaultyInitN7F2ForkingModel 2 InitWithPairN7F2FaultyEvidence Next BaselinePairN7F2ForkingFaultyInitSafety
   verify_model spec/quint/CrosslinkBaselineAccountability.qnt CrosslinkBaselineTripleFaultyInitN7F2ForkingModel 2 InitWithTripleN7F2FaultyEvidence Next BaselineTripleN7F2ForkingFaultyInitSafety
   verify_model spec/quint/CrosslinkBaselineBftHeights.qnt CrosslinkBaselineBftHeightsModel 5 Init Next BaselineBftHeightSafety
+  verify_model spec/quint/CrosslinkBaselineInductiveFinality.qnt CrosslinkBaselineInductiveFinalityModel 5 InductiveInit InductiveNext BaselineInductiveFinalitySafety
   verify_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStableModel 5 ComposedInit ComposedNext ComposedSafety
   verify_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStreamChangeModel 5 ComposedInit ComposedNext ComposedSafety
   verify_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityLivenessModel 9 LivenessInit LivenessStep LivenessSafety
@@ -415,6 +422,7 @@ baseline_symbolic_core_checks() {
   verify_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN5F2ForkingTest 3 Init Next BaselineN5F2ForkingSafety
   verify_model spec/quint/CrosslinkBaselineTest.qnt CrosslinkBaselineN7F2ForkingTest 3 Init Next BaselineN7F2ForkingSafety
   verify_model spec/quint/CrosslinkBaselineBftHeights.qnt CrosslinkBaselineBftHeightsModel 5 Init Next BaselineBftHeightSafety
+  verify_model spec/quint/CrosslinkBaselineInductiveFinality.qnt CrosslinkBaselineInductiveFinalityModel 5 InductiveInit InductiveNext BaselineInductiveFinalitySafety
   verify_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStableModel 5 ComposedInit ComposedNext ComposedSafety
   verify_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityStreamChangeModel 5 ComposedInit ComposedNext ComposedSafety
   verify_model spec/quint/CrosslinkBaselineFinality.qnt CrosslinkBaselineFinalityLivenessModel 9 LivenessInit LivenessStep LivenessSafety

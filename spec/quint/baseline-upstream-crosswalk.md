@@ -87,7 +87,7 @@ without clearing same-round value or proposal-cache state.
 | Full arbitrary-evidence accountability checking | Focused witnesses, upstream-shaped negative witnesses, and bounded faulty-init gates | Partial |
 | Full PoW environment checking | Fixed fork switch, long-reorg, generated adversarial work-competition, repeated generated stream-change, finite stochastic-production, and fixed-sigma sampling fixtures | Partial; bounded fixtures rather than an unbounded PoW environment |
 | Stochastic or adversarial block production | `CrosslinkBaselinePowStochasticProductionModel`; generated and repeated generated work-competition fixtures | Covered, bounded |
-| Inductive multi-height finality proof | Bounded BFT-height and composed-finality fixtures | Partial |
+| Inductive multi-height finality proof | `CrosslinkBaselineInductiveFinality.qnt`; `BaselineHeightSuccessorExtendsPrefix`; `BaselineNoForkFinalityAtSuccessorHeight`; `BaselineStickyBaselineDoesNotFinalizeForkAtSuccessor`; `BaselineSuccessorHeightIsConsecutive`; `BaselineRecordedDecisionsAreAncestors`; `BaselineInductiveFinalitySafety`; `inductive-finality.md` | Covered as bounded named lemmas; full induction deferred to a separate prover |
 
 ## Intentional Deviations
 
