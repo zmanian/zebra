@@ -81,7 +81,7 @@ without clearing same-round value or proposal-cache state.
 | --- | --- | --- |
 | Typecheck the parameterized model | `check.sh quick-baseline` typechecks all baseline files | Covered |
 | Run witness tests | `check.sh quick-baseline` runs baseline, accountability, BFT-height, finality, PoW-sampling, and `f = 2` witness modules | Covered |
-| Bounded agreement/validity/accountability checks | `check.sh symbolic-baseline` verifies focused baseline safety invariants | Covered, bounded |
+| Bounded agreement/validity/accountability checks | `check.sh symbolic-baseline` verifies focused baseline safety invariants, and `Safety` includes `Agreement`, `Validity`, and `Accountability` | Covered, bounded |
 | Faulty init symbolic checking | Tiny full-powerset faulty init plus bounded forking faulty init for `n4_f1` and representative `n4_f2`/`n5_f2`; full forking faulty init remains quick-check-only for `n4_f1`, `n4_f2`, `n5_f1`, `n5_f2`, and `n7_f2` | Partial |
 | `f = 2` symbolic checking | `symbolic-baseline` verifies `n4_f2`, `n5_f2`, and `n7_f2` safety invariants at depth 2 | Covered, shallow |
 | Full arbitrary-evidence accountability checking | Focused witnesses, upstream-shaped negative witnesses, and bounded faulty-init gates | Partial |
@@ -115,9 +115,14 @@ The crosswalk leaves these concrete gaps:
    precommit injection beyond the parameterized shell quick witness, tiny,
    bounded `n4_f1`, and representative `n4_f2`/`n5_f2` harnesses. The
    fixed-sigma/forking `n4_f1`, `n4_f2`, `n5_f1`, `n5_f2`, and `n7_f2`
-   surfaces now have full-powerset quick coverage.
-3. Add broader symbolic checks for agreement, validity, and accountability over
-   those larger instances.
+   surfaces now have full-powerset quick coverage. A local depth-1 Apalache
+   probe of the full-powerset `n4_f2` surface exhausted the default 4GB JVM
+   heap, so the next symbolic step likely needs a smaller abstraction rather
+   than simply adding the full-powerset larger instances to CI.
+3. Broaden arbitrary-evidence symbolic accountability coverage. The current
+   focused and larger-instance `Safety` gates already include agreement,
+   validity, and accountability, but the larger full-powerset faulty-evidence
+   surfaces are still quick-check-only.
 4. Decide whether the `n4_f2`, `n5_f2`, and `n7_f2` symbolic gates should be
    deepened beyond max depth 2.
 5. Broaden Crosslink-specific false-invariant witnesses beyond hand-authored

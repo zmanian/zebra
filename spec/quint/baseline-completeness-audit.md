@@ -151,7 +151,7 @@ The current branch has these baseline-specific files:
 | Faulty proposal/prevote/precommit evidence reaches equivocation predicates | `CrosslinkBaselineAccountability.qnt`; `baselineFaultyProposalEvidenceFeedsEquivocationTest`; `baselineFaultyPrevoteEvidenceFeedsEquivocationTest`; `baselineFaultyNilValuePrecommitEvidenceFeedsEquivocationTest` | Covered as witnesses |
 | Nondeterministic faulty message injection in `Init` | `BaselineInitWithFaultyEvidence`; `BaselineNext`; `CrosslinkBaselineParameterizedShellTest`; `InitWithFaultyEvidence`; `CrosslinkBaselineFaultyInitTinyModel`; `CrosslinkBaselineFaultyInitForkingModel`; `CrosslinkBaselineBoundedFaultyInitN4F2ForkingModel`; `CrosslinkBaselineBoundedFaultyInitN5F2ForkingModel`; `CrosslinkBaselineFullFaultyInitForkingModel`; `CrosslinkBaselineFullFaultyInitN4F2ForkingModel`; `CrosslinkBaselineFullFaultyInitN5F1ForkingModel`; `CrosslinkBaselineFullFaultyInitN5F2ForkingModel`; `CrosslinkBaselineFullFaultyInitN7F2ForkingModel`; `BaselineFaultyInitSafety`; `BaselineForkingFaultyInitSafety`; `BaselineBoundedN4F2ForkingFaultyInitSafety`; `BaselineBoundedN5F2ForkingFaultyInitSafety`; `BaselineFullForkingFaultyInitSafety`; `BaselineFullN4F2ForkingFaultyInitSafety`; `BaselineFullN5F1ForkingFaultyInitSafety`; `BaselineFullN5F2ForkingFaultyInitSafety`; `BaselineFullN7F2ForkingFaultyInitSafety` | Partial; exposed through the parameterized shell and covered by a tiny full-powerset instance, bounded symbolic fixed-sigma/forking instances for `n4_f1` plus representative `n4_f2` and `n5_f2`, and quick-check full-powerset fixed-sigma/forking `n4_f1`, `n4_f2`, `n5_f1`, `n5_f2`, and `n7_f2` instances; not yet lifted into symbolic gates for the full-powerset larger instances |
 | Full Tendermint transition surface | Current model covers StartRound-style round initialization, value prevote quorum, nil prevote quorum, split nil-valid-round and concrete-valid-round proposal handlers, validRound proposal justification, correct-value-prevote proposal provenance, propose/prevote/precommit timeout paths, stream-change nil precommit, round advance after precommit quorum, timeout round advance, future-round catchup, and decision | Covered for the focused baseline shell; still not a full upstream port |
-| Full agreement/validity/accountability invariant suite over arbitrary evidence | Current suite has bounded safety plus focused accountability witnesses | Partial |
+| Full agreement/validity/accountability invariant suite over arbitrary evidence | `Safety` includes `Agreement`, `Validity`, and `Accountability` in the focused symbolic gates; current suite also has bounded faulty-init gates plus focused accountability witnesses | Partial; larger full-powerset faulty-evidence surfaces are still quick-check-only rather than symbolic |
 | False-invariant/counterexample harnesses for amnesia/equivocation/agreement | `CrosslinkBaselineCounterexampleModel`; `falseNoConflictingCommitsInvariantFailsTest`; `falseNoAmnesiaEvidenceInvariantFailsTest`; `falseNoEquivocationEvidenceInvariantFailsTest`; `falseAgreementInvariantFailsTest`; `falseAgreementOrAmnesiaInvariantFailsTest`; `falseAmnesiaImpliesEquivocationInvariantFailsTest`; `falseShowMeAmnesiaWithoutEquivocationInvariantFailsTest`; `falseNeverUndecidedInMaxRoundInvariantFailsTest` | Covered as seeded Rust witnesses; not yet an arbitrary-evidence symbolic suite |
 | Crosslink-specific false-invariant witnesses | `falseNoStaleFixedSigmaProposalInvariantFailsTest`; `falseForkFinalityAttemptIsValidTest` | Covered as seeded Rust witnesses |
 | Generated/adversarial PoW schedule for baseline long reorgs | `CrosslinkBaselinePowSampling.qnt`; `CrosslinkBaselinePowSamplingModel`; `CrosslinkBaselinePowLongReorgModel`; `CrosslinkBaselinePowGeneratedScheduleModel`; `CrosslinkBaselinePowRepeatedGeneratedScheduleModel`; `BaselinePowSamplingSafety`; `BaselinePowLongReorgSafety`; `BaselinePowGeneratedScheduleSafety`; `BaselinePowRepeatedGeneratedScheduleSafety` | Covered, bounded; fork-switch, long-reorg, generated adversarial work-competition, and repeated generated stream-change fixtures are covered |
@@ -201,7 +201,11 @@ remaining upstream-quality gaps.
    - The full faulty-init powerset is now exercised for the fixed-sigma/forking
      `n4_f1`, `n4_f2`, `n5_f1`, `n5_f2`, and `n7_f2` instances in
      `quick-baseline`; remaining work is broader symbolic coverage that stays
-     tractable.
+     tractable. A local Apalache probe of
+     `CrosslinkBaselineFullFaultyInitN4F2ForkingModel` at max depth 1 exhausted
+     the default 4GB JVM heap, so the current quick-only boundary for larger
+     full-powerset instances is a real tractability limit rather than an
+     omitted proof gate.
 4. Port the full transition surface.
    - Include proposer selection, proposal insertion, proposal handling,
      prevote quorum handling, precommit quorum handling, timeouts, nil prevotes,
@@ -211,7 +215,9 @@ remaining upstream-quality gaps.
    - Preserve the baseline sticky rule: nil precommit does not clear same-round
      valid or locked state.
 5. Strengthen properties.
-   - Check agreement, validity, and accountability over the parameterized model.
+   - The focused and larger-instance `Safety` gates already include agreement,
+     validity, and accountability; remaining work is to broaden the
+     arbitrary-evidence/accountability shape that can be checked symbolically.
    - Keep Crosslink finalized-prefix safety separate from Tenderlink agreement
      so failures are easier to diagnose.
 6. Add deeper Crosslink-specific false-invariant/counterexample modules.
@@ -261,8 +267,9 @@ remaining upstream-quality gaps.
      bounded domain.
 2. Port the full Tendermint transition surface into the parameterized shell
    while preserving the baseline sticky nil-precommit rule.
-3. Add the full agreement/validity/accountability checks to
-   `symbolic-baseline`.
+3. Broaden the full-powerset faulty-evidence shapes that can be checked
+   symbolically, without dropping agreement, validity, or accountability from
+   the checked invariant.
 4. Revisit CI timeout and split symbolic jobs if the parameterized model makes
    Apalache too heavy.
 
