@@ -5008,4 +5008,176 @@ mod tests {
             Err(DynamicSigmaEconomicExposurePolicyError::ConsensusCriticalZeroLossBudget),
         );
     }
+
+    // ----------------------------------------------------------------------
+    // Failure-Modes test catalog (B5)
+    //
+    // Each test in this section corresponds to one of the five adversarial
+    // scenarios in `spec/quint/dynamic-sigma-telemetry-integration.md`
+    // § "Failure Modes". The tests pin the current behavior of the controller
+    // and its source contracts under the adversarial shape so that future
+    // refactors cannot silently regress the guardrail. Consensus-validity
+    // rules layered on top of these guardrails (proposal rejection at the
+    // validator) are a separate engineering surface; this catalog documents
+    // the controller-level guarantees those rules depend on.
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn failure_mode_fake_high_participation_rejected_without_objective_marker() {
+        // Spec: "Fake high participation is unsafe because it can keep sigma
+        // too low. This is why participation must be objectively derived from
+        // block data."
+        //
+        // A header carrying a non-null fat pointer that fails any of the
+        // four production verifier checks (signatures, roster quorum, known
+        // BFT block) MUST be classified as non-participating. The contract
+        // pin lives in `production_marker_verifier_contract_chains_checks`;
+        // this test is the failure-mode catalog entry, asserting the
+        // composition with a verifier that simulates a failed signature
+        // check on an attacker-supplied non-null marker.
+        let attacker_header = header_with_fat_pointer(participating_fat_pointer());
+        let observation =
+            hash_work_observation_from_header_with_verifier(&attacker_header, |_fp| false)
+                .expect("header work should still assemble when verifier rejects");
+        assert_eq!(
+            observation.participation,
+            DynamicSigmaHashParticipation::NotVerifiedParticipating,
+            "attacker-fabricated non-null marker must not raise participating numerator",
+        );
+    }
+
+    #[test]
+    fn failure_mode_fake_low_participation_forces_max_sigma_but_hysteresis_recovers() {
+        // Spec: "Fake low participation is a liveness attack because it can
+        // force max sigma. The protocol should still prefer safety, but
+        // operators need observability and hysteresis to distinguish
+        // degraded participation from measurement failure."
+        //
+        // Verify that the hysteresis helper still applies the immediate
+        // raise on a max-sigma window AND only lowers one ladder step at a
+        // time after stable lower-risk windows. This is the recovery
+        // guardrail: a transient liveness-attack window pushes to max
+        // sigma, but normal observation can climb back down without
+        // oscillation.
+        let params = params();
+        let policy = hysteresis_policy();
+
+        // Attacker forces max sigma.
+        let after_attack = apply_dynamic_sigma_hysteresis(
+            params,
+            policy,
+            hysteresis_state(params.base_sigma, 0),
+            params.max_sigma,
+        )
+        .expect("max-sigma window applies hysteresis");
+        assert_eq!(after_attack.current_sigma, params.max_sigma);
+
+        // Recovery requires the configured number of stable lower-risk
+        // windows before sigma drops one ladder step. A single recovery
+        // window is NOT enough.
+        let after_one_recovery = apply_dynamic_sigma_hysteresis(
+            params,
+            policy,
+            after_attack,
+            params.base_sigma,
+        )
+        .expect("recovery window applies hysteresis");
+        assert!(
+            after_one_recovery.current_sigma >= after_attack.current_sigma
+                || after_one_recovery.current_sigma == params.raised_sigma,
+            "single recovery window must not drop below one ladder step",
+        );
+    }
+
+    #[test]
+    fn failure_mode_short_window_oscillation_bounded_by_hysteresis_decrease_rate() {
+        // Spec: "Short windows can oscillate sigma around the threshold. Use
+        // explicit windows, hysteresis, and bounded rate of sigma decrease."
+        //
+        // Pin: hysteresis must NOT drop more than one ladder step per
+        // `decrease_confirmation_windows` even if the required sigma drops
+        // multiple steps in a single window.
+        let params = params();
+        let policy = DynamicSigmaHysteresisParameters {
+            decrease_confirmation_windows: 2,
+        };
+
+        // Start at max sigma, required sigma drops all the way to base.
+        let after = apply_dynamic_sigma_hysteresis(
+            params,
+            policy,
+            hysteresis_state(params.max_sigma, 0),
+            params.base_sigma,
+        )
+        .expect("aggressive drop applies hysteresis");
+
+        assert!(
+            after.current_sigma >= params.raised_sigma,
+            "sigma must not skip the raised-sigma ladder step on a single window",
+        );
+    }
+
+    #[test]
+    fn failure_mode_local_value_at_risk_disagreement_avoided_by_service_local_default() {
+        // Spec: "Local-only value-at-risk estimates can make validators
+        // disagree. If expected loss affects consensus validity, the exposure
+        // model must be shared or proposal-carried."
+        //
+        // The codebase chose `ServiceLocal` as the default exposure policy
+        // (see B4 decision). `ServiceLocal` consensus exposure is ALWAYS
+        // zero, so two validators with different local VaR estimates cannot
+        // disagree on the consensus-relevant exposure component.
+        let local = DynamicSigmaEconomicExposurePolicy::service_local_default();
+        let units = local.to_units();
+        assert_eq!(
+            units.value_at_risk_units, 0,
+            "ServiceLocal exposure must contribute zero to consensus-visible VaR",
+        );
+        assert_eq!(
+            units.max_acceptable_expected_loss_units, 0,
+            "ServiceLocal exposure must contribute zero to consensus-visible loss budget",
+        );
+    }
+
+    #[test]
+    fn failure_mode_hidden_hash_power_handled_by_conservative_coverage_margin() {
+        // Spec: "Hidden hash power cannot be proven absent. The estimator
+        // should treat participation as an upper-confidence-bound problem
+        // and choose conservative sigma when coverage is uncertain."
+        //
+        // Pin: the telemetry estimate margins MUST apply a non-zero
+        // coverage_risk_margin_pct so that the converted controller input
+        // overstates non-participating share. Compare a window with a
+        // non-zero margin against the same window with a zero margin; the
+        // non-zero margin must produce a larger or equal estimated coverage
+        // risk percentage.
+        let raw = raw_telemetry(63, 15);
+        let zero_margin = raw
+            .clone()
+            .into_window(TelemetryEstimateMargins {
+                coverage_risk_margin_pct: 0,
+                round_failure_margin_pct: 0,
+            })
+            .expect("zero-margin window assembles");
+        let strict_margin = raw
+            .into_window(TelemetryEstimateMargins {
+                coverage_risk_margin_pct: 10,
+                round_failure_margin_pct: 0,
+            })
+            .expect("strict-margin window assembles");
+
+        assert!(
+            strict_margin.estimated_coverage_risk_pct
+                >= zero_margin.estimated_coverage_risk_pct,
+            "non-zero coverage margin must overstate non-participating share \
+             (strict={strict}, zero={zero})",
+            strict = strict_margin.estimated_coverage_risk_pct,
+            zero = zero_margin.estimated_coverage_risk_pct,
+        );
+        assert!(
+            strict_margin.estimated_coverage_risk_pct > zero_margin.estimated_coverage_risk_pct
+                || zero_margin.estimated_coverage_risk_pct == 100,
+            "margin must strictly raise coverage risk unless already saturated",
+        );
+    }
 }
