@@ -131,3 +131,25 @@ impl GetBlockchainInfoBalance {
             .expect("at least one pool")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use zebra_chain::{amount::MAX_MONEY, value_balance::ValueBalance};
+
+    #[test]
+    #[should_panic(expected = "sum of value balances should not overflow")]
+    fn chain_supply_panics_when_pool_sum_exceeds_max_money_today() {
+        let half_max_money = Amount::<NonNegative>::try_from(MAX_MONEY / 2)
+            .expect("half of MAX_MONEY is a valid non-negative amount");
+
+        let mut value_pools = ValueBalance::<NonNegative>::zero();
+        value_pools
+            .set_transparent_value_balance(ValueBalance::from_transparent_amount(half_max_money));
+        value_pools.set_sprout_value_balance(ValueBalance::from_sprout_amount(half_max_money));
+        value_pools.set_sapling_value_balance(ValueBalance::from_sapling_amount(half_max_money));
+
+        let _ = GetBlockchainInfoBalance::chain_supply(value_pools);
+    }
+}

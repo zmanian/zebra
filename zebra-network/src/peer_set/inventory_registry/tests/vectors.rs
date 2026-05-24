@@ -5,11 +5,12 @@ use std::{cmp::min, net::SocketAddr};
 use zebra_chain::{block, serialization::AtLeastOne, transaction};
 
 use crate::{
+    peer::{register_inventory_status, ConnectedAddr},
     peer_set::inventory_registry::{
         tests::new_inv_registry, InventoryMarker, InventoryStatus, MAX_INV_PER_MAP,
         MAX_PEERS_PER_INV,
     },
-    protocol::external::InventoryHash,
+    protocol::external::{InventoryHash, Message},
     PeerSocketAddr,
 };
 
@@ -83,6 +84,39 @@ async fn inv_registry_one_missing_ok() {
     assert_eq!(
         inv_registry.missing_peers(test_hash).next(),
         Some(&test_peer),
+    );
+    assert_eq!(inv_registry.missing_peers(test_hash).count(), 1);
+}
+
+/// Check that the inbound wrapper registers even unsolicited `notfound` as missing inventory.
+#[tokio::test]
+async fn unsolicited_notfound_registers_missing_inventory_today() {
+    let test_hash = InventoryHash::Block(block::Hash([1; 32]));
+    let test_peer: PeerSocketAddr = "1.1.1.1:1"
+        .parse()
+        .expect("unexpected invalid peer address");
+    let connected_addr = ConnectedAddr::new_inbound_direct(test_peer);
+
+    let (mut inv_registry, inv_stream_tx) = new_inv_registry();
+
+    let forwarded_msg = register_inventory_status(
+        Ok(Message::NotFound(vec![test_hash])),
+        connected_addr,
+        inv_stream_tx.clone(),
+    )
+    .await
+    .expect("notfound message should be forwarded");
+    assert_eq!(forwarded_msg, Message::NotFound(vec![test_hash]));
+
+    inv_registry
+        .update()
+        .await
+        .expect("unexpected dropped registry sender channel");
+
+    assert_eq!(inv_registry.advertising_peers(test_hash).count(), 0);
+    assert_eq!(
+        inv_registry.missing_peers(test_hash).next(),
+        Some(&test_peer)
     );
     assert_eq!(inv_registry.missing_peers(test_hash).count(), 1);
 }

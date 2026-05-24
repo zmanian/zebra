@@ -6,6 +6,9 @@ use std::{
     hash::Hash,
 };
 
+#[cfg(test)]
+use std::cell::{Cell, RefCell};
+
 use zebra_chain::{
     block::Height,
     orchard, sapling, sprout,
@@ -219,6 +222,13 @@ impl VerifiedSet {
         use rand::distributions::{Distribution, WeightedIndex};
         use rand::prelude::thread_rng;
 
+        #[cfg(test)]
+        if let Some(key_to_remove) = FORCED_EVICTION_KEY.with_borrow_mut(Option::take) {
+            if self.transactions.contains_key(&key_to_remove) {
+                return self.remove(&key_to_remove).pop();
+            }
+        }
+
         let (keys, weights): (Vec<transaction::Hash>, Vec<u64>) = self
             .transactions
             .iter()
@@ -368,6 +378,9 @@ impl VerifiedSet {
     }
 
     fn update_metrics(&mut self) {
+        #[cfg(test)]
+        UPDATE_METRICS_CALLS.with(|calls| calls.set(calls.get() + 1));
+
         // Track the sum of unpaid actions within each transaction (as they are subject to the
         // unpaid action limit). Transactions that have weight >= 1 have no unpaid actions by
         // definition.
@@ -391,6 +404,10 @@ impl VerifiedSet {
         let mut size_with_weight_gt3 = 0;
 
         for entry in self.transactions().values() {
+            #[cfg(test)]
+            UPDATE_METRICS_TRANSACTION_VISITS
+                .with(|visits| visits.set(visits.get().saturating_add(1)));
+
             paid_actions += entry.conventional_actions - entry.unpaid_actions;
 
             if entry.fee_weight_ratio > 3.0 {
@@ -472,4 +489,30 @@ impl VerifiedSet {
         metrics::gauge!("zcash.mempool.size.bytes",).set(self.transactions_serialized_size as f64);
         metrics::gauge!("zcash.mempool.cost.bytes").set(self.total_cost as f64);
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    static FORCED_EVICTION_KEY: RefCell<Option<transaction::Hash>> = const { RefCell::new(None) };
+    static UPDATE_METRICS_CALLS: Cell<usize> = const { Cell::new(0) };
+    static UPDATE_METRICS_TRANSACTION_VISITS: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(super) fn force_next_eviction_key_for_test(key: transaction::Hash) {
+    FORCED_EVICTION_KEY.with_borrow_mut(|forced_key| *forced_key = Some(key));
+}
+
+#[cfg(test)]
+pub(super) fn reset_update_metrics_scan_counters() {
+    UPDATE_METRICS_CALLS.with(|calls| calls.set(0));
+    UPDATE_METRICS_TRANSACTION_VISITS.with(|visits| visits.set(0));
+}
+
+#[cfg(test)]
+pub(super) fn update_metrics_scan_counters() -> (usize, usize) {
+    let calls = UPDATE_METRICS_CALLS.with(Cell::get);
+    let transaction_visits = UPDATE_METRICS_TRANSACTION_VISITS.with(Cell::get);
+
+    (calls, transaction_visits)
 }

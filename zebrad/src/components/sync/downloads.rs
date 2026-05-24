@@ -623,3 +623,110 @@ where
         self.pending.is_empty()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use futures::StreamExt;
+    use zebra_chain::{chain_tip::mock::MockChainTip, serialization::ZcashDeserializeInto};
+    use zebra_network::InventoryResponse::Available;
+    use zebra_test::mock_service::{MockService, PanicAssertion};
+
+    #[tokio::test]
+    async fn sync_downloader_verifies_exact_min_accepted_height_today() -> Result<(), BoxError> {
+        let block: Arc<block::Block> =
+            zebra_test::vectors::BLOCK_MAINNET_2_BYTES.zcash_deserialize_into()?;
+        let block_hash = block.hash();
+        let block_height = block
+            .coinbase_height()
+            .expect("test block should have a coinbase height");
+
+        let mut network: MockService<zn::Request, zn::Response, PanicAssertion> =
+            MockService::build().for_unit_tests();
+        let mut verifier: MockService<zebra_consensus::Request, block::Hash, PanicAssertion> =
+            MockService::build().for_unit_tests();
+        let (chain_tip, chain_tip_sender) = MockChainTip::new();
+
+        chain_tip_sender
+            .send_best_tip_height(block::Height(zs::MAX_BLOCK_REORG_HEIGHT + block_height.0));
+
+        let (past_lookahead_limit_sender, _past_lookahead_limit_receiver) = watch::channel(false);
+        let mut downloads = Downloads::new(
+            network.clone(),
+            verifier.clone(),
+            chain_tip,
+            past_lookahead_limit_sender,
+            10,
+            block::Height(0),
+        );
+
+        downloads.download_and_verify(block_hash).await?;
+
+        network
+            .expect_request(zn::Request::BlocksByHash(
+                std::iter::once(block_hash).collect(),
+            ))
+            .await
+            .respond(zn::Response::Blocks(vec![Available((block.clone(), None))]));
+
+        verifier
+            .expect_request(zebra_consensus::Request::Commit(block))
+            .await
+            .respond(block_hash);
+
+        let result = downloads
+            .next()
+            .await
+            .expect("queued exact-boundary download should finish")?;
+
+        assert_eq!(
+            result,
+            (block_height, block_hash),
+            "a block at exactly tip - MAX_BLOCK_REORG_HEIGHT reaches verification today"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "block download and verify tasks must not panic")]
+    async fn huge_lookahead_limit_can_panic_downloader_height_filter_today() {
+        let _init_guard = zebra_test::init();
+
+        let block: Arc<block::Block> = zebra_test::vectors::BLOCK_MAINNET_2_BYTES
+            .zcash_deserialize_into()
+            .expect("test block should deserialize");
+        let block_hash = block.hash();
+
+        let mut network: MockService<zn::Request, zn::Response, PanicAssertion> =
+            MockService::build().for_unit_tests();
+        let verifier: MockService<zebra_consensus::Request, block::Hash, PanicAssertion> =
+            MockService::build().for_unit_tests();
+        let (chain_tip, _chain_tip_sender) = MockChainTip::new();
+
+        let (past_lookahead_limit_sender, _past_lookahead_limit_receiver) = watch::channel(false);
+        let mut downloads = Downloads::new(
+            network.clone(),
+            verifier,
+            chain_tip,
+            past_lookahead_limit_sender,
+            usize::MAX,
+            block::Height(10),
+        );
+
+        downloads
+            .download_and_verify(block_hash)
+            .await
+            .expect("queuing the download should succeed");
+
+        network
+            .expect_request(zn::Request::BlocksByHash(
+                std::iter::once(block_hash).collect(),
+            ))
+            .await
+            .respond(zn::Response::Blocks(vec![Available((block, None))]));
+
+        let _ = downloads.next().await;
+    }
+}

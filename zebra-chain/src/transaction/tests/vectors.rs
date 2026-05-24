@@ -98,6 +98,26 @@ fn wtx_id_struct_from_str_roundtrip() {
     );
 }
 
+#[cfg(all(zcash_unstable = "nu7", feature = "tx_v6"))]
+#[test]
+#[should_panic(expected = "V5 tx is convertible to its `zcash_params` equivalent")]
+fn v6_transaction_auth_digest_panics_when_librustzcash_conversion_fails_today() {
+    let _init_guard = zebra_test::init();
+
+    let tx_bytes = [
+        0x06, 0x00, 0x00, 0x80, 0xff, 0xff, 0xff, 0xff, 0x55, 0x10, 0xe7, 0xc8, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00,
+    ];
+
+    let tx = Transaction::zcash_deserialize(&tx_bytes[..])
+        .expect("crafted V6 transaction currently deserializes");
+
+    assert!(matches!(tx, Transaction::V6 { .. }));
+
+    let _ = tx.auth_digest();
+}
+
 #[test]
 fn librustzcash_tx_deserialize_and_round_trip() {
     let _init_guard = zebra_test::init();

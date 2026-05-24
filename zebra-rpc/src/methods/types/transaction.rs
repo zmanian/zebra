@@ -26,6 +26,10 @@ use zebra_state::IntoDisk;
 use super::super::opthex;
 use super::zec::Zec;
 
+#[cfg(test)]
+static ORCHARD_AUTH_ACTION_SEARCH_COMPARISONS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 /// Transaction data and fields needed to generate blocks using the `getblocktemplate` RPC.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, Getters, new)]
 #[serde(bound = "FeeConstraint: amount::Constraint + Clone")]
@@ -873,7 +877,13 @@ impl TransactionObject {
                                 shielded_data
                                     .actions
                                     .iter()
-                                    .find(|authorized_action| authorized_action.action == **action)
+                                    .find(|authorized_action| {
+                                        #[cfg(test)]
+                                        ORCHARD_AUTH_ACTION_SEARCH_COMPARISONS
+                                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+                                        authorized_action.action == **action
+                                    })
                                     .map(|authorized_action| {
                                         authorized_action.spend_auth_sig.into()
                                     })
@@ -945,5 +955,75 @@ impl TransactionObject {
             block_hash,
             block_time,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+
+    use zebra_chain::{
+        parameters::Network,
+        serialization::ZcashDeserializeInto,
+        transaction::{self, Transaction},
+    };
+
+    use super::{TransactionObject, ORCHARD_AUTH_ACTION_SEARCH_COMPARISONS};
+
+    fn reset(counter: &AtomicUsize) {
+        counter.store(0, Ordering::SeqCst);
+    }
+
+    fn load_two_action_orchard_transaction() -> Arc<Transaction> {
+        let block = zebra_test::vectors::BLOCK_TESTNET_1842467_BYTES
+            .zcash_deserialize_into::<zebra_chain::block::Block>()
+            .expect("test vector block should deserialize");
+
+        block
+            .transactions
+            .iter()
+            .find(|tx| tx.orchard_actions().count() == 2)
+            .cloned()
+            .expect("test vector should contain a two-action Orchard transaction")
+    }
+
+    #[test]
+    fn verbose_transaction_searches_authorized_orchard_actions_repeatedly_today() {
+        let _init_guard = zebra_test::init();
+
+        let tx = load_two_action_orchard_transaction();
+        let action_count = tx.orchard_actions().count();
+        assert_eq!(action_count, 2);
+
+        reset(&ORCHARD_AUTH_ACTION_SEARCH_COMPARISONS);
+
+        let response = TransactionObject::from_transaction(
+            tx.clone(),
+            Some(zebra_chain::block::Height(1_842_467)),
+            Some(1),
+            &Network::new_default_testnet(),
+            None,
+            None,
+            Some(true),
+            transaction::Hash::from([0; 32]),
+        );
+
+        assert_eq!(
+            response
+                .orchard
+                .as_ref()
+                .expect("verbose response should include Orchard data")
+                .actions
+                .len(),
+            action_count
+        );
+        assert_eq!(
+            ORCHARD_AUTH_ACTION_SEARCH_COMPARISONS.load(Ordering::SeqCst),
+            action_count * (action_count + 1) / 2,
+            "verbose transaction output searches the authorized-action list from the start for each Orchard action today"
+        );
     }
 }

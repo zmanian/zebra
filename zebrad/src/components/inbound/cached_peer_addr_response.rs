@@ -96,3 +96,46 @@ impl CachedPeerAddrResponse {
         };
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tracing::Span;
+    use zebra_chain::parameters::Network::Mainnet;
+    use zebra_network::constants::DEFAULT_MAX_CONNS_PER_IP;
+
+    #[test]
+    fn empty_getaddr_refresh_leaves_refresh_time_stale_today() {
+        let _init_guard = zebra_test::init();
+
+        let address_book = Arc::new(Mutex::new(AddressBook::new(
+            "0.0.0.0:0".parse().expect("address parses"),
+            &Mainnet,
+            DEFAULT_MAX_CONNS_PER_IP,
+            Span::none(),
+        )));
+
+        let mut cached_response = CachedPeerAddrResponse::new(address_book);
+        cached_response.refresh_time = Instant::now() - Duration::from_secs(1);
+        let stale_refresh_time = cached_response.refresh_time;
+
+        cached_response.try_refresh();
+
+        assert_eq!(
+            cached_response.value(),
+            zn::Response::Nil,
+            "address book has no gossipable peers"
+        );
+        assert_eq!(
+            cached_response.refresh_time, stale_refresh_time,
+            "current behavior leaves the refresh time stale after an empty refresh"
+        );
+
+        cached_response.try_refresh();
+
+        assert_eq!(
+            cached_response.refresh_time, stale_refresh_time,
+            "a second empty refresh can run immediately because the deadline was not advanced"
+        );
+    }
+}

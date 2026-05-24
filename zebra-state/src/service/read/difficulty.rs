@@ -365,3 +365,208 @@ fn adjust_difficulty_and_time_for_testnet(
         .expected_difficulty_threshold();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use chrono::{Duration as ChronoDuration, Utc};
+
+    use zebra_chain::{
+        block::{self, Block, Header, Height},
+        history_tree::HistoryTree,
+        parameters::{
+            testnet::{self, ConfiguredActivationHeights},
+            Network, NetworkUpgrade,
+        },
+        serialization::{DateTime32, Duration32},
+        work::difficulty::ParameterDifficulty as _,
+    };
+
+    use super::*;
+
+    fn fake_relevant_block(
+        time: DateTime32,
+        difficulty_threshold: CompactDifficulty,
+    ) -> Arc<Block> {
+        Arc::new(Block {
+            header: Arc::new(Header {
+                version: block::ZCASH_BLOCK_VERSION,
+                previous_block_hash: block::Hash([0; 32]),
+                merkle_root: [0; 32].into(),
+                commitment_bytes: [0; 32].into(),
+                time: time.into(),
+                difficulty_threshold,
+                nonce: [0; 32].into(),
+                solution: Default::default(),
+            }),
+            transactions: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn gbt_maxtime_can_exceed_local_future_time_limit_today() {
+        let network = Network::Mainnet;
+        let local_now = DateTime32::now();
+        let previous_block_time = local_now
+            .checked_add(Duration32::from_seconds(90 * 60))
+            .expect("test timestamp plus 90 minutes is in range");
+        let relevant_block = fake_relevant_block(
+            previous_block_time,
+            network.target_difficulty_limit().to_compact(),
+        );
+
+        let chain_info = difficulty_time_and_history_tree(
+            vec![relevant_block],
+            Height(1),
+            block::Hash([1; 32]),
+            &network,
+            Arc::new(HistoryTree::default()),
+        );
+
+        let validation_now = Utc::now();
+        let local_future_limit = DateTime32::try_from(
+            validation_now
+                .checked_add_signed(ChronoDuration::hours(2))
+                .expect("calculating two hours in the future does not overflow"),
+        )
+        .expect("current timestamp plus two hours is in range");
+
+        assert!(
+            chain_info.max_time > local_future_limit,
+            "current code exposes MTP+90 minutes without intersecting the local future-time limit"
+        );
+
+        let candidate_block = fake_relevant_block(
+            chain_info.max_time,
+            network.target_difficulty_limit().to_compact(),
+        );
+        assert!(
+            candidate_block
+                .header
+                .time_is_valid_at(validation_now, &Height(2), &candidate_block.hash())
+                .is_err(),
+            "a block using the advertised maxtime is rejected by the same node's future-time check"
+        );
+    }
+
+    #[test]
+    fn gbt_maxtime_is_set_when_max_time_rule_is_inactive_today() {
+        let candidate_height = Height(299_000);
+        let previous_block_height =
+            (candidate_height - 1).expect("candidate height is above the genesis block height");
+        let network = testnet::Parameters::build()
+            .with_activation_heights(ConfiguredActivationHeights {
+                blossom: Some(candidate_height.0),
+                canopy: Some(
+                    candidate_height
+                        .0
+                        .checked_add(1)
+                        .expect("test height is below Height::MAX"),
+                ),
+                ..Default::default()
+            })
+            .expect("custom activation heights should be valid")
+            .to_network()
+            .expect("custom testnet network should be valid");
+        let previous_block_time = DateTime32::from(1_700_000_000);
+        let expected_template_max_time = previous_block_time
+            .checked_add(Duration32::from_seconds(BLOCK_MAX_TIME_SINCE_MEDIAN))
+            .expect("test timestamp plus max block time gap is in range");
+
+        assert!(
+            !network.is_max_block_time_enforced(candidate_height),
+            "the custom candidate height is before the testnet max-time rule"
+        );
+
+        let chain_info = difficulty_time_and_history_tree(
+            vec![fake_relevant_block(
+                previous_block_time,
+                network.target_difficulty_limit().to_compact(),
+            )],
+            previous_block_height,
+            block::Hash([1; 32]),
+            &network,
+            Arc::new(HistoryTree::default()),
+        );
+
+        assert_eq!(
+            chain_info.max_time, expected_template_max_time,
+            "current code still advertises the MTP+90-minute bound when validation would not enforce it"
+        );
+    }
+
+    #[test]
+    fn testnet_gbt_time_adjustment_uses_previous_upgrade_boundary_today() {
+        let candidate_height = Height(299_189);
+        let previous_block_height =
+            (candidate_height - 1).expect("candidate height is above the genesis block height");
+        let network = testnet::Parameters::build()
+            .with_activation_heights(ConfiguredActivationHeights {
+                blossom: Some(candidate_height.0),
+                canopy: Some(
+                    candidate_height
+                        .0
+                        .checked_add(1)
+                        .expect("test height is below Height::MAX"),
+                ),
+                ..Default::default()
+            })
+            .expect("custom activation heights should be valid")
+            .to_network()
+            .expect("custom testnet network should be valid");
+
+        let previous_block_time = DateTime32::from(1_700_000_000);
+        let standard_candidate_time = previous_block_time
+            .checked_add(Duration32::from_seconds(300))
+            .expect("test timestamp plus 5 minutes is in range");
+        let pre_blossom_min_difficulty_time = previous_block_time
+            .checked_add(Duration32::from_seconds(900))
+            .expect("test timestamp plus pre-Blossom min-difficulty gap is in range");
+        let post_blossom_min_difficulty_time = previous_block_time
+            .checked_add(Duration32::from_seconds(451))
+            .expect("test timestamp plus post-Blossom min-difficulty gap is in range");
+
+        let mut result = GetBlockTemplateChainInfo {
+            tip_hash: block::Hash([0; 32]),
+            tip_height: previous_block_height,
+            chain_history_root: None,
+            expected_difficulty: network.target_difficulty_limit().to_compact(),
+            cur_time: standard_candidate_time,
+            min_time: previous_block_time
+                .checked_add(Duration32::from_seconds(1))
+                .expect("test timestamp plus one second is in range"),
+            max_time: previous_block_time
+                .checked_add(Duration32::from_seconds(BLOCK_MAX_TIME_SINCE_MEDIAN))
+                .expect("test timestamp plus max block time gap is in range"),
+        };
+
+        adjust_difficulty_and_time_for_testnet(
+            &mut result,
+            &network,
+            previous_block_height,
+            vec![(
+                network.target_difficulty_limit().to_compact(),
+                previous_block_time.into(),
+            )],
+        );
+
+        assert_eq!(
+            result.max_time, pre_blossom_min_difficulty_time,
+            "current code keeps the pre-Blossom 900 second standard-difficulty window"
+        );
+        assert!(
+            NetworkUpgrade::is_testnet_min_difficulty_block(
+                &network,
+                candidate_height,
+                post_blossom_min_difficulty_time.into(),
+                previous_block_time.into(),
+            ),
+            "the candidate-height Blossom rule starts min-difficulty blocks at 451 seconds"
+        );
+        assert!(
+            result.max_time >= post_blossom_min_difficulty_time,
+            "the template time envelope includes candidate-height min-difficulty times"
+        );
+    }
+}

@@ -7,7 +7,11 @@ use std::collections::HashMap;
 use color_eyre::Report;
 use zebra_chain::amount::Amount;
 use zebra_chain::parameters::NetworkUpgrade::*;
-use zebra_chain::parameters::{subsidy::FundingStreamReceiver, NetworkKind};
+use zebra_chain::parameters::{
+    subsidy::FundingStreamReceiver,
+    testnet::{ConfiguredFundingStreamRecipient, ConfiguredFundingStreams, RegtestParameters},
+    NetworkKind,
+};
 
 use super::*;
 
@@ -138,6 +142,26 @@ fn test_funding_stream_addresses() -> Result<(), Report> {
     }
 
     Ok(())
+}
+
+#[test]
+#[should_panic]
+fn regtest_funding_stream_address_panics_after_skipped_validation_today() {
+    let _init_guard = zebra_test::init();
+
+    let regtest = Network::new_regtest(RegtestParameters {
+        funding_streams: Some(vec![ConfiguredFundingStreams {
+            height_range: Some(Height(1)..Height(10)),
+            recipients: Some(vec![ConfiguredFundingStreamRecipient {
+                receiver: FundingStreamReceiver::Ecc,
+                numerator: 10,
+                addresses: Some(vec![]),
+            }]),
+        }]),
+        ..Default::default()
+    });
+
+    let _address = funding_stream_address(Height(1), &regtest, FundingStreamReceiver::Ecc);
 }
 
 //Test if funding streams ranges do not overlap

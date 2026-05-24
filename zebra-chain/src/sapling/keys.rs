@@ -386,3 +386,58 @@ impl From<ValidatingKey> for redjubjub::VerificationKeyBytes<SpendAuth> {
         key.0.into()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use proptest::prelude::*;
+
+    use super::{TransmissionKey, ValidatingKey};
+    use crate::primitives::redjubjub::SpendAuth;
+
+    #[test]
+    #[should_panic]
+    fn transmission_key_panics_on_malformed_bytes_today() {
+        let _ = TransmissionKey::try_from([0xff; 32]);
+    }
+
+    #[test]
+    fn validating_key_rejects_malformed_and_small_order_bytes_without_panicking() {
+        let invalid_or_small_order_encodings = [[0xff; 32], [0; 32]];
+
+        for encoding in invalid_or_small_order_encodings {
+            let result = std::panic::catch_unwind(|| ValidatingKey::try_from(encoding));
+
+            assert!(
+                result.is_ok(),
+                "Sapling validating key parsing should not panic"
+            );
+            assert!(
+                result
+                    .expect("catch_unwind returned Ok because no panic occurred")
+                    .is_err(),
+                "Sapling validating key parsing should reject invalid or small-order encodings"
+            );
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn redjubjub_validating_key_success_implies_affine_decode_success(bytes in any::<[u8; 32]>()) {
+            if let Ok(key) = redjubjub::VerificationKey::<SpendAuth>::try_from(bytes) {
+                let encoded_key: [u8; 32] = key.into();
+
+                prop_assert_eq!(
+                    jubjub::AffinePoint::from_bytes(encoded_key).is_some().unwrap_u8(),
+                    1,
+                    "redjubjub accepted the key, so Zebra's follow-up affine decode must succeed"
+                );
+
+                let result = std::panic::catch_unwind(|| ValidatingKey::try_from(key));
+                prop_assert!(
+                    result.is_ok(),
+                    "Sapling validating key parsing should not panic after redjubjub validation"
+                );
+            }
+        }
+    }
+}

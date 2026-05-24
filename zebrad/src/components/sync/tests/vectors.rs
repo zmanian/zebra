@@ -12,11 +12,12 @@ use zebra_chain::{
     chain_tip::mock::{MockChainTip, MockChainTipSender},
     serialization::ZcashDeserializeInto,
 };
-use zebra_consensus::{Config as ConsensusConfig, RouterError, VerifyBlockError};
+use zebra_consensus::{BlockError, Config as ConsensusConfig, RouterError, VerifyBlockError};
 use zebra_network::InventoryResponse;
 use zebra_state::Config as StateConfig;
 use zebra_test::mock_service::{MockService, PanicAssertion};
 
+use tokio::sync::mpsc::error::TryRecvError;
 use zebra_network as zn;
 use zebra_state as zs;
 
@@ -581,6 +582,116 @@ async fn sync_block_lookahead_drop() -> Result<(), crate::BoxError> {
     Ok(())
 }
 
+/// Test that the first non-empty `FindBlocks` response determines the front of
+/// the `obtain_tips` download order, even if a later response contains the real
+/// continuation.
+#[tokio::test]
+async fn obtain_tips_queues_fast_junk_hashes_before_later_honest_hashes_today(
+) -> Result<(), crate::BoxError> {
+    let (
+        mut chain_sync,
+        _sync_status,
+        mut block_verifier_router,
+        mut peer_set,
+        mut state_service,
+        _mock_chain_tip_sender,
+    ) = setup_chain_sync();
+
+    let block0: Arc<Block> =
+        zebra_test::vectors::BLOCK_MAINNET_GENESIS_BYTES.zcash_deserialize_into()?;
+    let block0_hash = block0.hash();
+
+    let block1: Arc<Block> = zebra_test::vectors::BLOCK_MAINNET_1_BYTES.zcash_deserialize_into()?;
+    let block1_hash = block1.hash();
+
+    let block2: Arc<Block> = zebra_test::vectors::BLOCK_MAINNET_2_BYTES.zcash_deserialize_into()?;
+    let block2_hash = block2.hash();
+
+    let block3: Arc<Block> = zebra_test::vectors::BLOCK_MAINNET_3_BYTES.zcash_deserialize_into()?;
+    let block3_hash = block3.hash();
+
+    let block982k: Arc<Block> =
+        zebra_test::vectors::BLOCK_MAINNET_982681_BYTES.zcash_deserialize_into()?;
+
+    let junk1 = block::Hash::from([0xA1; 32]);
+    let junk2 = block::Hash::from([0xA2; 32]);
+    let junk3 = block::Hash::from([0xA3; 32]);
+
+    let obtain_tips = chain_sync.obtain_tips();
+
+    let mock_services = async {
+        state_service
+            .expect_request(zs::Request::BlockLocator)
+            .await
+            .respond(zs::Response::BlockLocator(vec![block0_hash]));
+
+        let find_blocks_request = zn::Request::FindBlocks {
+            known_blocks: vec![block0_hash],
+            stop: None,
+        };
+
+        peer_set
+            .expect_request(find_blocks_request.clone())
+            .await
+            .respond(zn::Response::BlockHashes(vec![junk1, junk2, junk3]));
+
+        state_service
+            .expect_request(zs::Request::KnownBlock(junk1))
+            .await
+            .respond(zs::Response::KnownBlock(None));
+
+        peer_set
+            .expect_request(find_blocks_request.clone())
+            .await
+            .respond(zn::Response::BlockHashes(vec![
+                block1_hash,
+                block2_hash,
+                block3_hash,
+            ]));
+
+        peer_set
+            .expect_request(find_blocks_request)
+            .await
+            .respond(Err(zn::BoxError::from("synthetic obtain tips error")));
+
+        state_service
+            .expect_request(zs::Request::KnownBlock(block1_hash))
+            .await
+            .respond(zs::Response::KnownBlock(None));
+
+        for hash in [junk1, junk2, block1_hash, block2_hash] {
+            state_service
+                .expect_request(zs::Request::KnownBlock(hash))
+                .await
+                .respond(zs::Response::KnownBlock(None));
+        }
+
+        for hash in [junk1, junk2, block1_hash, block2_hash] {
+            peer_set
+                .expect_request(zn::Request::BlocksByHash(iter::once(hash).collect()))
+                .await
+                .respond(zn::Response::Blocks(vec![Available((
+                    block982k.clone(),
+                    None,
+                ))]));
+        }
+
+        block_verifier_router.expect_no_requests().await;
+    };
+
+    let (extra_hashes, ()) = futures::join!(obtain_tips, mock_services);
+
+    let extra_hashes =
+        extra_hashes.expect("NotFound download errors are handled after hashes are queued");
+
+    assert!(
+        extra_hashes.is_empty(),
+        "four queued hashes fit inside the default lookahead limit"
+    );
+
+    Ok(())
+}
+
 /// Test that the sync downloader rejects blocks that are too high in obtain_tips.
 ///
 /// TODO: also test that it rejects blocks behind the tip limit. (Needs ~100 fake blocks.)
@@ -1020,6 +1131,152 @@ async fn should_restart_sync_returns_false() {
     );
 }
 
+#[tokio::test]
+async fn invalid_height_download_error_does_not_send_misbehavior_today() {
+    let _init_guard = zebra_test::init();
+
+    let config = ZebradConfig {
+        consensus: ConsensusConfig::default(),
+        state: StateConfig::ephemeral(),
+        ..Default::default()
+    };
+
+    let peer_set = MockService::build()
+        .with_max_request_delay(MAX_SERVICE_REQUEST_DELAY)
+        .for_unit_tests();
+    let block_verifier_router = MockService::build()
+        .with_max_request_delay(MAX_SERVICE_REQUEST_DELAY)
+        .for_unit_tests();
+    let state_service = MockService::build()
+        .with_max_request_delay(MAX_SERVICE_REQUEST_DELAY)
+        .for_unit_tests();
+    let (mock_chain_tip, _mock_chain_tip_sender) = MockChainTip::new();
+    let (misbehavior_tx, mut misbehavior_rx) = tokio::sync::mpsc::channel(1);
+
+    let (mut chain_sync, _sync_status) = ChainSync::new(
+        &config,
+        Height(0),
+        peer_set,
+        block_verifier_router,
+        state_service,
+        mock_chain_tip,
+        misbehavior_tx,
+    );
+
+    let response = Err(BlockDownloadVerifyError::InvalidHeight {
+        hash: block::Hash::from([0xAA; 32]),
+    });
+
+    assert!(chain_sync.handle_block_response(response).is_err());
+    assert_eq!(misbehavior_rx.try_recv(), Err(TryRecvError::Empty));
+}
+
+#[tokio::test]
+async fn full_misbehavior_channel_drops_score_bearing_sync_report_today() {
+    let _init_guard = zebra_test::init();
+
+    let config = ZebradConfig {
+        consensus: ConsensusConfig::default(),
+        state: StateConfig::ephemeral(),
+        ..Default::default()
+    };
+
+    let peer_set = MockService::build()
+        .with_max_request_delay(MAX_SERVICE_REQUEST_DELAY)
+        .for_unit_tests();
+    let block_verifier_router = MockService::build()
+        .with_max_request_delay(MAX_SERVICE_REQUEST_DELAY)
+        .for_unit_tests();
+    let state_service = MockService::build()
+        .with_max_request_delay(MAX_SERVICE_REQUEST_DELAY)
+        .for_unit_tests();
+    let (mock_chain_tip, _mock_chain_tip_sender) = MockChainTip::new();
+    let (misbehavior_tx, mut misbehavior_rx) = tokio::sync::mpsc::channel(1);
+
+    let sentinel_addr = zn::PeerSocketAddr::from(([127, 0, 0, 1], 8233));
+    misbehavior_tx
+        .try_send((sentinel_addr, 1))
+        .expect("channel should accept the sentinel");
+
+    let (mut chain_sync, _sync_status) = ChainSync::new(
+        &config,
+        Height(0),
+        peer_set,
+        block_verifier_router,
+        state_service,
+        mock_chain_tip,
+        misbehavior_tx,
+    );
+
+    let block_hash = block::Hash::from([0xAA; 32]);
+    let advertiser_addr = zn::PeerSocketAddr::from(([127, 0, 0, 2], 8233));
+    let router_error = RouterError::Block {
+        source: Box::new(VerifyBlockError::Block {
+            source: BlockError::MissingHeight(block_hash),
+        }),
+    };
+    assert_eq!(
+        router_error.misbehavior_score(),
+        100,
+        "test error should carry a misbehavior score"
+    );
+
+    let response = Err(BlockDownloadVerifyError::Invalid {
+        error: router_error,
+        height: Height(42),
+        hash: block_hash,
+        advertiser_addr: Some(advertiser_addr),
+    });
+
+    assert!(chain_sync.handle_block_response(response).is_err());
+    assert_eq!(misbehavior_rx.try_recv(), Ok((sentinel_addr, 1)));
+    assert_eq!(misbehavior_rx.try_recv(), Err(TryRecvError::Empty));
+}
+
+#[test]
+#[should_panic]
+fn huge_full_verify_concurrency_limit_can_overflow_lookahead_limit_today() {
+    let _init_guard = zebra_test::init();
+
+    let mut config = ZebradConfig {
+        consensus: ConsensusConfig::default(),
+        state: StateConfig::ephemeral(),
+        ..Default::default()
+    };
+    config.sync.full_verify_concurrency_limit = usize::MAX;
+
+    let peer_set = MockService::build()
+        .with_max_request_delay(MAX_SERVICE_REQUEST_DELAY)
+        .for_unit_tests();
+    let block_verifier_router = MockService::build()
+        .with_max_request_delay(MAX_SERVICE_REQUEST_DELAY)
+        .for_unit_tests();
+    let state_service = MockService::build()
+        .with_max_request_delay(MAX_SERVICE_REQUEST_DELAY)
+        .for_unit_tests();
+    let (mock_chain_tip, mock_chain_tip_sender) = MockChainTip::new();
+    let (misbehavior_tx, _misbehavior_rx) = tokio::sync::mpsc::channel(1);
+
+    let max_checkpoint_height = Height(10);
+    mock_chain_tip_sender.send_best_tip_height(
+        max_checkpoint_height
+            .previous()
+            .expect("test checkpoint height is above genesis"),
+    );
+
+    let (chain_sync, _sync_status) = ChainSync::new(
+        &config,
+        max_checkpoint_height,
+        peer_set,
+        block_verifier_router,
+        state_service,
+        mock_chain_tip,
+        misbehavior_tx,
+    );
+
+    let _lookahead_limit = chain_sync.lookahead_limit(2);
+}
+
 fn setup() -> (
     // ChainSync
     impl Future<Output = Result<(), Report>> + Send,
@@ -1029,6 +1286,40 @@ fn setup() -> (
     // PeerSet
     MockService<zebra_network::Request, zebra_network::Response, PanicAssertion>,
     // StateService
+    MockService<zebra_state::Request, zebra_state::Response, PanicAssertion>,
+    MockChainTipSender,
+) {
+    let (
+        chain_sync,
+        sync_status,
+        block_verifier_router,
+        peer_set,
+        state_service,
+        mock_chain_tip_sender,
+    ) = setup_chain_sync();
+
+    let chain_sync_future = chain_sync.sync();
+
+    (
+        chain_sync_future,
+        sync_status,
+        block_verifier_router,
+        peer_set,
+        state_service,
+        mock_chain_tip_sender,
+    )
+}
+
+fn setup_chain_sync() -> (
+    ChainSync<
+        MockService<zebra_network::Request, zebra_network::Response, PanicAssertion>,
+        MockService<zebra_state::Request, zebra_state::Response, PanicAssertion>,
+        MockService<zebra_consensus::Request, block::Hash, PanicAssertion>,
+        MockChainTip,
+    >,
+    SyncStatus,
+    MockService<zebra_consensus::Request, block::Hash, PanicAssertion>,
+    MockService<zebra_network::Request, zebra_network::Response, PanicAssertion>,
     MockService<zebra_state::Request, zebra_state::Response, PanicAssertion>,
     MockChainTipSender,
 ) {
@@ -1070,10 +1361,8 @@ fn setup() -> (
         misbehavior_tx,
     );
 
-    let chain_sync_future = chain_sync.sync();
-
     (
-        chain_sync_future,
+        chain_sync,
         sync_status,
         block_verifier_router,
         peer_set,

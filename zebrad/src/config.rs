@@ -178,3 +178,30 @@ impl ZebradConfig {
         config.try_deserialize()
     }
 }
+
+#[cfg(all(test, feature = "elasticsearch"))]
+mod tests {
+    use super::ZebradConfig;
+
+    #[test]
+    fn debug_config_includes_elasticsearch_password_today() {
+        let _init_guard = zebra_test::init();
+
+        let sentinel_password = "audit_sentinel_elasticsearch_password_do_not_log";
+        let mut config = ZebradConfig::default();
+        config.state.elasticsearch_url = "http://127.0.0.1:9200".to_string();
+        config.state.elasticsearch_username = "audit_user".to_string();
+        config.state.elasticsearch_password = sentinel_password.to_string();
+
+        let debug_config = format!("{config:?}");
+
+        assert!(
+            debug_config.contains("elasticsearch_password"),
+            "the current derived Debug output should include the password field name"
+        );
+        assert!(
+            debug_config.contains(sentinel_password),
+            "the current derived Debug output should include the configured password"
+        );
+    }
+}

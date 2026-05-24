@@ -2,14 +2,21 @@
 
 #![allow(clippy::unwrap_in_result)]
 
-use std::{cmp::min, time::Duration};
+use std::{cmp::min, sync::Mutex, time::Duration};
 
 use color_eyre::eyre::{eyre, Report};
 use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::time::timeout;
+use tower::service_fn;
 use tracing_futures::Instrument;
 
-use zebra_chain::{parameters::Network::*, serialization::ZcashDeserialize};
+use zebra_chain::{
+    block::{self, merkle},
+    parameters::{testnet::ConfiguredActivationHeights, Network, Network::*, NetworkUpgrade},
+    primitives::Halo2Proof,
+    serialization::ZcashDeserialize,
+    transaction::{arbitrary::insert_fake_orchard_shielded_data, LockTime, Transaction},
+};
 
 use super::*;
 
@@ -196,6 +203,220 @@ async fn multi_item_checkpoint_list() -> Result<(), Report> {
     assert_eq!(
         checkpoint_verifier.checkpoint_list.max_height(),
         block::Height(1)
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn same_hash_checkpoint_auth_data_variant_replaces_queued_block_today() -> Result<(), Report>
+{
+    let _init_guard = zebra_test::init();
+
+    let genesis =
+        Arc::<Block>::zcash_deserialize(&zebra_test::vectors::BLOCK_MAINNET_GENESIS_BYTES[..])?;
+    let genesis_hash = genesis.hash();
+
+    let height1_template =
+        Arc::<Block>::zcash_deserialize(&zebra_test::vectors::BLOCK_MAINNET_1_BYTES[..])?;
+
+    let mut good_tx = Transaction::V5 {
+        network_upgrade: NetworkUpgrade::Nu5,
+        lock_time: LockTime::min_lock_time_timestamp(),
+        expiry_height: block::Height(2),
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+        sapling_shielded_data: None,
+        orchard_shielded_data: None,
+    };
+    insert_fake_orchard_shielded_data(&mut good_tx);
+
+    let mut bad_tx = good_tx.clone();
+    let orchard_data = bad_tx
+        .orchard_shielded_data_mut()
+        .expect("fake Orchard data was just inserted");
+    orchard_data.proof = Halo2Proof(vec![0xde, 0xad, 0xbe, 0xef]);
+    orchard_data.binding_sig = [0xff; 64].into();
+    for action in orchard_data.actions.iter_mut() {
+        action.spend_auth_sig = [0xff; 64].into();
+    }
+
+    assert_eq!(
+        good_tx.hash(),
+        bad_tx.hash(),
+        "ZIP-244 mined IDs do not commit to V5 authorizing data"
+    );
+    assert_ne!(good_tx, bad_tx, "test variants must differ in auth data");
+
+    let good_tx = Arc::new(good_tx);
+    let bad_tx = Arc::new(bad_tx);
+
+    let good_transactions = vec![height1_template.transactions[0].clone(), good_tx];
+    let bad_transactions = vec![height1_template.transactions[0].clone(), bad_tx];
+
+    let mut height1_header = *height1_template.header;
+    height1_header.merkle_root = good_transactions.iter().collect::<merkle::Root>();
+
+    let good_height1 = Arc::new(Block {
+        header: Arc::new(height1_header),
+        transactions: good_transactions,
+    });
+    let bad_height1 = Arc::new(Block {
+        header: Arc::new(height1_header),
+        transactions: bad_transactions,
+    });
+
+    let height1_hash = good_height1.hash();
+    assert_eq!(
+        height1_hash,
+        bad_height1.hash(),
+        "changing only V5 auth data keeps the block header hash unchanged"
+    );
+
+    let height2_template =
+        Arc::<Block>::zcash_deserialize(&zebra_test::vectors::BLOCK_MAINNET_2_BYTES[..])?;
+    let mut height2_header = *height2_template.header;
+    height2_header.previous_block_hash = height1_hash;
+    let height2 = Arc::new(Block {
+        header: Arc::new(height2_header),
+        transactions: height2_template.transactions.clone(),
+    });
+    let height2_hash = height2.hash();
+
+    let checkpoint_list: BTreeMap<block::Height, block::Hash> = [
+        (block::Height(0), genesis_hash),
+        (block::Height(2), height2_hash),
+    ]
+    .into_iter()
+    .collect();
+
+    let commit_count = Arc::new(Mutex::new(0usize));
+    let state_tip = Arc::new(Mutex::new(None));
+    let state_service = service_fn({
+        let commit_count = commit_count.clone();
+        let state_tip = state_tip.clone();
+
+        move |request| {
+            let commit_count = commit_count.clone();
+            let state_tip = state_tip.clone();
+
+            let response: Result<zebra_state::Response, BoxError> = match request {
+                zebra_state::Request::CommitCheckpointVerifiedBlock(_) => {
+                    let mut commit_count = commit_count.lock().expect("mock state is not poisoned");
+                    *commit_count += 1;
+
+                    if *commit_count == 1 {
+                        *state_tip.lock().expect("mock state is not poisoned") =
+                            Some((block::Height(0), genesis_hash));
+                        Ok(zebra_state::Response::Committed(genesis_hash))
+                    } else {
+                        Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "mock state rejected checkpoint auth-data variant",
+                        )
+                        .into())
+                    }
+                }
+                zebra_state::Request::Tip => Ok(zebra_state::Response::Tip(
+                    *state_tip.lock().expect("mock state is not poisoned"),
+                )),
+                unexpected => panic!("unexpected checkpoint state request: {unexpected:?}"),
+            };
+
+            async move { response }
+        }
+    });
+
+    let network = Network::new_regtest(
+        ConfiguredActivationHeights {
+            nu5: Some(1),
+            ..Default::default()
+        }
+        .into(),
+    );
+    let mut checkpoint_verifier =
+        CheckpointVerifier::from_list(checkpoint_list, &network, None, state_service)
+            .map_err(|e| eyre!(e))?;
+
+    let ready_verifier_service = checkpoint_verifier.ready().map_err(|e| eyre!(e)).await?;
+    let genesis_future = timeout(
+        Duration::from_secs(VERIFY_TIMEOUT_SECONDS),
+        ready_verifier_service.call(genesis),
+    );
+    let genesis_response = genesis_future
+        .await
+        .expect("timeout should not happen")
+        .map_err(|e| eyre!(e))?;
+    assert_eq!(genesis_response, genesis_hash);
+    assert_eq!(
+        checkpoint_verifier.previous_checkpoint_height(),
+        PreviousCheckpoint(block::Height(0))
+    );
+
+    let ready_verifier_service = checkpoint_verifier.ready().map_err(|e| eyre!(e)).await?;
+    let good_future = timeout(
+        Duration::from_secs(VERIFY_TIMEOUT_SECONDS),
+        ready_verifier_service.call(good_height1),
+    );
+
+    assert_eq!(
+        checkpoint_verifier.target_checkpoint_height(),
+        WaitingForBlocks
+    );
+
+    let ready_verifier_service = checkpoint_verifier.ready().map_err(|e| eyre!(e)).await?;
+    let bad_future = timeout(
+        Duration::from_secs(VERIFY_TIMEOUT_SECONDS),
+        ready_verifier_service.call(bad_height1),
+    );
+
+    let good_error = good_future
+        .await
+        .expect("timeout should not happen")
+        .expect_err("newer same-hash auth-data variant replaces older request");
+    assert!(
+        matches!(
+            good_error,
+            VerifyCheckpointError::NewerRequest { height, hash }
+                if height == block::Height(1) && hash == height1_hash
+        ),
+        "unexpected good variant error: {good_error:?}"
+    );
+
+    let ready_verifier_service = checkpoint_verifier.ready().map_err(|e| eyre!(e)).await?;
+    let height2_future = timeout(
+        Duration::from_secs(VERIFY_TIMEOUT_SECONDS),
+        ready_verifier_service.call(height2),
+    );
+
+    let bad_error = bad_future
+        .await
+        .expect("timeout should not happen")
+        .expect_err("mock state rejects the replacement auth-data variant");
+    assert!(
+        matches!(
+            bad_error,
+            VerifyCheckpointError::CommitCheckpointVerified(_)
+        ),
+        "unexpected replacement variant error: {bad_error:?}"
+    );
+
+    let height2_error = height2_future
+        .await
+        .expect("timeout should not happen")
+        .expect_err("mock state rejects blocks after genesis");
+    assert!(
+        matches!(
+            height2_error,
+            VerifyCheckpointError::CommitCheckpointVerified(_)
+        ),
+        "unexpected height 2 error: {height2_error:?}"
+    );
+
+    assert_eq!(
+        *commit_count.lock().expect("mock state is not poisoned"),
+        3,
+        "genesis, replacement height 1 block, and height 2 block reached state"
     );
 
     Ok(())
@@ -653,6 +874,79 @@ async fn wrong_checkpoint_hash_fail() -> Result<(), Report> {
         checkpoint_verifier.checkpoint_list.max_height(),
         block::Height(0)
     );
+
+    Ok(())
+}
+
+#[test]
+fn checkpoint_check_block_accepts_missing_funding_stream_outputs_today() -> Result<(), Report> {
+    let _init_guard = zebra_test::init();
+
+    let network = zebra_chain::parameters::testnet::Parameters::build()
+        .with_disable_pow(true)
+        .to_network()?;
+
+    let block =
+        Arc::<Block>::zcash_deserialize(&zebra_test::vectors::BLOCK_MAINNET_1046400_BYTES[..])?;
+    let mut block = Arc::try_unwrap(block).expect("block test vector should unwrap");
+    let height = block
+        .coinbase_height()
+        .expect("block test vector should have a coinbase height");
+
+    let coinbase = block
+        .transactions
+        .first()
+        .expect("block test vector should have a coinbase transaction");
+    let mut output = coinbase.outputs()[0].clone();
+    output.value = amount::Amount::try_from(i32::MAX).expect("test amount should be valid");
+
+    let malformed_coinbase = Transaction::V4 {
+        inputs: coinbase.inputs().to_vec(),
+        outputs: vec![output],
+        lock_time: coinbase.lock_time().unwrap_or_else(LockTime::unlocked),
+        expiry_height: block::Height(0),
+        joinsplit_data: None,
+        sapling_shielded_data: None,
+    };
+
+    block.transactions = vec![Arc::new(malformed_coinbase)];
+    Arc::make_mut(&mut block.header).merkle_root =
+        block.transactions.iter().collect::<merkle::Root>();
+
+    let block = Arc::new(block);
+    let trusted_hash = block.hash();
+
+    let expected_block_subsidy = block_subsidy(height, &network)?;
+    let semantic_error =
+        crate::block::check::subsidy_is_valid(&block, &network, expected_block_subsidy)
+            .expect_err("full semantic subsidy validation should reject the malformed coinbase");
+    assert!(
+        matches!(
+            semantic_error,
+            BlockError::Transaction(crate::error::TransactionError::Subsidy(
+                SubsidyError::FundingStreamNotFound
+            ))
+        ),
+        "unexpected semantic subsidy error: {semantic_error:?}"
+    );
+
+    let state_service = service_fn(|_request: zebra_state::Request| async move {
+        Err::<zebra_state::Response, BoxError>("state service is unused by check_block".into())
+    });
+    let checkpoint_verifier = CheckpointVerifier::from_list(
+        [
+            (block::Height(0), network.genesis_hash()),
+            (height, trusted_hash),
+        ],
+        &network,
+        None,
+        state_service,
+    )
+    .map_err(|e| eyre!(e))?;
+
+    checkpoint_verifier
+        .check_block(block)
+        .expect("checkpoint pre-check currently accepts the malformed coinbase");
 
     Ok(())
 }

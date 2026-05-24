@@ -58,6 +58,17 @@ fn ensure_peer_connection_limits_consistent() {
 }
 
 #[test]
+#[should_panic]
+fn oversized_peerset_initial_target_size_overflows_connection_limits_today() {
+    let _init_guard = zebra_test::init();
+
+    let config: Config = toml::from_str("peerset_initial_target_size = 9223372036854775807")
+        .expect("large signed TOML integer should parse as usize on 64-bit targets");
+
+    let _connection_limit = config.peerset_total_connection_limit();
+}
+
+#[test]
 fn testnet_params_serialization_roundtrip() {
     let _init_guard = zebra_test::init();
 

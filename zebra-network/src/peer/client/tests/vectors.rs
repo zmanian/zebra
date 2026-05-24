@@ -4,7 +4,7 @@ use std::iter;
 
 use futures::poll;
 use tokio::sync::broadcast;
-use tower::ServiceExt;
+use tower::{Service, ServiceExt};
 
 use zebra_chain::block;
 use zebra_test::service_extensions::IsReady;
@@ -117,6 +117,22 @@ async fn client_service_ready_request_close() {
     assert!(harness.current_error().is_some());
     assert!(!harness.wants_connection_heartbeats());
     assert!(harness.try_to_receive_outbound_client_request().is_closed());
+}
+
+#[tokio::test]
+async fn client_call_on_disconnected_server_tx_returns_error_today() {
+    let _init_guard = zebra_test::init();
+
+    let (mut client, mut harness) = ClientTestHarness::build().finish();
+
+    harness.drop_outbound_client_request_receiver();
+
+    let result = client.call(Request::Peers).await;
+
+    assert!(
+        result.is_err(),
+        "client calls on a disconnected request channel should return a peer error"
+    );
 }
 
 #[tokio::test]

@@ -15,7 +15,7 @@ use zebra_chain::{
     fmt::humantime_seconds,
     parameters::Network::{self, *},
     serialization::{DateTime32, ZcashDeserializeInto},
-    transaction::{UnminedTx, UnminedTxId, VerifiedUnminedTx},
+    transaction::{Hash as TxHash, UnminedTx, UnminedTxId, VerifiedUnminedTx},
 };
 use zebra_consensus::{error::TransactionError, transaction, Config as ConsensusConfig};
 use zebra_network::{
@@ -51,6 +51,63 @@ use InventoryResponse::*;
 ///
 /// Increasing this value causes the tests to take longer to complete, so it can't be too large.
 const MAX_PEER_SET_REQUEST_DELAY: Duration = Duration::from_millis(500);
+
+async fn setup_inbound_with_mock_mempool() -> (
+    Buffer<BoxService<Request, Response, BoxError>, Request>,
+    MockService<mempool::Request, mempool::Response, PanicAssertion>,
+) {
+    let network = Mainnet;
+    let state_config = StateConfig::ephemeral();
+    let address_book = AddressBook::new_with_addrs(
+        SocketAddr::from_str("0.0.0.0:0").unwrap(),
+        &network,
+        DEFAULT_MAX_CONNS_PER_IP,
+        MAX_ADDRS_IN_ADDRESS_BOOK,
+        Span::none(),
+        iter::empty(),
+    );
+    let address_book = Arc::new(std::sync::Mutex::new(address_book));
+
+    let (state, _read_only_state_service, latest_chain_tip, _chain_tip_change) =
+        zebra_state::init(state_config, &network, Height::MAX, 0).await;
+    let state_service = ServiceBuilder::new().buffer(1).service(state);
+
+    let peer_set = MockService::build()
+        .with_max_request_delay(MAX_PEER_SET_REQUEST_DELAY)
+        .for_unit_tests();
+    let buffered_peer_set = Buffer::new(BoxService::new(peer_set), 10);
+
+    let block_verifier = MockService::build().for_unit_tests();
+    let block_verifier = Buffer::new(BoxService::new(block_verifier), 1);
+
+    let mempool_service = MockService::build()
+        .with_max_request_delay(MAX_PEER_SET_REQUEST_DELAY)
+        .for_unit_tests();
+    let buffered_mempool_service = Buffer::new(BoxService::new(mempool_service.clone()), 10);
+
+    let (setup_tx, setup_rx) = oneshot::channel();
+
+    let inbound_service = ServiceBuilder::new()
+        .load_shed()
+        .service(Inbound::new(MAX_INBOUND_CONCURRENCY, setup_rx));
+    let inbound_service = BoxService::new(inbound_service);
+    let inbound_service = ServiceBuilder::new().buffer(1).service(inbound_service);
+
+    let (misbehavior_sender, _misbehavior_rx) = tokio::sync::mpsc::channel(1);
+    let setup_data = InboundSetupData {
+        address_book,
+        block_download_peer_set: buffered_peer_set,
+        block_verifier,
+        mempool: buffered_mempool_service,
+        state: state_service,
+        latest_chain_tip,
+        misbehavior_sender,
+    };
+    let r = setup_tx.send(setup_data);
+    assert!(r.is_ok(), "unexpected setup channel send failure");
+
+    (inbound_service, mempool_service)
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn mempool_requests_for_transactions() {
@@ -116,6 +173,188 @@ async fn mempool_requests_for_transactions() {
 
     // check that nothing unexpected happened
     peer_set.expect_no_requests().await;
+
+    let sync_gossip_result = sync_gossip_task_handle.now_or_never();
+    assert!(
+        sync_gossip_result.is_none(),
+        "unexpected error or panic in sync gossip task: {sync_gossip_result:?}",
+    );
+
+    let tx_gossip_result = tx_gossip_task_handle.now_or_never();
+    assert!(
+        tx_gossip_result.is_none(),
+        "unexpected error or panic in transaction gossip task: {tx_gossip_result:?}",
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mempool_transaction_ids_request_forwards_full_set_before_connection_cap_today() {
+    let _init_guard = zebra_test::init();
+
+    let (inbound_service, mut mempool_service) = setup_inbound_with_mock_mempool().await;
+
+    let response_len = usize::try_from(zebra_network::MAX_TX_INV_IN_SENT_MESSAGE)
+        .expect("constant fits in usize")
+        + 3;
+    let transaction_ids: HashSet<_> = (0..response_len)
+        .map(|index| {
+            let mut bytes = [0; 32];
+            bytes[..8].copy_from_slice(
+                &u64::try_from(index)
+                    .expect("test index fits in u64")
+                    .to_le_bytes(),
+            );
+
+            UnminedTxId::from_legacy_id(TxHash(bytes))
+        })
+        .collect();
+
+    let response_task = tokio::spawn(
+        inbound_service
+            .clone()
+            .oneshot(Request::MempoolTransactionIds),
+    );
+
+    mempool_service
+        .expect_request(mempool::Request::TransactionIds)
+        .await
+        .respond(mempool::Response::TransactionIds(transaction_ids.clone()));
+
+    let response = response_task
+        .await
+        .expect("inbound request task should not panic")
+        .expect("inbound request should succeed");
+
+    let Response::TransactionIds(response) = response else {
+        panic!("MempoolTransactionIds should forward a non-empty TransactionIds response");
+    };
+
+    assert_eq!(
+        response.len(),
+        response_len,
+        "inbound forwards the full mempool ID set before the connection-layer inv cap today",
+    );
+    assert_eq!(
+        response.into_iter().collect::<HashSet<_>>(),
+        transaction_ids
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn advertise_transaction_ids_forwards_full_set_to_mempool_before_download_cap_today() {
+    let _init_guard = zebra_test::init();
+
+    let (inbound_service, mut mempool_service) = setup_inbound_with_mock_mempool().await;
+
+    let requested_count = crate::components::mempool::downloads::MAX_INBOUND_CONCURRENCY + 3;
+    let transaction_ids: HashSet<_> = (0..requested_count)
+        .map(|index| {
+            let mut bytes = [0; 32];
+            bytes[..8].copy_from_slice(
+                &u64::try_from(index)
+                    .expect("test index fits in u64")
+                    .to_le_bytes(),
+            );
+
+            UnminedTxId::from_legacy_id(TxHash(bytes))
+        })
+        .collect();
+
+    let response_task = tokio::spawn(
+        inbound_service
+            .clone()
+            .oneshot(Request::AdvertiseTransactionIds(transaction_ids.clone())),
+    );
+
+    let responder = mempool_service
+        .expect_request_that(|request| matches!(request, mempool::Request::Queue(_)))
+        .await;
+
+    let mempool::Request::Queue(gossiped_txs) = responder.request() else {
+        unreachable!("request was checked by expect_request_that");
+    };
+
+    assert_eq!(
+        gossiped_txs.len(),
+        requested_count,
+        "inbound forwards every advertised transaction ID to mempool queue today",
+    );
+    assert_eq!(
+        gossiped_txs
+            .iter()
+            .map(|gossip| gossip.id())
+            .collect::<HashSet<_>>(),
+        transaction_ids
+    );
+
+    responder.respond(mempool::Response::Queued(Vec::new()));
+
+    let response = response_task
+        .await
+        .expect("inbound request task should not panic")
+        .expect("inbound request should succeed");
+
+    assert_eq!(response, Response::Nil);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn large_transactions_by_id_request_returns_every_missing_id_today() {
+    const LARGE_TRANSACTION_ID_COUNT: usize = 2_048;
+
+    let (
+        inbound_service,
+        _mempool_guard,
+        _committed_blocks,
+        _added_transactions,
+        mut tx_verifier,
+        mut peer_set,
+        _state_guard,
+        _chain_tip_change,
+        sync_gossip_task_handle,
+        tx_gossip_task_handle,
+    ) = setup(false).await;
+
+    let requested_ids: HashSet<_> = (0..LARGE_TRANSACTION_ID_COUNT)
+        .map(|id| {
+            let mut bytes = [0; 32];
+            bytes[..8].copy_from_slice(&(id as u64).to_le_bytes());
+            UnminedTxId::from_legacy_id(TxHash(bytes))
+        })
+        .collect();
+
+    let response = inbound_service
+        .clone()
+        .oneshot(Request::TransactionsById(requested_ids.clone()))
+        .await
+        .expect("large TransactionsById request should complete");
+
+    let Response::Transactions(transaction_statuses) = response else {
+        panic!("TransactionsById should return a Transactions response");
+    };
+
+    assert_eq!(
+        transaction_statuses.len(),
+        requested_ids.len(),
+        "current behavior returns a missing response for every requested transaction ID"
+    );
+
+    let missing_ids: HashSet<_> = transaction_statuses
+        .into_iter()
+        .map(|status| match status {
+            Missing(tx_id) => tx_id,
+            Available((tx, _addr)) => {
+                panic!("empty mempool should not return available transaction {tx:?}")
+            }
+        })
+        .collect();
+
+    assert_eq!(
+        missing_ids, requested_ids,
+        "current behavior preserves the entire large requested ID set"
+    );
+
+    peer_set.expect_no_requests().await;
+    tx_verifier.expect_no_requests().await;
 
     let sync_gossip_result = sync_gossip_task_handle.now_or_never();
     assert!(

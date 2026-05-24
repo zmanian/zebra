@@ -2,6 +2,9 @@
 
 use std::collections::{HashMap, HashSet};
 
+#[cfg(test)]
+use std::cell::Cell;
+
 use derive_getters::Getters;
 use derive_new::new;
 use hex::ToHex as _;
@@ -62,10 +65,7 @@ impl MempoolObject {
         transaction_dependencies: &TransactionDependencies,
     ) -> Self {
         // Map transactions by their txids to make lookups easier
-        let transactions_by_id = transactions
-            .iter()
-            .map(|unmined_tx| (unmined_tx.transaction.id.mined_id(), unmined_tx))
-            .collect::<HashMap<_, _>>();
+        let transactions_by_id = transactions_by_id(transactions);
 
         // Get txids of this transaction's descendants (dependents)
         let empty_set = HashSet::new();
@@ -114,5 +114,141 @@ impl MempoolObject {
                 .collect(),
         };
         mempool_object
+    }
+}
+
+fn transactions_by_id(
+    transactions: &[VerifiedUnminedTx],
+) -> HashMap<zebra_chain::transaction::Hash, &VerifiedUnminedTx> {
+    #[cfg(test)]
+    {
+        TRANSACTION_LOOKUP_MAP_BUILDS.with(|builds| builds.set(builds.get() + 1));
+        TRANSACTION_LOOKUP_MAP_INPUTS
+            .with(|inputs| inputs.set(inputs.get().saturating_add(transactions.len())));
+    }
+
+    transactions
+        .iter()
+        .map(|unmined_tx| (unmined_tx.transaction.id.mined_id(), unmined_tx))
+        .collect()
+}
+
+#[cfg(test)]
+thread_local! {
+    static TRANSACTION_LOOKUP_MAP_BUILDS: Cell<usize> = const { Cell::new(0) };
+    static TRANSACTION_LOOKUP_MAP_INPUTS: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+fn reset_transaction_lookup_map_counters() {
+    TRANSACTION_LOOKUP_MAP_BUILDS.with(|builds| builds.set(0));
+    TRANSACTION_LOOKUP_MAP_INPUTS.with(|inputs| inputs.set(0));
+}
+
+#[cfg(test)]
+fn transaction_lookup_map_counters() -> (usize, usize) {
+    let builds = TRANSACTION_LOOKUP_MAP_BUILDS.with(Cell::get);
+    let inputs = TRANSACTION_LOOKUP_MAP_INPUTS.with(Cell::get);
+
+    (builds, inputs)
+}
+
+#[cfg(test)]
+mod tests {
+    use zebra_chain::{parameters::Network, transparent::OutPoint};
+
+    use super::*;
+
+    #[test]
+    fn mempool_object_counts_only_direct_dependents_today() {
+        let transactions = Network::Mainnet
+            .unmined_transactions_in_blocks(..)
+            .filter(|tx| !tx.transaction.transaction.is_coinbase())
+            .take(3)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            transactions.len(),
+            3,
+            "test vectors should provide at least three non-coinbase mempool transactions"
+        );
+
+        let parent_id = transactions[0].transaction.id.mined_id();
+        let child_id = transactions[1].transaction.id.mined_id();
+        let grandchild_id = transactions[2].transaction.id.mined_id();
+
+        let mut transaction_dependencies = TransactionDependencies::default();
+        transaction_dependencies.add(
+            child_id,
+            vec![OutPoint {
+                hash: parent_id,
+                index: 0,
+            }],
+        );
+        transaction_dependencies.add(
+            grandchild_id,
+            vec![OutPoint {
+                hash: child_id,
+                index: 0,
+            }],
+        );
+
+        let mempool_object = MempoolObject::from_verified_unmined_tx(
+            &transactions[0],
+            &transactions,
+            &transaction_dependencies,
+        );
+
+        assert_eq!(
+            mempool_object.descendantcount, 2,
+            "verbose mempool output counts only the direct child plus itself today"
+        );
+        assert_eq!(
+            mempool_object.descendantsize,
+            (transactions[0].transaction.size + transactions[1].transaction.size) as u64,
+            "verbose mempool output includes only direct child size today"
+        );
+        assert_eq!(
+            mempool_object.descendantfees, 2_000_000,
+            "verbose mempool output includes only direct child fee today"
+        );
+    }
+
+    #[test]
+    fn verbose_mempool_object_rebuilds_lookup_for_each_transaction_today() {
+        let transactions = Network::Mainnet
+            .unmined_transactions_in_blocks(..)
+            .filter(|tx| !tx.transaction.transaction.is_coinbase())
+            .take(8)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            transactions.len(),
+            8,
+            "test vectors should provide at least eight non-coinbase mempool transactions"
+        );
+
+        let transaction_dependencies = TransactionDependencies::default();
+        reset_transaction_lookup_map_counters();
+
+        for transaction in &transactions {
+            let _ = MempoolObject::from_verified_unmined_tx(
+                transaction,
+                &transactions,
+                &transaction_dependencies,
+            );
+        }
+
+        let (lookup_builds, lookup_inputs) = transaction_lookup_map_counters();
+        assert_eq!(
+            lookup_builds,
+            transactions.len(),
+            "verbose object assembly rebuilds the full lookup map once per transaction today"
+        );
+        assert_eq!(
+            lookup_inputs,
+            transactions.len() * transactions.len(),
+            "each lookup-map rebuild iterates the full transaction slice"
+        );
     }
 }

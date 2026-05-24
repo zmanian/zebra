@@ -2,10 +2,16 @@
 
 #![allow(clippy::unwrap_in_result)]
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use color_eyre::Report;
-use tokio::time::{self, timeout};
+use tokio::{
+    sync::mpsc::error::TryRecvError,
+    time::{self, timeout},
+};
 use tower::{ServiceBuilder, ServiceExt};
 
 use rand::{seq::SliceRandom, thread_rng};
@@ -15,7 +21,7 @@ use zebra_chain::{
     fmt::humantime_seconds,
     parameters::Network,
     serialization::ZcashDeserializeInto,
-    transaction::{Transaction, VerifiedUnminedTx},
+    transaction::{Hash as TransactionHash, Transaction, UnminedTxId, VerifiedUnminedTx},
     transparent::{self, OutPoint},
 };
 use zebra_consensus::transaction as tx;
@@ -35,6 +41,113 @@ type StateService = Buffer<BoxService<zs::Request, zs::Response, zs::BoxError>, 
 
 /// A [`MockService`] representing the Zebra transaction verifier service.
 type MockTxVerifier = MockService<tx::Request, tx::Response, PanicAssertion, TransactionError>;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RecordedMetric {
+    name: String,
+    labels: Vec<(String, String)>,
+}
+
+#[derive(Default)]
+struct RecordingRecorder {
+    metrics: Mutex<Vec<RecordedMetric>>,
+}
+
+impl RecordingRecorder {
+    fn record_key(&self, key: &metrics::Key) {
+        let labels = key
+            .labels()
+            .map(|label| (label.key().to_string(), label.value().to_string()))
+            .collect();
+
+        self.metrics
+            .lock()
+            .expect(
+                "recorder mutex should not be poisoned because tests do not panic while holding it",
+            )
+            .push(RecordedMetric {
+                name: key.name().to_string(),
+                labels,
+            });
+    }
+
+    fn recorded_metrics(&self) -> Vec<RecordedMetric> {
+        self.metrics
+            .lock()
+            .expect(
+                "recorder mutex should not be poisoned because tests do not panic while holding it",
+            )
+            .clone()
+    }
+}
+
+impl metrics::Recorder for RecordingRecorder {
+    fn describe_counter(
+        &self,
+        _key: metrics::KeyName,
+        _unit: Option<metrics::Unit>,
+        _description: metrics::SharedString,
+    ) {
+    }
+
+    fn describe_gauge(
+        &self,
+        _key: metrics::KeyName,
+        _unit: Option<metrics::Unit>,
+        _description: metrics::SharedString,
+    ) {
+    }
+
+    fn describe_histogram(
+        &self,
+        _key: metrics::KeyName,
+        _unit: Option<metrics::Unit>,
+        _description: metrics::SharedString,
+    ) {
+    }
+
+    fn register_counter(
+        &self,
+        key: &metrics::Key,
+        _metadata: &metrics::Metadata<'_>,
+    ) -> metrics::Counter {
+        self.record_key(key);
+        metrics::Counter::noop()
+    }
+
+    fn register_gauge(
+        &self,
+        key: &metrics::Key,
+        _metadata: &metrics::Metadata<'_>,
+    ) -> metrics::Gauge {
+        self.record_key(key);
+        metrics::Gauge::noop()
+    }
+
+    fn register_histogram(
+        &self,
+        key: &metrics::Key,
+        _metadata: &metrics::Metadata<'_>,
+    ) -> metrics::Histogram {
+        self.record_key(key);
+        metrics::Histogram::noop()
+    }
+}
+
+fn metric_has_label(
+    metrics: &[RecordedMetric],
+    metric_name: &str,
+    label_name: &str,
+    label_value: &str,
+) -> bool {
+    metrics.iter().any(|metric| {
+        metric.name == metric_name
+            && metric
+                .labels
+                .iter()
+                .any(|(name, value)| name == label_name && value == label_value)
+    })
+}
 
 #[tokio::test]
 async fn mempool_service_basic() -> Result<(), Report> {
@@ -324,6 +437,71 @@ async fn mempool_queue_single() -> Result<(), Report> {
     }
     assert_eq!(in_mempool_count, transactions.len() - 1);
     assert_eq!(evicted_count, 1);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn mempool_queue_reports_every_gossiped_id_before_download_cap() -> Result<(), Report> {
+    let network = Network::Mainnet;
+    let (
+        mut service,
+        _peer_set,
+        _state_service,
+        _chain_tip_change,
+        _tx_verifier,
+        mut recent_syncs,
+        _mempool_transaction_receiver,
+    ) = setup(&network, u64::MAX, true).await;
+
+    service.enable(&mut recent_syncs).await;
+
+    let requested_count = downloads::MAX_INBOUND_CONCURRENCY + 3;
+    let gossiped_txs = (0..requested_count)
+        .map(|index| {
+            let mut bytes = [0; 32];
+            bytes[..8].copy_from_slice(&((index + 1) as u64).to_le_bytes());
+
+            UnminedTxId::from_legacy_id(TransactionHash(bytes)).into()
+        })
+        .collect();
+
+    let response = service
+        .ready()
+        .await
+        .unwrap()
+        .call(Request::Queue(gossiped_txs))
+        .await
+        .unwrap();
+    let queued_responses = match response {
+        Response::Queued(queue_responses) => queue_responses,
+        _ => unreachable!("will never happen in this test"),
+    };
+
+    assert_eq!(queued_responses.len(), requested_count);
+
+    let mut accepted_count = 0;
+    let mut full_queue_count = 0;
+
+    for response in queued_responses {
+        match response {
+            Ok(_receiver) => accepted_count += 1,
+            Err(error) => match error.unbox_mempool_error() {
+                MempoolError::FullQueue => full_queue_count += 1,
+                error => panic!("unexpected queue rejection reason: {error:?}"),
+            },
+        }
+    }
+
+    assert_eq!(accepted_count, downloads::MAX_INBOUND_CONCURRENCY);
+    assert_eq!(
+        full_queue_count,
+        requested_count - downloads::MAX_INBOUND_CONCURRENCY
+    );
+    assert_eq!(
+        service.tx_downloads().in_flight(),
+        downloads::MAX_INBOUND_CONCURRENCY
+    );
 
     Ok(())
 }
@@ -791,6 +969,250 @@ async fn mempool_failed_verification_is_rejected() -> Result<(), Report> {
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn full_misbehavior_channel_drops_score_bearing_mempool_report_today() -> Result<(), Report> {
+    let network = Network::Mainnet;
+
+    let (
+        mut mempool,
+        mut peer_set,
+        _state_service,
+        _chain_tip_change,
+        mut tx_verifier,
+        mut recent_syncs,
+        _mempool_transaction_receiver,
+    ) = setup(&network, u64::MAX, true).await;
+    let (misbehavior_tx, mut misbehavior_rx) = tokio::sync::mpsc::channel(1);
+
+    let sentinel_addr = zn::PeerSocketAddr::from(([127, 0, 0, 1], 8233));
+    misbehavior_tx
+        .try_send((sentinel_addr, 1))
+        .expect("channel should accept the sentinel");
+    mempool.misbehavior_sender = misbehavior_tx;
+
+    let rejected_tx = network
+        .unmined_transactions_in_blocks(1..=2)
+        .next()
+        .expect("test network should have at least one unmined transaction");
+    let advertiser_addr = zn::PeerSocketAddr::from(([127, 0, 0, 2], 8233));
+    let verifier_error = TransactionError::BadBalance;
+    assert_eq!(
+        verifier_error.mempool_misbehavior_score(),
+        100,
+        "test error should carry a mempool misbehavior score"
+    );
+
+    mempool.enable(&mut recent_syncs).await;
+
+    let request = mempool
+        .ready()
+        .await
+        .expect("mempool should become ready")
+        .call(Request::Queue(vec![rejected_tx.transaction.id.into()]));
+    let download = peer_set
+        .expect_request_that(|request| matches!(request, zn::Request::TransactionsById(_)))
+        .map(|responder| {
+            responder.respond(zn::Response::Transactions(vec![
+                zn::InventoryResponse::Available((
+                    rejected_tx.transaction.clone(),
+                    Some(advertiser_addr),
+                )),
+            ]));
+        });
+    let (response, _) = futures::join!(request, download);
+    let Response::Queued(queue_responses) = response.expect("queue request should succeed") else {
+        panic!("wrong response from mempool to Queue request");
+    };
+    assert_eq!(queue_responses.len(), 1);
+    assert!(queue_responses[0].is_ok());
+
+    tx_verifier
+        .expect_request_that(|_| true)
+        .map(|responder| {
+            responder.respond(Err(verifier_error));
+        })
+        .await;
+
+    for _ in 0..2 {
+        mempool.dummy_call().await;
+        time::sleep(time::Duration::from_millis(100)).await;
+    }
+
+    assert_eq!(misbehavior_rx.try_recv(), Ok((sentinel_addr, 1)));
+    assert_eq!(misbehavior_rx.try_recv(), Err(TryRecvError::Empty));
+
+    Ok(())
+}
+
+/// Check that mempool verification failures use the raw transaction error string
+/// as the Prometheus `reason` label.
+#[test]
+fn mempool_failed_verify_metric_reason_uses_raw_transaction_error_today() -> Result<(), Report> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("current-thread runtime should build for this metrics capture test");
+    let recorder = RecordingRecorder::default();
+
+    let reasons = metrics::with_local_recorder(&recorder, || {
+        runtime.block_on(async {
+            let network = Network::Mainnet;
+
+            let (
+                mut mempool,
+                _peer_set,
+                _state_service,
+                _chain_tip_change,
+                mut tx_verifier,
+                mut recent_syncs,
+                _mempool_transaction_receiver,
+            ) = setup(&network, u64::MAX, true).await;
+
+            let mut unmined_transactions = network.unmined_transactions_in_blocks(1..=3);
+            let rejected_txs = [
+                unmined_transactions
+                    .next()
+                    .expect("test network should have a first unmined transaction"),
+                unmined_transactions
+                    .next()
+                    .expect("test network should have a second unmined transaction"),
+            ];
+            let errors = [
+                TransactionError::DuplicateTransparentSpend(transparent::OutPoint::from_usize(
+                    rejected_txs[0].transaction.id.mined_id(),
+                    0,
+                )),
+                TransactionError::DuplicateTransparentSpend(transparent::OutPoint::from_usize(
+                    rejected_txs[1].transaction.id.mined_id(),
+                    1,
+                )),
+            ];
+            let reasons = errors
+                .iter()
+                .map(|error| {
+                    mempool::downloads::TransactionDownloadVerifyError::Invalid {
+                        error: error.clone(),
+                        advertiser_addr: None,
+                    }
+                    .to_string()
+                })
+                .collect::<Vec<_>>();
+
+            mempool.enable(&mut recent_syncs).await;
+
+            for (rejected_tx, error) in rejected_txs.into_iter().zip(errors) {
+                let request = mempool
+                    .ready()
+                    .await
+                    .expect("mempool should become ready")
+                    .call(Request::Queue(vec![rejected_tx.transaction.into()]));
+                let verification = tx_verifier.expect_request_that(|_| true).map(|responder| {
+                    responder.respond(Err(error));
+                });
+                let (response, _) = futures::join!(request, verification);
+                let Response::Queued(queue_responses) =
+                    response.expect("queue request should succeed")
+                else {
+                    panic!("wrong response from mempool to Queue request");
+                };
+
+                assert_eq!(queue_responses.len(), 1);
+                assert!(queue_responses[0].is_ok());
+            }
+
+            for _ in 0..2 {
+                mempool.dummy_call().await;
+                time::sleep(time::Duration::from_millis(100)).await;
+            }
+
+            reasons
+        })
+    });
+
+    let metrics = recorder.recorded_metrics();
+
+    for reason in reasons {
+        assert!(
+            metric_has_label(
+                &metrics,
+                "mempool.failed.verify.tasks.total",
+                "reason",
+                &reason
+            ),
+            "mempool failure metric should use the raw transaction error as a Prometheus label: {metrics:?}"
+        );
+    }
+
+    Ok(())
+}
+
+/// Check that an internal verifier failure is exact-tip rejected today.
+#[tokio::test(flavor = "multi_thread")]
+async fn mempool_internal_verifier_error_is_exact_tip_rejected_today() -> Result<(), Report> {
+    let network = Network::Mainnet;
+
+    let (
+        mut mempool,
+        _peer_set,
+        _state_service,
+        _chain_tip_change,
+        mut tx_verifier,
+        mut recent_syncs,
+        _mempool_transaction_receiver,
+    ) = setup(&network, u64::MAX, true).await;
+
+    let rejected_tx = network
+        .unmined_transactions_in_blocks(1..=2)
+        .next()
+        .expect("test network should have at least one unmined transaction");
+    let txid = rejected_tx.transaction.id;
+
+    mempool.enable(&mut recent_syncs).await;
+
+    let request = mempool
+        .ready()
+        .await
+        .expect("mempool should become ready")
+        .call(Request::Queue(vec![rejected_tx.transaction.into()]));
+    let verification = tx_verifier.expect_request_that(|_| true).map(|responder| {
+        responder.respond(Err(TransactionError::InternalDowncastError(
+            "synthetic verifier infrastructure failure".to_string(),
+        )));
+    });
+    let (response, _) = futures::join!(request, verification);
+    let Response::Queued(queue_responses) = response.expect("queue request should succeed") else {
+        panic!("wrong response from mempool to Queue request");
+    };
+    assert_eq!(queue_responses.len(), 1);
+    assert!(queue_responses[0].is_ok());
+
+    for _ in 0..2 {
+        mempool.dummy_call().await;
+        time::sleep(time::Duration::from_millis(100)).await;
+    }
+
+    let response = mempool
+        .ready()
+        .await
+        .expect("mempool should become ready")
+        .call(Request::Queue(vec![txid.into()]))
+        .await
+        .expect("queue request should succeed");
+    let Response::Queued(mut queue_responses) = response else {
+        panic!("wrong response from mempool to Queue request");
+    };
+    assert_eq!(queue_responses.len(), 1);
+
+    assert!(matches!(
+        queue_responses.remove(0).unbox_mempool_error(),
+        MempoolError::StorageExactTip(ExactTipRejectionError::FailedVerification(
+            TransactionError::InternalDowncastError(_)
+        ))
+    ));
+
+    Ok(())
+}
+
 /// Check if a transaction that fails download is _not_ rejected.
 #[tokio::test(flavor = "multi_thread")]
 async fn mempool_failed_download_is_not_rejected() -> Result<(), Report> {
@@ -1183,6 +1605,123 @@ async fn mempool_responds_to_await_output() -> Result<(), Report> {
         mempool_change,
         MempoolChange::added([unmined_tx_id].into_iter().collect())
     );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mempool_dropped_await_output_waiter_survives_poll_until_pruned_today() -> Result<(), Report>
+{
+    let network = Network::Mainnet;
+
+    let (
+        mut mempool,
+        _peer_set,
+        _state_service,
+        _chain_tip_change,
+        _tx_verifier,
+        mut recent_syncs,
+        _mempool_transaction_receiver,
+    ) = setup(&network, u64::MAX, true).await;
+    mempool.enable(&mut recent_syncs).await;
+
+    let missing_outpoint = OutPoint::from_usize(TransactionHash([9; 32]), 0);
+
+    let await_output_fut = mempool
+        .ready()
+        .await
+        .expect("mempool should become ready")
+        .call(Request::AwaitOutput(missing_outpoint));
+    assert_eq!(mempool.storage().pending_outputs.len(), 1);
+
+    drop(await_output_fut);
+
+    mempool.dummy_call().await;
+    assert_eq!(
+        mempool.storage().pending_outputs.len(),
+        1,
+        "ordinary mempool polling does not prune abandoned AwaitOutput waiters today"
+    );
+
+    mempool.storage().pending_outputs.prune();
+    assert_eq!(mempool.storage().pending_outputs.len(), 0);
+
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn mempool_timeout_retains_pushed_transaction_request_today() -> Result<(), Report> {
+    let network = Network::Mainnet;
+
+    let (
+        mut mempool,
+        _peer_set,
+        _state_service,
+        _chain_tip_change,
+        mut tx_verifier,
+        mut recent_syncs,
+        _mempool_transaction_receiver,
+    ) = setup(&network, u64::MAX, true).await;
+
+    mempool.enable(&mut recent_syncs).await;
+    assert!(mempool.is_enabled());
+
+    let unmined_tx = network
+        .unmined_transactions_in_blocks(1..=10)
+        .next()
+        .expect("test network should have at least one unmined transaction")
+        .transaction;
+    let txid = unmined_tx.id;
+
+    let response = mempool
+        .ready()
+        .await
+        .expect("mempool should become ready")
+        .call(Request::Queue(vec![Gossip::Tx(unmined_tx)]))
+        .await
+        .expect("queue request should succeed");
+    let Response::Queued(mut queue_results) = response else {
+        panic!("wrong response from mempool to Queue request");
+    };
+    let _result_rx = queue_results
+        .remove(0)
+        .expect("initial direct transaction queue should pass today");
+    assert!(queue_results.is_empty(), "should have one result");
+    assert_eq!(mempool.tx_downloads().in_flight(), 1);
+
+    let _pending_verifier_request = tx_verifier.expect_request_that(|_| true).await;
+    tokio::time::advance(mempool::crawler::RATE_LIMIT_DELAY + Duration::from_secs(1)).await;
+    tokio::task::yield_now().await;
+
+    mempool.dummy_call().await;
+    assert_eq!(mempool.tx_downloads().in_flight(), 0);
+
+    let retained_request = mempool
+        .tx_downloads()
+        .transaction_requests()
+        .find(|request| request.id() == txid)
+        .expect("timeout path should retain pushed transaction request today");
+
+    assert!(
+        retained_request.tx().is_some(),
+        "mempool timeout should retain full pushed transaction contents today"
+    );
+
+    let response = mempool
+        .ready()
+        .await
+        .expect("mempool should become ready")
+        .call(Request::Queue(vec![txid.into()]))
+        .await
+        .expect("queue request should succeed");
+    let Response::Queued(mut queue_results) = response else {
+        panic!("wrong response from mempool to Queue request");
+    };
+    assert_eq!(
+        queue_results.remove(0).unbox_mempool_error(),
+        MempoolError::AlreadyQueued,
+    );
+    assert!(queue_results.is_empty(), "should have one result");
 
     Ok(())
 }

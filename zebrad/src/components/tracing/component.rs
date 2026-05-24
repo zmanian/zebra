@@ -25,6 +25,41 @@ use crate::{application::build_version, components::tracing::Config};
 #[cfg(feature = "flamegraph")]
 use super::flame;
 
+#[cfg(feature = "opentelemetry")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ResolvedOtelRuntimeConfig {
+    endpoint: Option<String>,
+    service_name: String,
+    sample_percent: Option<u8>,
+    effective_sample_percent: u8,
+}
+
+#[cfg(feature = "opentelemetry")]
+fn resolve_otel_runtime_config(config: &Config) -> ResolvedOtelRuntimeConfig {
+    // Check standard OTEL_* env vars as fallback (lower precedence than config/ZEBRA_*).
+    let endpoint = config
+        .opentelemetry_endpoint
+        .clone()
+        .or_else(|| std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok());
+    let service_name = config
+        .opentelemetry_service_name
+        .clone()
+        .or_else(|| std::env::var("OTEL_SERVICE_NAME").ok())
+        .unwrap_or_else(|| "zebra".to_string());
+    let sample_percent = config.opentelemetry_sample_percent.or_else(|| {
+        std::env::var("OTEL_TRACES_SAMPLER_ARG")
+            .ok()
+            .and_then(|s| s.parse().ok())
+    });
+
+    ResolvedOtelRuntimeConfig {
+        endpoint,
+        service_name,
+        sample_percent,
+        effective_sample_percent: sample_percent.unwrap_or(100),
+    }
+}
+
 // Art generated with these two images.
 // Zebra logo: book/theme/favicon.png
 // License: MIT or Apache 2.0
@@ -274,29 +309,13 @@ impl Tracing {
         // OpenTelemetry layer - zero overhead when config.opentelemetry_endpoint is None
         #[cfg(feature = "opentelemetry")]
         let (otel_layer, otel_provider, otel_resolved_config) = {
-            // Check standard OTEL_* env vars as fallback (lower precedence than config/ZEBRA_*)
-            let endpoint = config
-                .opentelemetry_endpoint
-                .clone()
-                .or_else(|| std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok());
-            let service_name = config
-                .opentelemetry_service_name
-                .clone()
-                .or_else(|| std::env::var("OTEL_SERVICE_NAME").ok());
-            let sample_percent = config.opentelemetry_sample_percent.or_else(|| {
-                std::env::var("OTEL_TRACES_SAMPLER_ARG")
-                    .ok()
-                    .and_then(|s| s.parse().ok())
-            });
+            let resolved_config = resolve_otel_runtime_config(&config);
 
-            // Capture resolved values for logging
-            let resolved_config = (
-                endpoint.clone(),
-                service_name.clone().unwrap_or_else(|| "zebra".to_string()),
-                sample_percent.unwrap_or(100),
-            );
-
-            match super::otel::layer(endpoint.as_deref(), service_name.as_deref(), sample_percent) {
+            match super::otel::layer(
+                resolved_config.endpoint.as_deref(),
+                Some(resolved_config.service_name.as_str()),
+                resolved_config.sample_percent,
+            ) {
                 Ok((layer, provider)) => (layer, provider, resolved_config),
                 Err(e) => {
                     tracing::warn!(
@@ -362,11 +381,10 @@ impl Tracing {
         // Log OpenTelemetry status
         #[cfg(feature = "opentelemetry")]
         if otel_provider.is_some() {
-            let (ref endpoint, ref service_name, sample_percent) = otel_resolved_config;
             info!(
-                ?endpoint,
-                %service_name,
-                sample_percent,
+                endpoint = ?otel_resolved_config.endpoint,
+                service_name = %otel_resolved_config.service_name,
+                sample_percent = otel_resolved_config.effective_sample_percent,
                 "installed OpenTelemetry tracing layer",
             );
         }
@@ -552,5 +570,141 @@ where
                     .send(Some((message, level, timestamp)));
             }
         }
+    }
+}
+
+#[cfg(all(test, feature = "opentelemetry"))]
+mod tests {
+    use std::sync::{Mutex, MutexGuard};
+
+    use super::*;
+
+    static OTEL_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvGuard<'a> {
+        _lock: MutexGuard<'a, ()>,
+        saved_vars: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl EnvGuard<'_> {
+        fn new(vars: &[&'static str]) -> Self {
+            let lock = OTEL_ENV_LOCK
+                .lock()
+                .expect("test env lock should not be poisoned");
+            let saved_vars = vars
+                .iter()
+                .map(|var| (*var, std::env::var(var).ok()))
+                .collect();
+
+            for var in vars {
+                std::env::remove_var(var);
+            }
+
+            Self {
+                _lock: lock,
+                saved_vars,
+            }
+        }
+    }
+
+    impl Drop for EnvGuard<'_> {
+        fn drop(&mut self) {
+            for (var, value) in &self.saved_vars {
+                if let Some(value) = value {
+                    std::env::set_var(var, value);
+                } else {
+                    std::env::remove_var(var);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn otel_traceidratio_point_one_falls_back_to_full_sampling_today() {
+        let _env_guard = EnvGuard::new(&[
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+            "OTEL_SERVICE_NAME",
+            "OTEL_TRACES_SAMPLER",
+            "OTEL_TRACES_SAMPLER_ARG",
+        ]);
+
+        std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4318");
+        std::env::set_var("OTEL_TRACES_SAMPLER", "traceidratio");
+        std::env::set_var("OTEL_TRACES_SAMPLER_ARG", "0.1");
+
+        let resolved_config = resolve_otel_runtime_config(&Config::default());
+
+        assert_eq!(
+            resolved_config.endpoint.as_deref(),
+            Some("http://127.0.0.1:4318")
+        );
+        assert_eq!(
+            resolved_config.sample_percent, None,
+            "ratio-style OTEL sampler args do not parse as Zebra integer percentages today"
+        );
+        assert_eq!(
+            resolved_config.effective_sample_percent, 100,
+            "failed sampler-arg parsing falls back to full sampling today"
+        );
+    }
+
+    #[test]
+    fn otel_sampler_selector_env_is_ignored_today() {
+        let _env_guard = EnvGuard::new(&[
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+            "OTEL_SERVICE_NAME",
+            "OTEL_TRACES_SAMPLER",
+            "OTEL_TRACES_SAMPLER_ARG",
+        ]);
+
+        std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4318");
+        std::env::set_var("OTEL_TRACES_SAMPLER", "always_off");
+
+        let resolved_config = resolve_otel_runtime_config(&Config::default());
+
+        assert_eq!(resolved_config.sample_percent, None);
+        assert_eq!(
+            resolved_config.effective_sample_percent, 100,
+            "OTEL_TRACES_SAMPLER does not change Zebra's sampling percentage today"
+        );
+    }
+
+    #[test]
+    fn otel_integer_sampler_arg_is_treated_as_percentage_today() {
+        let _env_guard = EnvGuard::new(&[
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+            "OTEL_SERVICE_NAME",
+            "OTEL_TRACES_SAMPLER",
+            "OTEL_TRACES_SAMPLER_ARG",
+        ]);
+
+        std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4318");
+        std::env::set_var("OTEL_TRACES_SAMPLER_ARG", "10");
+
+        let resolved_config = resolve_otel_runtime_config(&Config::default());
+
+        assert_eq!(resolved_config.sample_percent, Some(10));
+        assert_eq!(resolved_config.effective_sample_percent, 10);
+    }
+
+    #[test]
+    fn zebra_config_sample_percent_overrides_otel_env_today() {
+        let _env_guard = EnvGuard::new(&[
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+            "OTEL_SERVICE_NAME",
+            "OTEL_TRACES_SAMPLER",
+            "OTEL_TRACES_SAMPLER_ARG",
+        ]);
+
+        std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4318");
+        std::env::set_var("OTEL_TRACES_SAMPLER_ARG", "10");
+
+        let mut config = Config::default();
+        config.opentelemetry_sample_percent = Some(7);
+
+        let resolved_config = resolve_otel_runtime_config(&config);
+
+        assert_eq!(resolved_config.sample_percent, Some(7));
+        assert_eq!(resolved_config.effective_sample_percent, 7);
     }
 }

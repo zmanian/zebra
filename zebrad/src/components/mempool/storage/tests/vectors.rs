@@ -14,8 +14,11 @@ use zebra_chain::{
 };
 
 use zebra_chain::transparent;
+use zebra_consensus::error::TransactionError;
 
-use crate::components::mempool::{storage::*, Mempool};
+use crate::components::mempool::{
+    downloads::TransactionDownloadVerifyError, storage::*, Mempool, MempoolError,
+};
 
 /// Eviction memory time used for tests. Most tests won't care about this
 /// so we use a large enough value that will never be reached in the tests.
@@ -55,6 +58,293 @@ fn mempool_storage_crud_exact_mainnet() {
     // Check that it is /not/ in the mempool.
     assert_eq!(removal_count, 1);
     assert!(!storage.contains_transaction_exact(&unmined_tx.transaction.id.mined_id()));
+}
+
+#[test]
+fn transparent_input_not_found_is_exact_tip_rejected_today() {
+    let _init_guard = zebra_test::init();
+
+    let mut storage: Storage = Storage::new(&config::Config {
+        tx_cost_limit: u64::MAX,
+        eviction_memory_time: EVICTION_MEMORY_TIME,
+        ..Default::default()
+    });
+
+    let tx_id = Network::Mainnet
+        .unmined_transactions_in_blocks(..)
+        .next_back()
+        .expect("at least one unmined transaction")
+        .transaction
+        .id;
+
+    storage.reject_if_needed(
+        tx_id,
+        TransactionDownloadVerifyError::Invalid {
+            error: TransactionError::TransparentInputNotFound,
+            advertiser_addr: None,
+        },
+    );
+
+    assert!(matches!(
+        storage.rejection_error(&tx_id),
+        Some(MempoolError::StorageExactTip(
+            ExactTipRejectionError::FailedVerification(TransactionError::TransparentInputNotFound)
+        ))
+    ));
+}
+
+#[test]
+fn transparent_input_empty_spent_outputs_bypasses_input_standardness_today() -> Result<()> {
+    let _init_guard = zebra_test::init();
+
+    let mut transaction = Network::Mainnet
+        .unmined_transactions_in_blocks(..)
+        .find(|transaction| {
+            transaction
+                .transaction
+                .transaction
+                .inputs()
+                .iter()
+                .any(|input| matches!(input, transparent::Input::PrevOut { .. }))
+        })
+        .expect("mainnet test vectors should include a transparent-input transaction");
+
+    let input_count = transaction.transaction.transaction.inputs().len();
+    assert!(
+        input_count > 0,
+        "selected transaction should have transparent inputs"
+    );
+
+    let non_standard_output = transparent::Output {
+        value: 0u64
+            .try_into()
+            .expect("zero is a valid non-negative amount"),
+        lock_script: transparent::Script::new(&[0x51, 0x52, 0x93]),
+    };
+
+    let mut non_standard_control = transaction.clone();
+    non_standard_control.spent_outputs =
+        std::sync::Arc::new(vec![non_standard_output; input_count]);
+
+    let mut storage: Storage = Storage::new(&config::Config {
+        tx_cost_limit: u64::MAX,
+        eviction_memory_time: EVICTION_MEMORY_TIME,
+        ..Default::default()
+    });
+
+    let insert_err = storage
+        .insert(non_standard_control, Vec::new(), None)
+        .expect_err("non-standard spent outputs should reject the transaction");
+
+    assert_eq!(
+        insert_err,
+        MempoolError::NonStandardTransaction(NonStandardTransactionError::NonStandardInputs)
+    );
+
+    transaction.spent_outputs = std::sync::Arc::new(vec![]);
+
+    let mut storage: Storage = Storage::new(&config::Config {
+        tx_cost_limit: u64::MAX,
+        eviction_memory_time: EVICTION_MEMORY_TIME,
+        ..Default::default()
+    });
+
+    let inserted_id = storage.insert(transaction.clone(), Vec::new(), None)?;
+
+    assert_eq!(inserted_id, transaction.transaction.id);
+    assert!(
+        storage.contains_transaction_exact(&transaction.transaction.id.mined_id()),
+        "storage currently accepts a transparent-input transaction when spent_outputs is empty"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn mempool_insert_recomputes_metrics_over_growing_set_today() -> Result<()> {
+    let _init_guard = zebra_test::init();
+
+    let network = Network::Mainnet;
+    let mut storage: Storage = Storage::new(&config::Config {
+        tx_cost_limit: u64::MAX,
+        eviction_memory_time: EVICTION_MEMORY_TIME,
+        ..Default::default()
+    });
+    let transactions = network
+        .unmined_transactions_in_blocks(..)
+        .filter(|tx| !tx.transaction.transaction.is_coinbase())
+        .take(5)
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        transactions.len(),
+        5,
+        "test vectors should provide at least five non-coinbase mempool transactions"
+    );
+
+    super::super::verified_set::reset_update_metrics_scan_counters();
+
+    for transaction in &transactions {
+        storage.insert(transaction.clone(), Vec::new(), None)?;
+    }
+
+    let (metric_updates, transaction_visits) =
+        super::super::verified_set::update_metrics_scan_counters();
+    assert_eq!(
+        metric_updates,
+        transactions.len(),
+        "each successful insert recomputes verified-set aggregate metrics today"
+    );
+    assert_eq!(
+        transaction_visits,
+        transactions.len() * (transactions.len() + 1) / 2,
+        "metric recomputation scans the full growing verified set after each insert"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn mempool_remove_recomputes_metrics_over_shrinking_set_today() -> Result<()> {
+    let _init_guard = zebra_test::init();
+
+    let network = Network::Mainnet;
+    let mut storage: Storage = Storage::new(&config::Config {
+        tx_cost_limit: u64::MAX,
+        eviction_memory_time: EVICTION_MEMORY_TIME,
+        ..Default::default()
+    });
+    let transactions = network
+        .unmined_transactions_in_blocks(..)
+        .filter(|tx| !tx.transaction.transaction.is_coinbase())
+        .take(5)
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        transactions.len(),
+        5,
+        "test vectors should provide at least five non-coinbase mempool transactions"
+    );
+
+    for transaction in &transactions {
+        storage.insert(transaction.clone(), Vec::new(), None)?;
+    }
+
+    let exact_ids = transactions
+        .iter()
+        .map(|tx| tx.transaction.id)
+        .collect::<std::collections::HashSet<_>>();
+
+    super::super::verified_set::reset_update_metrics_scan_counters();
+
+    let removed_count = storage.remove_exact(&exact_ids);
+
+    let (metric_updates, transaction_visits) =
+        super::super::verified_set::update_metrics_scan_counters();
+    assert_eq!(removed_count, transactions.len());
+    assert_eq!(
+        metric_updates,
+        transactions.len(),
+        "each independent removal recomputes verified-set aggregate metrics today"
+    );
+    assert_eq!(
+        transaction_visits,
+        transactions.len() * (transactions.len() - 1) / 2,
+        "metric recomputation scans the full shrinking verified set after each removal"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn exact_tip_rejection_cache_clear_makes_old_reject_retryable_today() {
+    let _init_guard = zebra_test::init();
+
+    let mut storage: Storage = Storage::new(&config::Config {
+        tx_cost_limit: u64::MAX,
+        eviction_memory_time: EVICTION_MEMORY_TIME,
+        ..Default::default()
+    });
+
+    let rejected_tx_id = Network::Mainnet
+        .unmined_transactions_in_blocks(..)
+        .next_back()
+        .expect("at least one unmined transaction")
+        .transaction
+        .id;
+    let rejection =
+        ExactTipRejectionError::FailedVerification(TransactionError::TransparentInputNotFound)
+            .into();
+
+    storage.reject(rejected_tx_id, rejection);
+
+    assert!(matches!(
+        storage.should_download_or_verify(rejected_tx_id),
+        Err(MempoolError::StorageExactTip(
+            ExactTipRejectionError::FailedVerification(TransactionError::TransparentInputNotFound)
+        ))
+    ));
+
+    let mut unique_tx_id = rejected_tx_id;
+    for index in 0..MAX_EVICTION_MEMORY_ENTRIES {
+        unique_tx_id.mined_id_mut().0[0..4].copy_from_slice(&(index as u32).to_le_bytes());
+        if let Some(auth_digest) = unique_tx_id.auth_digest_mut() {
+            auth_digest.0[0..4].copy_from_slice(&(index as u32).to_le_bytes());
+        }
+
+        storage.reject(
+            unique_tx_id,
+            ExactTipRejectionError::FailedVerification(TransactionError::TransparentInputNotFound)
+                .into(),
+        );
+    }
+
+    assert_eq!(
+        storage.rejected_transaction_count(),
+        0,
+        "exceeding the exact-tip rejection cap clears the entire cache today"
+    );
+    assert!(
+        storage.should_download_or_verify(rejected_tx_id).is_ok(),
+        "the previously rejected transaction becomes eligible for retry after the cache clear"
+    );
+}
+
+#[test]
+fn transactions_exact_matches_v5_by_mined_id_not_wtxid_today() -> Result<()> {
+    let _init_guard = zebra_test::init();
+
+    let mut storage: Storage = Storage::new(&config::Config {
+        tx_cost_limit: u64::MAX,
+        eviction_memory_time: EVICTION_MEMORY_TIME,
+        ..Default::default()
+    });
+
+    let unmined_tx = Network::Mainnet
+        .unmined_transactions_in_blocks(1_687_106..=1_687_121)
+        .find(|tx| tx.transaction.id.auth_digest().is_some())
+        .expect("mainnet test vectors include a V5 unmined transaction");
+
+    let mut mismatched_wtxid = unmined_tx.transaction.id;
+    mismatched_wtxid
+        .auth_digest_mut()
+        .expect("V5 transactions have an auth digest")
+        .0[0] ^= 1;
+
+    storage.insert(unmined_tx.clone(), Vec::new(), None)?;
+
+    let transactions: Vec<_> = storage
+        .transactions_exact(iter::once(mismatched_wtxid).collect())
+        .collect();
+
+    assert_eq!(
+        transactions.len(),
+        1,
+        "TransactionsById currently returns a V5 transaction when only the mined ID matches"
+    );
+    assert_eq!(transactions[0].id, unmined_tx.transaction.id);
+
+    Ok(())
 }
 
 #[test]
@@ -301,6 +591,183 @@ fn mempool_expired_basic_for_network(network: Network) -> Result<()> {
     // No transaction will be sent to peers
     let send_to_peers = Mempool::remove_expired_from_peer_list(&everything_in_mempool, &expired);
     assert_eq!(send_to_peers.len(), 0);
+
+    Ok(())
+}
+
+#[test]
+fn expired_parent_removes_unreported_non_expired_dependent_today() -> Result<()> {
+    let _init_guard = zebra_test::init();
+
+    let network = Network::Mainnet;
+    let mut storage: Storage = Storage::new(&config::Config {
+        tx_cost_limit: 160_000_000,
+        eviction_memory_time: EVICTION_MEMORY_TIME,
+        ..Default::default()
+    });
+
+    let block: Block = network.test_block(982681, 925483).unwrap();
+    let mut parent_tx = (*(block.transactions[1])).clone();
+    *parent_tx.expiry_height_mut() = Height(1);
+    let parent_spent_outpoints: std::collections::HashSet<_> =
+        parent_tx.spent_outpoints().collect();
+
+    let parent = VerifiedUnminedTx::new(
+        parent_tx.into(),
+        Amount::try_from(1_000_000).expect("valid amount"),
+        0,
+        0,
+        std::sync::Arc::new(vec![]),
+    )
+    .expect("verification should pass");
+
+    let parent_id = parent.transaction.id;
+    let parent_mined_id = parent_id.mined_id();
+    let parent_outpoint = OutPoint::from_usize(parent_mined_id, 0);
+    assert!(
+        !parent.transaction.transaction.outputs().is_empty(),
+        "parent transaction should create an output"
+    );
+
+    storage.insert(parent, Vec::new(), None)?;
+
+    let dust_threshold: Amount<NonNegative> = Amount::try_from(100u64).expect("valid amount");
+    let child = network
+        .unmined_transactions_in_blocks(..)
+        .find(|tx| {
+            tx.transaction.id != parent_id
+                && !tx.transaction.transaction.outputs().is_empty()
+                && tx
+                    .transaction
+                    .transaction
+                    .outputs()
+                    .iter()
+                    .all(|out| out.value >= dust_threshold)
+                && tx
+                    .transaction
+                    .transaction
+                    .spent_outpoints()
+                    .all(|outpoint| !parent_spent_outpoints.contains(&outpoint))
+                && tx
+                    .transaction
+                    .transaction
+                    .expiry_height()
+                    .is_none_or(|expiry_height| expiry_height > Height(1))
+        })
+        .expect("at least one non-conflicting non-expired child transaction");
+
+    let child_id = child.transaction.id;
+    storage.insert(child, vec![parent_outpoint], None)?;
+
+    assert_eq!(storage.transaction_count(), 2);
+
+    let expired = storage.remove_expired_transactions(Height(1));
+
+    assert!(
+        expired.contains(&parent_id),
+        "the expired parent should be reported"
+    );
+    assert!(
+        !expired.contains(&child_id),
+        "the non-expired dependent is removed but not reported today"
+    );
+    assert_eq!(
+        storage.transaction_count(),
+        0,
+        "removing the expired parent cascades to the non-expired dependent"
+    );
+    assert!(!storage.contains_transaction_exact(&parent_mined_id));
+    assert!(!storage.contains_transaction_exact(&child_id.mined_id()));
+
+    Ok(())
+}
+
+#[test]
+fn evicted_parent_reports_dependent_inserted_today() -> Result<()> {
+    let _init_guard = zebra_test::init();
+
+    let network = Network::Mainnet;
+    let mut storage: Storage = Storage::new(&config::Config {
+        tx_cost_limit: 160_000_000,
+        eviction_memory_time: EVICTION_MEMORY_TIME,
+        ..Default::default()
+    });
+
+    let block: Block = network.test_block(982681, 925483).unwrap();
+    let parent_tx = (*(block.transactions[1])).clone();
+    let parent_spent_outpoints: std::collections::HashSet<_> =
+        parent_tx.spent_outpoints().collect();
+
+    let parent = VerifiedUnminedTx::new(
+        parent_tx.into(),
+        Amount::try_from(1_000_000).expect("valid amount"),
+        0,
+        0,
+        std::sync::Arc::new(vec![]),
+    )
+    .expect("verification should pass");
+
+    let parent_id = parent.transaction.id;
+    let parent_mined_id = parent_id.mined_id();
+    let parent_outpoint = OutPoint::from_usize(parent_mined_id, 0);
+    let parent_cost = parent.cost();
+    assert!(
+        !parent.transaction.transaction.outputs().is_empty(),
+        "parent transaction should create an output"
+    );
+
+    storage.insert(parent, Vec::new(), None)?;
+    storage.tx_cost_limit = parent_cost;
+
+    let dust_threshold: Amount<NonNegative> = Amount::try_from(100u64).expect("valid amount");
+    let child = network
+        .unmined_transactions_in_blocks(..)
+        .find(|tx| {
+            tx.transaction.id != parent_id
+                && !tx.transaction.transaction.outputs().is_empty()
+                && tx
+                    .transaction
+                    .transaction
+                    .outputs()
+                    .iter()
+                    .all(|out| out.value >= dust_threshold)
+                && tx
+                    .transaction
+                    .transaction
+                    .spent_outpoints()
+                    .all(|outpoint| !parent_spent_outpoints.contains(&outpoint))
+        })
+        .expect("at least one non-conflicting child transaction");
+
+    let child_id = child.transaction.id;
+    let child_mined_id = child_id.mined_id();
+
+    super::super::verified_set::force_next_eviction_key_for_test(parent_mined_id);
+    let insert_result = storage.insert(child, vec![parent_outpoint], None)?;
+
+    assert_eq!(
+        insert_result, child_id,
+        "inserting a dependent reports success when eviction selects its parent today"
+    );
+    assert_eq!(
+        storage.transaction_count(),
+        0,
+        "evicting the parent cascades to the newly inserted dependent"
+    );
+    assert!(!storage.contains_transaction_exact(&parent_mined_id));
+    assert!(!storage.contains_transaction_exact(&child_mined_id));
+    assert_eq!(
+        storage.rejection_error(&parent_id),
+        Some(MempoolError::StorageEffectsChain(
+            SameEffectsChainRejectionError::RandomlyEvicted
+        )),
+        "only the selected eviction victim is cached as randomly evicted"
+    );
+    assert_eq!(
+        storage.rejection_error(&child_id),
+        None,
+        "the removed dependent is neither left in storage nor cached as rejected"
+    );
 
     Ok(())
 }

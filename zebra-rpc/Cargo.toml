@@ -129,6 +129,7 @@ proptest = { workspace = true }
 
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full", "tracing", "test-util"] }
+tracing-subscriber = { workspace = true }
 
 zebra-chain = { path = "../zebra-chain", version = "7.0.0", features = [
     "proptest-impl",

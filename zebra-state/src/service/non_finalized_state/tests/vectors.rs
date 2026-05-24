@@ -1,13 +1,19 @@
 //! Fixed test vectors for the non-finalized state.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+    time::Duration,
+};
 
 use zebra_chain::{
-    amount::NonNegative,
+    amount::{NonNegative, MAX_MONEY},
     block::{self, Block, Height},
     history_tree::NonEmptyHistoryTree,
     parameters::{Network, NetworkUpgrade},
     serialization::ZcashDeserializeInto,
+    transaction,
+    transparent::{self, OrderedUtxo, Utxo},
     value_balance::ValueBalance,
 };
 use zebra_test::prelude::*;
@@ -16,9 +22,15 @@ use crate::{
     arbitrary::Prepare,
     service::{
         finalized_state::FinalizedState,
-        non_finalized_state::{Chain, NonFinalizedState, MIN_DURATION_BETWEEN_BACKUP_UPDATES},
+        non_finalized_state::{
+            chain::UpdateWith, Chain, NonFinalizedState, MIN_DURATION_BETWEEN_BACKUP_UPDATES,
+        },
+        write::validate_and_commit_non_finalized,
     },
-    tests::FakeChainHelper,
+    tests::{
+        setup::{new_state_with_mainnet_genesis, transaction_v4_from_coinbase},
+        FakeChainHelper,
+    },
     Config,
 };
 
@@ -34,6 +46,68 @@ fn construct_empty() {
         Default::default(),
         ValueBalance::zero(),
     );
+}
+
+#[test]
+#[should_panic]
+fn non_finalized_transparent_received_panics_on_high_churn_today() {
+    let _init_guard = zebra_test::init();
+
+    let network = Network::Mainnet;
+    let address = transparent::Address::from_pub_key_hash(network.t_addr_kind(), [7; 20]);
+    let value = MAX_MONEY
+        .try_into()
+        .expect("MAX_MONEY is a valid non-negative amount");
+    let receipts_to_overflow = (u64::MAX / (MAX_MONEY as u64)) + 1;
+
+    let mut chain = Chain::new(
+        &network,
+        Height(0),
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        ValueBalance::zero(),
+    );
+
+    for tx_index in 0..receipts_to_overflow {
+        let mut tx_hash_bytes = [0; 32];
+        tx_hash_bytes[..8].copy_from_slice(&tx_index.to_le_bytes());
+        let tx_hash = transaction::Hash(tx_hash_bytes);
+        let outpoint = transparent::OutPoint {
+            hash: tx_hash,
+            index: 0,
+        };
+        let output = transparent::Output::new(value, address.script());
+        let ordered_utxo = OrderedUtxo {
+            utxo: Utxo::from_location(output.clone(), Height(1), tx_index as usize),
+            tx_index_in_block: tx_index as usize,
+        };
+
+        chain
+            .update_chain_tip_with(&(
+                &vec![output],
+                &tx_hash,
+                &HashMap::from([(outpoint, ordered_utxo.clone())]),
+            ))
+            .expect("synthetic output should index");
+
+        chain
+            .update_chain_tip_with(&(
+                &vec![transparent::Input::PrevOut {
+                    outpoint,
+                    unlock_script: transparent::Script::new(&[]),
+                    sequence: 0,
+                }],
+                &tx_hash,
+                &HashMap::from([(outpoint, ordered_utxo)]),
+            ))
+            .expect("synthetic spend should index");
+    }
+
+    let addresses = HashSet::from([address]);
+
+    let (_balance, _received) = chain.partial_transparent_balance_change(&addresses);
 }
 
 #[test]
@@ -55,6 +129,54 @@ fn construct_single() -> Result<()> {
     chain = chain.push(block.prepare().test_with_zero_spent_utxos())?;
 
     assert_eq!(1, chain.blocks.len());
+
+    Ok(())
+}
+
+#[test]
+fn lower_level_commit_skips_recent_chain_height_check_today() -> Result<()> {
+    let _init_guard = zebra_test::init();
+
+    let (finalized_state, mut validating_state, genesis) = new_state_with_mainnet_genesis();
+    let mut direct_state = NonFinalizedState::new(&Network::Mainnet);
+
+    let mut height_two_child_of_genesis = genesis.block.make_fake_child().make_fake_child();
+    Arc::make_mut(&mut Arc::make_mut(&mut height_two_child_of_genesis).header)
+        .previous_block_hash = genesis.hash;
+    let coinbase = transaction_v4_from_coinbase(&height_two_child_of_genesis.transactions[0]);
+    Arc::make_mut(&mut height_two_child_of_genesis).transactions[0] = Arc::new(coinbase);
+
+    assert_eq!(
+        height_two_child_of_genesis.coinbase_height(),
+        Some(Height(2))
+    );
+    assert_eq!(
+        height_two_child_of_genesis.header.previous_block_hash,
+        genesis.hash
+    );
+
+    let prepared = height_two_child_of_genesis.prepare();
+
+    let validation_error = validate_and_commit_non_finalized(
+        &finalized_state.db,
+        &mut validating_state,
+        prepared.clone(),
+    )
+    .expect_err("normal state writes reject non-sequential block heights");
+
+    assert!(matches!(
+        validation_error,
+        crate::ValidateContextError::NonSequentialBlock {
+            candidate_height: Height(2),
+            parent_height: Height(0),
+        }
+    ));
+
+    direct_state
+        .commit_new_chain(prepared.clone(), &finalized_state.db)
+        .expect("lower-level non-finalized commit skips the recent-chain height check today");
+
+    assert_eq!(direct_state.best_tip(), Some((Height(2), prepared.hash)));
 
     Ok(())
 }
@@ -315,6 +437,117 @@ fn invalidate_block_removes_block_and_descendants_from_chain_for_network(
 }
 
 #[test]
+fn fresh_non_finalized_state_forgets_invalidated_block_today() -> Result<()> {
+    let _init_guard = zebra_test::init();
+
+    let network = Network::Mainnet;
+    let block1: Arc<Block> = Arc::new(network.test_block(653599, 583999).unwrap());
+    let block2 = block1.make_fake_child().set_work(10);
+
+    let finalized_state = FinalizedState::new(
+        &Config::ephemeral(),
+        &network,
+        #[cfg(feature = "elasticsearch")]
+        false,
+    );
+
+    let fake_value_pool = ValueBalance::<NonNegative>::fake_populated_pool();
+    finalized_state.set_finalized_value_pool(fake_value_pool);
+
+    let mut state = NonFinalizedState::new(&network);
+    state.commit_new_chain(block1.clone().prepare(), &finalized_state)?;
+    state.commit_block(block2.clone().prepare(), &finalized_state)?;
+
+    state
+        .invalidate_block(block2.hash())
+        .expect("the block should be invalidated from the live non-finalized state");
+
+    let live_recommit_error = state
+        .commit_block(block2.clone().prepare(), &finalized_state)
+        .expect_err("the live non-finalized state should remember invalidated blocks");
+    assert!(
+        matches!(
+            live_recommit_error,
+            crate::ValidateContextError::BlockPreviouslyInvalidated { block_hash }
+                if block_hash == block2.hash()
+        ),
+        "unexpected live recommit error: {live_recommit_error:?}"
+    );
+
+    let mut fresh_state = NonFinalizedState::new(&network);
+    fresh_state.commit_new_chain(block1.prepare(), &finalized_state)?;
+    fresh_state
+        .commit_block(block2.clone().prepare(), &finalized_state)
+        .expect("a fresh non-finalized state currently forgets the previous invalidation");
+
+    assert!(
+        fresh_state
+            .best_chain()
+            .expect("fresh state should have a best chain")
+            .contains_block_hash(block2.hash()),
+        "the previously invalidated block is accepted after constructing fresh non-finalized state"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn backup_restore_replays_invalidated_block_today() -> Result<()> {
+    let _init_guard = zebra_test::init();
+
+    let network = Network::Mainnet;
+    let finalized_state = FinalizedState::new(
+        &Config::ephemeral(),
+        &network,
+        #[cfg(feature = "elasticsearch")]
+        false,
+    );
+
+    let fake_value_pool = ValueBalance::<NonNegative>::fake_populated_pool();
+    finalized_state.set_finalized_value_pool(fake_value_pool);
+
+    let backup_dir = tempfile::Builder::new()
+        .prefix("zebra-invalidated-non-finalized-backup-cache")
+        .tempdir()
+        .expect("temporary directory is created successfully");
+    let backup_dir_path = backup_dir.path().to_path_buf();
+
+    let block1: Arc<Block> = Arc::new(network.test_block(653599, 583999).unwrap());
+    let block2 = block1.make_fake_child().set_work(10);
+
+    let mut state = NonFinalizedState::new(&network);
+    state.commit_new_chain(block1.clone().prepare(), &finalized_state)?;
+    state.commit_block(block2.clone().prepare(), &finalized_state)?;
+    state.write_to_backup(&backup_dir_path);
+
+    state
+        .invalidate_block(block2.hash())
+        .expect("the child block should be invalidated from the live state");
+
+    assert!(
+        !state
+            .best_chain()
+            .expect("the parent should remain after invalidating the child")
+            .contains_block_hash(block2.hash()),
+        "the live non-finalized state no longer contains the invalidated child"
+    );
+
+    let (restored_state, _sender, _receiver) = NonFinalizedState::new(&network)
+        .with_backup(Some(backup_dir_path), &finalized_state, true, true)
+        .await;
+
+    assert!(
+        restored_state
+            .best_chain()
+            .expect("backup restore should recreate the stale non-finalized chain")
+            .contains_block_hash(block2.hash()),
+        "backup restore currently replays a block invalidated after the backup was written"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn reconsider_block_and_reconsider_chain_correctly_reconsiders_blocks_and_descendants() -> Result<()>
 {
     let _init_guard = zebra_test::init();
@@ -395,6 +628,215 @@ fn reconsider_block_inserts_block_and_descendants_into_chain_for_network(
     );
 
     Ok(())
+}
+
+#[test]
+#[should_panic(expected = "Chain tip block hashes are always unique")]
+fn invalidating_chain_root_panics_when_removing_existing_chain_today() {
+    let _init_guard = zebra_test::init();
+
+    let network = Network::Mainnet;
+    let block1: Arc<Block> = Arc::new(network.test_block(653599, 583999).unwrap());
+    let block2 = block1.make_fake_child().set_work(10);
+
+    let mut state = NonFinalizedState::new(&network);
+    let finalized_state = FinalizedState::new(
+        &Config::ephemeral(),
+        &network,
+        #[cfg(feature = "elasticsearch")]
+        false,
+    );
+
+    let fake_value_pool = ValueBalance::<NonNegative>::fake_populated_pool();
+    finalized_state.set_finalized_value_pool(fake_value_pool);
+
+    state
+        .commit_new_chain(block1.clone().prepare(), &finalized_state)
+        .expect("fake root block should commit to an empty non-finalized state");
+    state
+        .commit_block(block2.prepare(), &finalized_state)
+        .expect("fake child block should extend the fake root chain");
+
+    state
+        .invalidate_block(block1.hash())
+        .expect("fake root block should be present before invalidation");
+}
+
+#[test]
+#[should_panic(expected = "Chain tip block hashes are always unique")]
+fn invalidating_same_height_fork_tips_panics_today() {
+    let _init_guard = zebra_test::init();
+
+    let network = Network::Mainnet;
+    let block1: Arc<Block> = Arc::new(network.test_block(653599, 583999).unwrap());
+    let block2a = block1.make_fake_child().set_work(10);
+    let block2b = block1.make_fake_child().set_work(11);
+
+    let mut state = NonFinalizedState::new(&network);
+    let finalized_state = FinalizedState::new(
+        &Config::ephemeral(),
+        &network,
+        #[cfg(feature = "elasticsearch")]
+        false,
+    );
+
+    let fake_value_pool = ValueBalance::<NonNegative>::fake_populated_pool();
+    finalized_state.set_finalized_value_pool(fake_value_pool);
+
+    state
+        .commit_new_chain(block1.prepare(), &finalized_state)
+        .expect("fake root block should commit to an empty non-finalized state");
+    state
+        .commit_block(block2a.clone().prepare(), &finalized_state)
+        .expect("first fake fork tip should extend the root chain");
+    state
+        .commit_block(block2b.clone().prepare(), &finalized_state)
+        .expect("second fake fork tip should fork from the root chain");
+
+    state
+        .invalidate_block(block2a.hash())
+        .expect("first fake fork tip should be present before invalidation");
+    state
+        .invalidate_block(block2b.hash())
+        .expect("second fake fork tip should be present before invalidation");
+}
+
+#[test]
+#[should_panic(expected = "Chain tip block hashes are always unique")]
+fn reconsider_block_twice_replays_stale_invalidated_entry_today() {
+    let _init_guard = zebra_test::init();
+
+    let network = Network::Mainnet;
+    let block1: Arc<Block> = Arc::new(network.test_block(653599, 583999).unwrap());
+    let block2 = block1.make_fake_child().set_work(10);
+    let block3 = block2.make_fake_child().set_work(1);
+
+    let mut state = NonFinalizedState::new(&network);
+    let finalized_state = FinalizedState::new(
+        &Config::ephemeral(),
+        &network,
+        #[cfg(feature = "elasticsearch")]
+        false,
+    );
+
+    let fake_value_pool = ValueBalance::<NonNegative>::fake_populated_pool();
+    finalized_state.set_finalized_value_pool(fake_value_pool);
+
+    state
+        .commit_new_chain(block1.prepare(), &finalized_state)
+        .expect("fake root block should commit to an empty non-finalized state");
+    state
+        .commit_block(block2.clone().prepare(), &finalized_state)
+        .expect("fake child block should extend the fake root chain");
+    state
+        .commit_block(block3.prepare(), &finalized_state)
+        .expect("fake grandchild block should extend the fake child chain");
+
+    state
+        .invalidate_block(block2.hash())
+        .expect("fake child block should be present before invalidation");
+    state
+        .reconsider_block(block2.hash(), &finalized_state.db)
+        .expect("first reconsider should restore the invalidated child chain");
+
+    assert!(
+        state.invalidated_blocks().values().any(|blocks| {
+            blocks
+                .first()
+                .map(|block| block.hash == block2.hash())
+                .unwrap_or(false)
+        }),
+        "first reconsider should leave the invalidated entry in the live map"
+    );
+
+    state
+        .reconsider_block(block2.hash(), &finalized_state.db)
+        .expect("stale invalidated entry should still be visible to reconsider");
+}
+
+#[test]
+#[should_panic(expected = "only called while blocks is populated")]
+fn finalize_after_invalidating_same_root_side_chain_tip_panics_today() {
+    let _init_guard = zebra_test::init();
+
+    let network = Network::Mainnet;
+    let block1: Arc<Block> = Arc::new(network.test_block(653599, 583999).unwrap());
+    let block2a = block1.make_fake_child().set_work(10);
+    let block3a = block2a.make_fake_child().set_work(10);
+    let block2b = block1.make_fake_child().set_work(1);
+
+    let mut state = NonFinalizedState::new(&network);
+    let finalized_state = FinalizedState::new(
+        &Config::ephemeral(),
+        &network,
+        #[cfg(feature = "elasticsearch")]
+        false,
+    );
+
+    let fake_value_pool = ValueBalance::<NonNegative>::fake_populated_pool();
+    finalized_state.set_finalized_value_pool(fake_value_pool);
+
+    state
+        .commit_new_chain(block1.prepare(), &finalized_state)
+        .expect("fake root block should commit to an empty non-finalized state");
+    state
+        .commit_block(block2a.clone().prepare(), &finalized_state)
+        .expect("first fake fork should extend the root chain");
+    state
+        .commit_block(block3a.prepare(), &finalized_state)
+        .expect("best fake fork should have an extra child");
+    state
+        .commit_block(block2b.clone().prepare(), &finalized_state)
+        .expect("second fake fork should extend the root chain");
+
+    state
+        .invalidate_block(block2b.hash())
+        .expect("side-chain block should be present before invalidation");
+
+    let finalized = state.finalize().inner_block();
+    assert_eq!(finalized.hash(), block2a.header.previous_block_hash);
+
+    let _ = state.finalize();
+}
+
+#[test]
+fn finalize_retains_invalidated_record_at_finalized_height_today() {
+    let _init_guard = zebra_test::init();
+
+    let network = Network::Mainnet;
+    let block1: Arc<Block> = Arc::new(network.test_block(653599, 583999).unwrap());
+    let block2 = block1.make_fake_child().set_work(10);
+
+    let mut state = NonFinalizedState::new(&network);
+    let finalized_state = FinalizedState::new(
+        &Config::ephemeral(),
+        &network,
+        #[cfg(feature = "elasticsearch")]
+        false,
+    );
+
+    let fake_value_pool = ValueBalance::<NonNegative>::fake_populated_pool();
+    finalized_state.set_finalized_value_pool(fake_value_pool);
+
+    state
+        .commit_new_chain(block1.clone().prepare(), &finalized_state)
+        .expect("fake root block should commit to an empty non-finalized state");
+    state
+        .commit_block(block2.prepare(), &finalized_state)
+        .expect("fake child block should extend the fake root chain");
+
+    let invalidated_root = block1.clone().prepare().test_with_zero_spent_utxos();
+    let finalized_height = invalidated_root.height;
+    state
+        .invalidated_blocks
+        .insert(finalized_height, Arc::new(vec![invalidated_root]));
+
+    let finalized = state.finalize().inner_block();
+    assert_eq!(finalized.hash(), block1.hash());
+    assert!(
+        state.invalidated_blocks().contains_key(&finalized_height),
+        "finalize() keeps invalidated records at the height it just finalized today"
+    );
 }
 
 #[test]

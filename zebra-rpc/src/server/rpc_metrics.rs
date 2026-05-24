@@ -89,3 +89,303 @@ where
         }))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::{
+        borrow::Cow,
+        future,
+        sync::{Arc, Mutex},
+    };
+
+    use jsonrpsee::{
+        types::{Id, Request},
+        ResponsePayload,
+    };
+
+    #[derive(Clone, Debug)]
+    struct SuccessRpcService;
+
+    impl<'a> RpcServiceT<'a> for SuccessRpcService {
+        type Future = future::Ready<MethodResponse>;
+
+        fn call(&self, request: Request<'a>) -> Self::Future {
+            future::ready(MethodResponse::response(
+                request.id().into_owned(),
+                ResponsePayload::success("ok"),
+                usize::MAX,
+            ))
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    struct PendingRpcService;
+
+    impl<'a> RpcServiceT<'a> for PendingRpcService {
+        type Future = future::Pending<MethodResponse>;
+
+        fn call(&self, _request: Request<'a>) -> Self::Future {
+            future::pending()
+        }
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct RecordedMetric {
+        name: String,
+        labels: Vec<(String, String)>,
+    }
+
+    #[derive(Clone, Debug, PartialEq)]
+    struct RecordedGaugeEvent {
+        name: String,
+        labels: Vec<(String, String)>,
+        operation: GaugeOperation,
+        value: f64,
+    }
+
+    #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+    enum GaugeOperation {
+        Increment,
+        Decrement,
+        Set,
+    }
+
+    #[derive(Default)]
+    struct RecordingRecorder {
+        metrics: Mutex<Vec<RecordedMetric>>,
+        gauge_events: Arc<Mutex<Vec<RecordedGaugeEvent>>>,
+    }
+
+    impl RecordingRecorder {
+        fn metric_from_key(key: &metrics::Key) -> RecordedMetric {
+            RecordedMetric {
+                name: key.name().to_string(),
+                labels: key
+                    .labels()
+                    .map(|label| (label.key().to_string(), label.value().to_string()))
+                    .collect(),
+            }
+        }
+
+        fn record_key(&self, key: &metrics::Key) {
+            self.metrics
+                .lock()
+                .expect("recorder mutex should not be poisoned because tests do not panic while holding it")
+                .push(Self::metric_from_key(key));
+        }
+
+        fn recorded_metrics(&self) -> Vec<RecordedMetric> {
+            self.metrics
+                .lock()
+                .expect("recorder mutex should not be poisoned because tests do not panic while holding it")
+                .clone()
+        }
+
+        fn recorded_gauge_events(&self) -> Vec<RecordedGaugeEvent> {
+            self.gauge_events
+                .lock()
+                .expect("recorder mutex should not be poisoned because tests do not panic while holding it")
+                .clone()
+        }
+    }
+
+    struct RecordingGauge {
+        metric: RecordedMetric,
+        gauge_events: Arc<Mutex<Vec<RecordedGaugeEvent>>>,
+    }
+
+    impl RecordingGauge {
+        fn record(&self, operation: GaugeOperation, value: f64) {
+            self.gauge_events
+                .lock()
+                .expect("recorder mutex should not be poisoned because tests do not panic while holding it")
+                .push(RecordedGaugeEvent {
+                    name: self.metric.name.clone(),
+                    labels: self.metric.labels.clone(),
+                    operation,
+                    value,
+                });
+        }
+    }
+
+    impl metrics::GaugeFn for RecordingGauge {
+        fn increment(&self, value: f64) {
+            self.record(GaugeOperation::Increment, value);
+        }
+
+        fn decrement(&self, value: f64) {
+            self.record(GaugeOperation::Decrement, value);
+        }
+
+        fn set(&self, value: f64) {
+            self.record(GaugeOperation::Set, value);
+        }
+    }
+
+    impl metrics::Recorder for RecordingRecorder {
+        fn describe_counter(
+            &self,
+            _key: metrics::KeyName,
+            _unit: Option<metrics::Unit>,
+            _description: metrics::SharedString,
+        ) {
+        }
+
+        fn describe_gauge(
+            &self,
+            _key: metrics::KeyName,
+            _unit: Option<metrics::Unit>,
+            _description: metrics::SharedString,
+        ) {
+        }
+
+        fn describe_histogram(
+            &self,
+            _key: metrics::KeyName,
+            _unit: Option<metrics::Unit>,
+            _description: metrics::SharedString,
+        ) {
+        }
+
+        fn register_counter(
+            &self,
+            key: &metrics::Key,
+            _metadata: &metrics::Metadata<'_>,
+        ) -> metrics::Counter {
+            self.record_key(key);
+            metrics::Counter::noop()
+        }
+
+        fn register_gauge(
+            &self,
+            key: &metrics::Key,
+            _metadata: &metrics::Metadata<'_>,
+        ) -> metrics::Gauge {
+            self.record_key(key);
+            metrics::Gauge::from_arc(Arc::new(RecordingGauge {
+                metric: Self::metric_from_key(key),
+                gauge_events: self.gauge_events.clone(),
+            }))
+        }
+
+        fn register_histogram(
+            &self,
+            key: &metrics::Key,
+            _metadata: &metrics::Metadata<'_>,
+        ) -> metrics::Histogram {
+            self.record_key(key);
+            metrics::Histogram::noop()
+        }
+    }
+
+    fn metric_has_label(
+        metrics: &[RecordedMetric],
+        metric_name: &str,
+        label_name: &str,
+        label_value: &str,
+    ) -> bool {
+        metrics.iter().any(|metric| {
+            metric.name == metric_name
+                && metric
+                    .labels
+                    .iter()
+                    .any(|(name, value)| name == label_name && value == label_value)
+        })
+    }
+
+    fn gauge_event_exists(
+        events: &[RecordedGaugeEvent],
+        metric_name: &str,
+        operation: GaugeOperation,
+        value: f64,
+    ) -> bool {
+        events.iter().any(|event| {
+            event.name == metric_name && event.operation == operation && event.value == value
+        })
+    }
+
+    #[test]
+    fn rpc_metrics_method_label_uses_raw_unknown_method_today() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("current-thread runtime should build for this metrics capture test");
+        let recorder = RecordingRecorder::default();
+        let service = RpcMetricsMiddleware::new(SuccessRpcService);
+        let unknown_methods = [
+            "unknown_cardinality_probe_method_a",
+            "unknown_cardinality_probe_method_b",
+        ];
+
+        metrics::with_local_recorder(&recorder, || {
+            runtime.block_on(async {
+                for (id, method) in unknown_methods.iter().enumerate() {
+                    let response = service
+                        .call(Request::new(
+                            Cow::Borrowed(*method),
+                            None,
+                            Id::Number(id as u64),
+                        ))
+                        .await;
+
+                    assert!(
+                        !response.is_error(),
+                        "test service should return success for method {method}"
+                    );
+                }
+            });
+        });
+
+        let metrics = recorder.recorded_metrics();
+
+        for method in unknown_methods {
+            assert!(
+                metric_has_label(&metrics, "rpc.requests.total", "method", method),
+                "request counter should use the raw unknown method as a Prometheus label: {metrics:?}"
+            );
+            assert!(
+                metric_has_label(&metrics, "rpc.request.duration_seconds", "method", method),
+                "duration histogram should use the raw unknown method as a Prometheus label: {metrics:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rpc_active_requests_gauge_not_decremented_when_response_future_dropped_today() {
+        let recorder = RecordingRecorder::default();
+        let service = RpcMetricsMiddleware::new(PendingRpcService);
+
+        metrics::with_local_recorder(&recorder, || {
+            let response_future = service.call(Request::new(
+                Cow::Borrowed("long_pending_method"),
+                None,
+                Id::Number(1),
+            ));
+
+            drop(response_future);
+        });
+
+        let gauge_events = recorder.recorded_gauge_events();
+
+        assert!(
+            gauge_event_exists(
+                &gauge_events,
+                "rpc.active_requests",
+                GaugeOperation::Increment,
+                1.0
+            ),
+            "middleware should increment active requests before returning the response future: {gauge_events:?}"
+        );
+        assert!(
+            !gauge_event_exists(
+                &gauge_events,
+                "rpc.active_requests",
+                GaugeOperation::Decrement,
+                1.0
+            ),
+            "dropping the pending response future should not reach the current decrement path: {gauge_events:?}"
+        );
+    }
+}

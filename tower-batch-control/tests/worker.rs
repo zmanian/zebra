@@ -4,8 +4,17 @@ use std::time::Duration;
 
 use tokio_test::{assert_pending, assert_ready, assert_ready_err, task};
 use tower::{Service, ServiceExt};
-use tower_batch_control::{error, Batch};
+use tower_batch_control::{error, Batch, BatchControl, RequestWeight};
 use tower_test::mock;
+
+#[derive(Clone, Debug)]
+struct WeightedRequest(usize);
+
+impl RequestWeight for WeightedRequest {
+    fn request_weight(&self) -> usize {
+        self.0
+    }
+}
 
 #[tokio::test]
 async fn wakes_pending_waiters_on_close() {
@@ -117,5 +126,34 @@ async fn wakes_pending_waiters_on_failure() {
     assert!(
         err.is::<error::ServiceError>(),
         "ready 2 should fail with a ServiceError, got: {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn weighted_requests_only_consume_one_queue_permit_today() {
+    let _init_guard = zebra_test::init();
+
+    let (service, _handle) = mock::pair::<BatchControl<WeightedRequest>, ()>();
+    let (service, _worker) = Batch::pair(service, 2, 1, Duration::from_secs(1));
+
+    let mut first_service = service.clone();
+    let first_ready = first_service
+        .ready()
+        .await
+        .expect("first full-weight request should get a queue permit");
+    let _first_response = first_ready.call(WeightedRequest(2));
+
+    let mut second_service = service.clone();
+    let second_ready = second_service
+        .ready()
+        .await
+        .expect("second full-weight request also gets a queue permit today");
+    let _second_response = second_ready.call(WeightedRequest(2));
+
+    let mut third_service = service.clone();
+    let mut third_ready = task::spawn(third_service.ready());
+    assert_pending!(
+        third_ready.poll(),
+        "queue capacity is exhausted after two requests, not after one full-weight request"
     );
 }

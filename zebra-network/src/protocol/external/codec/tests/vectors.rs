@@ -5,6 +5,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use chrono::DateTime;
 use futures::prelude::*;
 use lazy_static::lazy_static;
+use tokio::io::AsyncWriteExt;
 
 use super::*;
 
@@ -264,6 +265,237 @@ fn filterload_message_too_large_round_trip() {
             .expect("a next message should be available")
             .expect_err("that message should not deserialize")
     });
+}
+
+#[test]
+fn filterload_too_many_hash_functions_is_accepted_today() {
+    let (rt, _init_guard) = zebra_test::init_async();
+
+    let v = Message::FilterLoad {
+        filter: Filter(vec![0xab]),
+        hash_functions_count: 51,
+        tweak: Tweak(0),
+        flags: 0,
+    };
+
+    use tokio_util::codec::{FramedRead, FramedWrite};
+    let v_bytes = rt.block_on(async {
+        let mut bytes = Vec::new();
+        {
+            let mut fw = FramedWrite::new(&mut bytes, Codec::builder().finish());
+            fw.send(v.clone())
+                .await
+                .expect("message should be serialized");
+        }
+        bytes
+    });
+
+    let v_parsed = rt.block_on(async {
+        let mut fr = FramedRead::new(Cursor::new(&v_bytes), Codec::builder().finish());
+        fr.next()
+            .await
+            .expect("a next message should be available")
+            .expect("that message should deserialize")
+    });
+
+    let Message::FilterLoad {
+        hash_functions_count,
+        ..
+    } = v_parsed
+    else {
+        panic!("expected filterload message");
+    };
+
+    assert_eq!(hash_functions_count, 51);
+}
+
+#[test]
+fn filteradd_message_too_large_is_truncated_and_accepted_today() {
+    let (rt, _init_guard) = zebra_test::init_async();
+
+    let v = Message::FilterAdd {
+        data: vec![0xab; 2048],
+    };
+
+    use tokio_util::codec::{FramedRead, FramedWrite};
+    let v_bytes = rt.block_on(async {
+        let mut bytes = Vec::new();
+        {
+            let mut fw = FramedWrite::new(&mut bytes, Codec::builder().finish());
+            fw.send(v.clone())
+                .await
+                .expect("message should be serialized");
+        }
+        bytes
+    });
+
+    let v_parsed = rt.block_on(async {
+        let mut fr = FramedRead::new(Cursor::new(&v_bytes), Codec::builder().finish());
+        fr.next()
+            .await
+            .expect("a next message should be available")
+            .expect("that message should deserialize")
+    });
+
+    let Message::FilterAdd { data } = v_parsed else {
+        panic!("expected filteradd message");
+    };
+
+    assert_eq!(data, vec![0xab; 520]);
+}
+
+#[test]
+fn filterclear_message_with_body_is_accepted_today() {
+    let _init_guard = zebra_test::init();
+
+    let mut codec = Codec::builder().finish();
+    let mut bytes = BytesMut::new();
+    codec
+        .encode(Message::FilterClear, &mut bytes)
+        .expect("encoding should succeed");
+
+    append_body_bytes(&mut bytes, b"junk");
+
+    let decoded = codec
+        .decode(&mut bytes)
+        .expect("filterclear message with body is accepted today")
+        .expect("a message should be present");
+
+    assert_eq!(decoded, Message::FilterClear);
+}
+
+#[test]
+fn mempool_message_with_body_is_accepted_today() {
+    let _init_guard = zebra_test::init();
+
+    let mut codec = Codec::builder().finish();
+    let mut bytes = BytesMut::new();
+    codec
+        .encode(Message::Mempool, &mut bytes)
+        .expect("encoding should succeed");
+
+    append_body_bytes(&mut bytes, b"junk");
+
+    let decoded = codec
+        .decode(&mut bytes)
+        .expect("mempool message with body is accepted today")
+        .expect("a message should be present");
+
+    assert_eq!(decoded, Message::Mempool);
+}
+
+#[test]
+fn getaddr_message_with_body_is_accepted_today() {
+    let _init_guard = zebra_test::init();
+
+    let mut codec = Codec::builder().finish();
+    let mut bytes = BytesMut::new();
+    codec
+        .encode(Message::GetAddr, &mut bytes)
+        .expect("encoding should succeed");
+
+    append_body_bytes(&mut bytes, b"junk");
+
+    let decoded = codec
+        .decode(&mut bytes)
+        .expect("getaddr message with body is accepted today")
+        .expect("a message should be present");
+
+    assert_eq!(decoded, Message::GetAddr);
+}
+
+#[test]
+fn verack_message_with_body_is_accepted_today() {
+    let _init_guard = zebra_test::init();
+
+    let mut codec = Codec::builder().finish();
+    let mut bytes = BytesMut::new();
+    codec
+        .encode(Message::Verack, &mut bytes)
+        .expect("encoding should succeed");
+
+    append_body_bytes(&mut bytes, b"junk");
+
+    let decoded = codec
+        .decode(&mut bytes)
+        .expect("verack message with body is accepted today")
+        .expect("a message should be present");
+
+    assert_eq!(decoded, Message::Verack);
+}
+
+#[test]
+fn header_only_max_body_len_reserves_full_body_capacity_today() {
+    let _init_guard = zebra_test::init();
+
+    let mut codec = Codec::builder().finish();
+    let mut bytes = BytesMut::new();
+
+    bytes.extend_from_slice(&Network::Mainnet.magic().0);
+    bytes.extend_from_slice(b"version\0\0\0\0\0");
+    bytes.extend_from_slice(&(MAX_PROTOCOL_MESSAGE_LEN as u32).to_le_bytes());
+    bytes.extend_from_slice(&[0; 4]);
+
+    let capacity_before_decode = bytes.capacity();
+    let decoded = codec
+        .decode(&mut bytes)
+        .expect("header-only frame should wait for the body");
+
+    assert_eq!(decoded, None);
+    assert_eq!(bytes.len(), 0);
+    assert!(
+        bytes.capacity() >= MAX_PROTOCOL_MESSAGE_LEN + HEADER_LEN,
+        "header-only decode reserved {} bytes, expected at least {}",
+        bytes.capacity(),
+        MAX_PROTOCOL_MESSAGE_LEN + HEADER_LEN
+    );
+    assert!(
+        bytes.capacity() > capacity_before_decode,
+        "header-only decode should increase buffer capacity"
+    );
+}
+
+/// Check that an unknown command frame can strand a valid, already-buffered
+/// following frame until another socket read or EOF happens.
+#[tokio::test]
+async fn unknown_command_before_valid_frame_strands_buffered_frame_today() {
+    use std::time::Duration;
+
+    use tokio_util::codec::{Encoder, FramedRead};
+
+    let _init_guard = zebra_test::init();
+
+    let mut frames = BytesMut::new();
+    append_unknown_frame(&mut frames, *b"unknown\0\0\0\0\0");
+    Codec::builder()
+        .finish()
+        .encode(Message::Ping(Nonce(1)), &mut frames)
+        .expect("ping message should encode");
+
+    let (mut writer, reader) = tokio::io::duplex(1024);
+    writer
+        .write_all(&frames)
+        .await
+        .expect("duplex write should succeed");
+
+    let mut framed = FramedRead::new(reader, Codec::builder().finish());
+    let decoded = tokio::time::timeout(Duration::from_millis(100), framed.next()).await;
+
+    assert!(
+        decoded.is_err(),
+        "unknown command should make FramedRead wait for another read instead of \
+         yielding the buffered ping"
+    );
+
+    drop(writer);
+
+    let decoded_after_eof = framed
+        .next()
+        .await
+        .expect("buffered ping should be decoded after EOF")
+        .expect("buffered ping should decode successfully");
+
+    assert_eq!(decoded_after_eof, Message::Ping(Nonce(1)));
 }
 
 #[test]
@@ -648,6 +880,301 @@ fn headers_message_at_protocol_cap_is_accepted() {
         Message::Headers(headers) => assert_eq!(headers.len(), 160),
         other => panic!("expected Headers, got {other:?}"),
     }
+}
+
+#[test]
+fn getblocks_locator_longer_than_response_cap_is_accepted_today() {
+    let _init_guard = zebra_test::init();
+
+    // The downstream `FindBlockHashes` response cap is 500, but the wire
+    // locator itself is not capped there.
+    let known_blocks = synthetic_locator_hashes(501);
+    let msg = Message::GetBlocks {
+        known_blocks: known_blocks.clone(),
+        stop: None,
+    };
+
+    let mut codec = Codec::builder().finish();
+    let mut bytes = BytesMut::new();
+    codec
+        .encode(msg, &mut bytes)
+        .expect("encoding should succeed");
+
+    let decoded = codec
+        .decode(&mut bytes)
+        .expect("locator longer than response cap is accepted today")
+        .expect("a message should be present");
+
+    match decoded {
+        Message::GetBlocks {
+            known_blocks: decoded_known_blocks,
+            stop,
+        } => {
+            assert_eq!(decoded_known_blocks, known_blocks);
+            assert_eq!(stop, None);
+        }
+        other => panic!("expected GetBlocks, got {other:?}"),
+    }
+}
+
+#[test]
+fn getheaders_locator_longer_than_response_cap_is_accepted_today() {
+    let _init_guard = zebra_test::init();
+
+    // The downstream `FindBlockHeaders` response cap is 160, but the wire
+    // locator itself is not capped there.
+    let known_blocks = synthetic_locator_hashes(161);
+    let msg = Message::GetHeaders {
+        known_blocks: known_blocks.clone(),
+        stop: None,
+    };
+
+    let mut codec = Codec::builder().finish();
+    let mut bytes = BytesMut::new();
+    codec
+        .encode(msg, &mut bytes)
+        .expect("encoding should succeed");
+
+    let decoded = codec
+        .decode(&mut bytes)
+        .expect("locator longer than response cap is accepted today")
+        .expect("a message should be present");
+
+    match decoded {
+        Message::GetHeaders {
+            known_blocks: decoded_known_blocks,
+            stop,
+        } => {
+            assert_eq!(decoded_known_blocks, known_blocks);
+            assert_eq!(stop, None);
+        }
+        other => panic!("expected GetHeaders, got {other:?}"),
+    }
+}
+
+#[test]
+fn headers_message_nonzero_transaction_count_is_accepted_today() {
+    use zebra_chain::serialization::ZcashDeserializeInto;
+
+    let _init_guard = zebra_test::init();
+
+    let header: block::Header = zebra_test::vectors::DUMMY_HEADER
+        .zcash_deserialize_into()
+        .expect("dummy header should deserialize");
+    let counted = block::CountedHeader {
+        header: header.into(),
+    };
+
+    let msg = Message::Headers(vec![counted]);
+
+    let mut codec = Codec::builder().finish();
+    let mut bytes = BytesMut::new();
+    codec
+        .encode(msg, &mut bytes)
+        .expect("encoding should succeed");
+
+    let tx_count_index = bytes
+        .len()
+        .checked_sub(1)
+        .expect("encoded headers message should include a transaction count");
+    assert_eq!(bytes[tx_count_index], 0);
+    bytes[tx_count_index] = 1;
+    update_checksum(&mut bytes);
+
+    let decoded = codec
+        .decode(&mut bytes)
+        .expect("nonzero counted-header transaction count is accepted today")
+        .expect("a message should be present");
+
+    match decoded {
+        Message::Headers(headers) => assert_eq!(headers.len(), 1),
+        other => panic!("expected Headers, got {other:?}"),
+    }
+}
+
+#[test]
+fn block_message_with_trailing_bytes_is_accepted_today() {
+    use zebra_chain::serialization::ZcashDeserializeInto;
+
+    let _init_guard = zebra_test::init();
+
+    let block: std::sync::Arc<block::Block> = zebra_test::vectors::BLOCK_MAINNET_GENESIS_BYTES
+        .zcash_deserialize_into()
+        .expect("genesis block should deserialize");
+
+    let mut codec = Codec::builder().finish();
+    let mut bytes = BytesMut::new();
+    codec
+        .encode(Message::Block(block.clone()), &mut bytes)
+        .expect("encoding should succeed");
+
+    append_body_bytes(&mut bytes, b"junk");
+
+    let decoded = codec
+        .decode(&mut bytes)
+        .expect("block message with trailing bytes is accepted today")
+        .expect("a message should be present");
+
+    match decoded {
+        Message::Block(decoded_block) => assert_eq!(decoded_block, block),
+        other => panic!("expected Block, got {other:?}"),
+    }
+}
+
+#[test]
+fn block_message_padded_past_max_block_bytes_is_accepted_today() {
+    use zebra_chain::serialization::ZcashDeserializeInto;
+
+    let _init_guard = zebra_test::init();
+
+    let block: std::sync::Arc<block::Block> = zebra_test::vectors::BLOCK_MAINNET_GENESIS_BYTES
+        .zcash_deserialize_into()
+        .expect("genesis block should deserialize");
+
+    let mut codec = Codec::builder().finish();
+    let mut bytes = BytesMut::new();
+    codec
+        .encode(Message::Block(block.clone()), &mut bytes)
+        .expect("encoding should succeed");
+
+    pad_body_to_len(&mut bytes, max_block_bytes_usize() + 1);
+
+    let decoded = codec
+        .decode(&mut bytes)
+        .expect("block message padded past MAX_BLOCK_BYTES is accepted today")
+        .expect("a message should be present");
+
+    match decoded {
+        Message::Block(decoded_block) => assert_eq!(decoded_block, block),
+        other => panic!("expected Block, got {other:?}"),
+    }
+}
+
+#[test]
+fn tx_message_with_trailing_bytes_is_accepted_today() {
+    use zebra_chain::serialization::ZcashDeserializeInto;
+
+    let _init_guard = zebra_test::init();
+
+    let block: block::Block = zebra_test::vectors::BLOCK_MAINNET_GENESIS_BYTES
+        .zcash_deserialize_into()
+        .expect("genesis block should deserialize");
+    let transaction: zebra_chain::transaction::UnminedTx = block
+        .transactions
+        .first()
+        .expect("genesis block should contain a coinbase transaction")
+        .clone()
+        .into();
+
+    let mut codec = Codec::builder().finish();
+    let mut bytes = BytesMut::new();
+    codec
+        .encode(Message::Tx(transaction.clone()), &mut bytes)
+        .expect("encoding should succeed");
+
+    append_body_bytes(&mut bytes, b"junk");
+
+    let decoded = codec
+        .decode(&mut bytes)
+        .expect("tx message with trailing bytes is accepted today")
+        .expect("a message should be present");
+
+    match decoded {
+        Message::Tx(decoded_transaction) => assert_eq!(decoded_transaction, transaction),
+        other => panic!("expected Tx, got {other:?}"),
+    }
+}
+
+#[test]
+fn tx_message_padded_past_max_block_bytes_is_accepted_today() {
+    use zebra_chain::serialization::ZcashDeserializeInto;
+
+    let _init_guard = zebra_test::init();
+
+    let block: block::Block = zebra_test::vectors::BLOCK_MAINNET_GENESIS_BYTES
+        .zcash_deserialize_into()
+        .expect("genesis block should deserialize");
+    let transaction: zebra_chain::transaction::UnminedTx = block
+        .transactions
+        .first()
+        .expect("genesis block should contain a coinbase transaction")
+        .clone()
+        .into();
+
+    let mut codec = Codec::builder().finish();
+    let mut bytes = BytesMut::new();
+    codec
+        .encode(Message::Tx(transaction.clone()), &mut bytes)
+        .expect("encoding should succeed");
+
+    pad_body_to_len(&mut bytes, max_block_bytes_usize() + 1);
+
+    let decoded = codec
+        .decode(&mut bytes)
+        .expect("tx message padded past MAX_BLOCK_BYTES is accepted today")
+        .expect("a message should be present");
+
+    match decoded {
+        Message::Tx(decoded_transaction) => assert_eq!(decoded_transaction, transaction),
+        other => panic!("expected Tx, got {other:?}"),
+    }
+}
+
+fn append_body_bytes(bytes: &mut BytesMut, extra_body_bytes: &[u8]) {
+    bytes.extend_from_slice(extra_body_bytes);
+    update_body_len_and_checksum(bytes);
+}
+
+fn pad_body_to_len(bytes: &mut BytesMut, body_len: usize) {
+    assert!(
+        body_len <= zebra_chain::serialization::MAX_PROTOCOL_MESSAGE_LEN,
+        "test body must stay within the P2P message-size limit"
+    );
+
+    bytes.resize(HEADER_LEN + body_len, 0xA5);
+    update_body_len_and_checksum(bytes);
+}
+
+fn update_body_len_and_checksum(bytes: &mut BytesMut) {
+    let new_body_len = bytes
+        .len()
+        .checked_sub(HEADER_LEN)
+        .expect("encoded message should include a header");
+    let new_body_len =
+        u32::try_from(new_body_len).expect("test message body length should fit in u32");
+
+    bytes[16..20].copy_from_slice(&new_body_len.to_le_bytes());
+    update_checksum(bytes);
+}
+
+fn max_block_bytes_usize() -> usize {
+    usize::try_from(block::MAX_BLOCK_BYTES).expect("MAX_BLOCK_BYTES should fit in usize")
+}
+
+fn synthetic_locator_hashes(count: usize) -> Vec<block::Hash> {
+    (0..count)
+        .map(|index| {
+            let mut bytes = [0; 32];
+            bytes[..8].copy_from_slice(&(index as u64).to_le_bytes());
+            block::Hash(bytes)
+        })
+        .collect()
+}
+
+fn update_checksum(bytes: &mut BytesMut) {
+    let checksum = sha256d::Checksum::from(&bytes[HEADER_LEN..]);
+    bytes[20..24].copy_from_slice(&checksum.0);
+}
+
+fn append_unknown_frame(bytes: &mut BytesMut, command: [u8; 12]) {
+    let body = [0x42, 0x24];
+    let checksum = sha256d::Checksum::from(&body[..]);
+
+    bytes.extend_from_slice(&Network::Mainnet.magic().0);
+    bytes.extend_from_slice(&command);
+    bytes.extend_from_slice(&(body.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&checksum.0);
+    bytes.extend_from_slice(&body);
 }
 
 /// Check that the version test vector deserialization fails when there's a network magic mismatch.

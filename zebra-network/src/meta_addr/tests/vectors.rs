@@ -15,7 +15,10 @@ use crate::{
     PeerSocketAddr,
 };
 
-use super::{super::MetaAddr, check};
+use super::{
+    super::{MetaAddr, MetaAddrChange},
+    check,
+};
 
 /// Margin of error for time-based tests.
 ///
@@ -80,6 +83,50 @@ fn new_local_listener_is_gossipable() {
         MetaAddr::new_local_listener_change(address).into_new_meta_addr(instant_now, local_now);
 
     assert!(peer.is_active_for_gossip(chrono_now));
+}
+
+#[test]
+fn misbehavior_update_addition_overflows_before_ban_today() {
+    let _init_guard = zebra_test::init();
+
+    let instant_now = Instant::now();
+    let chrono_now = Utc::now();
+    let local_now: DateTime32 = chrono_now.try_into().expect("will succeed until 2038");
+
+    let address = PeerSocketAddr::from(([192, 168, 180, 9], 10_000));
+    let mut previous =
+        MetaAddr::new_initial_peer(address).into_new_meta_addr(instant_now, local_now);
+    previous.misbehavior_score = u32::MAX;
+
+    let change = MetaAddrChange::UpdateMisbehavior {
+        addr: address,
+        score_increment: 1,
+    };
+
+    #[cfg(debug_assertions)]
+    {
+        let result = std::panic::catch_unwind(|| {
+            change.apply_to_meta_addr(previous, instant_now, chrono_now)
+        });
+
+        assert!(
+            result.is_err(),
+            "debug builds panic before ban enforcement can observe the saturated score"
+        );
+    }
+
+    #[cfg(not(debug_assertions))]
+    {
+        let updated = change
+            .apply_to_meta_addr(previous, instant_now, chrono_now)
+            .expect("misbehavior updates are applied even when concurrent");
+
+        assert_eq!(
+            updated.misbehavior(),
+            0,
+            "release builds wrap the raw addition before ban enforcement"
+        );
+    }
 }
 
 /// Test if recently received gossiped peer is gossipable.

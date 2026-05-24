@@ -180,6 +180,21 @@ impl<D, C> PeerSetBuilder<D, C> {
             max_conns_per_ip: Some(max_conns_per_ip),
         }
     }
+
+    /// Use the provided demand sender when constructing the [`PeerSet`] instance.
+    pub fn with_demand_signal(mut self, demand_signal: mpsc::Sender<MorePeers>) -> Self {
+        self.demand_signal = Some(demand_signal);
+        self
+    }
+
+    /// Use the provided background task receiver when constructing the [`PeerSet`] instance.
+    pub fn with_handle_rx(
+        mut self,
+        handle_rx: tokio::sync::oneshot::Receiver<Vec<JoinHandle<Result<(), BoxError>>>>,
+    ) -> Self {
+        self.handle_rx = Some(handle_rx);
+        self
+    }
 }
 
 impl<D, C> PeerSetBuilder<D, C>

@@ -27,6 +27,10 @@ use tracing_subscriber::{registry::LookupSpan, Layer};
 /// Error type for OpenTelemetry layer initialization.
 pub type OtelError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
+fn sample_rate_from_percent(sample_percent: Option<u8>) -> f64 {
+    f64::from(sample_percent.unwrap_or(100).min(100)) / 100.0
+}
+
 /// Creates an OpenTelemetry layer if an endpoint is configured.
 ///
 /// Returns `(None, None)` with ZERO overhead when endpoint is `None` -
@@ -64,8 +68,8 @@ where
     };
 
     let service_name = service_name.unwrap_or("zebra");
-    // Convert percentage (0-100) to rate (0.0-1.0), clamped to valid range
-    let sample_rate = f64::from(sample_percent.unwrap_or(100).min(100)) / 100.0;
+    // Convert percentage (0-100) to rate (0.0-1.0), clamped to valid range.
+    let sample_rate = sample_rate_from_percent(sample_percent);
 
     // Build the HTTP exporter with blocking client.
     // This works without an async runtime because:
@@ -103,4 +107,24 @@ where
     let layer = OpenTelemetryLayer::new(tracer);
 
     Ok((Some(layer), Some(provider)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn none_sample_percent_defaults_to_full_sampling_today() {
+        assert_eq!(sample_rate_from_percent(None), 1.0);
+    }
+
+    #[test]
+    fn ten_percent_maps_to_point_one_today() {
+        assert_eq!(sample_rate_from_percent(Some(10)), 0.10);
+    }
+
+    #[test]
+    fn oversized_percent_clamps_to_full_sampling_today() {
+        assert_eq!(sample_rate_from_percent(Some(200)), 1.0);
+    }
 }

@@ -16,6 +16,9 @@ use std::{
     ops::RangeInclusive,
 };
 
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use derive_getters::Getters;
 use zebra_chain::{
     block::{self, Height},
@@ -35,6 +38,9 @@ use crate::{
 /// The genesis coinbase transactions are ignored by a consensus rule,
 /// so they are not included in any address indexes.
 pub const ADDRESS_HEIGHTS_FULL_RANGE: RangeInclusive<Height> = Height(1)..=Height::MAX;
+
+#[cfg(test)]
+static ADDRESS_UTXOS_FULL_HISTORY_TXID_LOOKUPS: AtomicUsize = AtomicUsize::new(0);
 
 /// A convenience wrapper that efficiently stores unspent transparent outputs,
 /// and the corresponding transaction IDs.
@@ -440,6 +446,9 @@ where
     let chain_tx_ids = chain
         .as_ref()
         .map(|chain| {
+            #[cfg(test)]
+            ADDRESS_UTXOS_FULL_HISTORY_TXID_LOOKUPS.fetch_add(1, Ordering::Relaxed);
+
             chain
                 .as_ref()
                 .partial_transparent_tx_ids(addresses, ADDRESS_HEIGHTS_FULL_RANGE)
@@ -459,4 +468,66 @@ where
             )
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::init_test_services;
+
+    #[tokio::test]
+    async fn address_utxos_queries_chain_tx_history_even_for_empty_utxos_today() {
+        let _init_guard = zebra_test::init();
+
+        let (_state, read_state, _latest_chain_tip, _chain_tip_change) =
+            init_test_services(&Network::Mainnet).await;
+        let addresses = ["t1fMAAnYrpwt1HQ8ZqxeFqVSSi6PQjwTLUm"
+            .parse()
+            .expect("hard-coded transparent address should parse")]
+        .into_iter()
+        .collect();
+        let utxos = BTreeMap::new();
+        let chain = std::sync::Arc::new(Chain::default());
+
+        ADDRESS_UTXOS_FULL_HISTORY_TXID_LOOKUPS.store(0, Ordering::Relaxed);
+
+        let tx_ids = lookup_tx_ids_for_utxos(Some(&chain), read_state.db(), &addresses, &utxos);
+
+        assert!(
+            tx_ids.is_empty(),
+            "empty UTXO sets should not need any transaction IDs"
+        );
+        assert_eq!(
+            ADDRESS_UTXOS_FULL_HISTORY_TXID_LOOKUPS.load(Ordering::Relaxed),
+            1,
+            "address UTXO txid lookup currently queries full non-finalized address history even when no UTXOs need txids"
+        );
+    }
+
+    #[test]
+    fn invalid_max_finalized_tip_panics_utxo_overlay_in_debug_today() {
+        let _init_guard = zebra_test::init();
+
+        let invalid_height = Height(u32::MAX);
+        let result = std::panic::catch_unwind(|| {
+            let _ = chain_transparent_utxo_changes::<std::sync::Arc<Chain>>(
+                None,
+                &HashSet::new(),
+                Some(invalid_height..=invalid_height),
+            );
+        });
+
+        if cfg!(debug_assertions) {
+            assert!(
+                result.is_err(),
+                "debug builds currently panic while computing finalized tip + 1 for invalid Height(u32::MAX)"
+            );
+        } else {
+            assert!(
+                result.is_ok(),
+                "release builds do not use debug overflow checks for this boundary"
+            );
+        }
+    }
 }

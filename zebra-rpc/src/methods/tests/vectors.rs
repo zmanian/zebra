@@ -1,9 +1,13 @@
 //! Fixed test vectors for RPC methods.
 
-use std::{str::FromStr, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashSet},
+    str::FromStr,
+    sync::Arc,
+};
 
 use futures::FutureExt;
-use tower::buffer::Buffer;
+use tower::{buffer::Buffer, service_fn};
 
 use zcash_address::{ToAddress, ZcashAddress};
 use zcash_keys::address::Address;
@@ -20,10 +24,11 @@ use zebra_chain::{
     parameters::{
         testnet::{self, Parameters},
         Network::*,
-        NetworkKind,
+        NetworkKind, NetworkUpgrade,
     },
     serialization::{DateTime32, ZcashDeserializeInto, ZcashSerialize},
-    transaction::{zip317, UnminedTxId, VerifiedUnminedTx},
+    transaction::{zip317, LockTime, Transaction, UnminedTxId, VerifiedUnminedTx},
+    transparent,
     work::difficulty::{CompactDifficulty, ExpandedDifficulty, ParameterDifficulty as _, U256},
 };
 use zebra_consensus::MAX_BLOCK_SIGOPS;
@@ -41,15 +46,29 @@ use crate::methods::{
     hex_data::HexData,
     tests::utils::fake_history_tree,
     types::get_block_template::{
-        constants::{CAPABILITIES_FIELD, MUTABLE_FIELD, NONCE_RANGE_FIELD},
-        GetBlockTemplateRequestMode,
+        constants::{
+            CAPABILITIES_FIELD, MEMPOOL_LONG_POLL_INTERVAL, MUTABLE_FIELD, NONCE_RANGE_FIELD,
+        },
+        GetBlockTemplateParameters, GetBlockTemplateRequestMode,
     },
 };
 
 use super::super::*;
 
 use config::mining;
-use types::long_poll::LONG_POLL_ID_LENGTH;
+use types::long_poll::{LongPollInput, LONG_POLL_ID_LENGTH};
+
+fn transparent_address_strings(count: usize) -> Vec<String> {
+    (0..count)
+        .map(|index| {
+            let mut hash = [0; 20];
+            hash[..8].copy_from_slice(&(index as u64).to_be_bytes());
+
+            zebra_chain::transparent::Address::from_pub_key_hash(NetworkKind::Mainnet, hash)
+                .to_string()
+        })
+        .collect()
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn rpc_getinfo() {
@@ -832,6 +851,102 @@ async fn rpc_getblock_missing_error() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[should_panic(expected = "should be less than max block height, i32::MAX")]
+async fn rpc_getblock_height_verbosity_2_panics_if_header_depth_reorgs_before_block_lookup_today() {
+    let _init_guard = zebra_test::init();
+
+    let blocks: Vec<Arc<Block>> = zebra_test::vectors::CONTINUOUS_MAINNET_BLOCKS
+        .values()
+        .map(|block_bytes| {
+            block_bytes
+                .zcash_deserialize_into()
+                .expect("test block bytes should deserialize")
+        })
+        .collect();
+
+    let header_block = blocks[1].clone();
+    let later_block = blocks[2].clone();
+    let height = Height(1);
+    let header_hash = header_block.hash();
+
+    let mempool: MockService<_, _, _, BoxError> = MockService::build().for_unit_tests();
+    let state: MockService<_, _, _, BoxError> = MockService::build().for_unit_tests();
+    let mut read_state: MockService<_, _, _, BoxError> = MockService::build().for_unit_tests();
+
+    let (_tx, rx) = tokio::sync::watch::channel(None);
+    let (rpc, _rpc_tx_queue) = RpcImpl::new(
+        Mainnet,
+        Default::default(),
+        Default::default(),
+        "0.0.1",
+        "RPC test",
+        Buffer::new(mempool, 1),
+        Buffer::new(state, 1),
+        Buffer::new(read_state.clone(), 1),
+        MockService::build().for_unit_tests(),
+        MockSyncStatus::default(),
+        NoChainTip,
+        MockAddressBookPeers::default(),
+        rx,
+        None,
+    );
+
+    let get_block = rpc.get_block(height.0.to_string(), Some(2u8));
+    let respond_with_inconsistent_state = async move {
+        let response_handler = read_state
+            .expect_request(ReadRequest::BlockHeader(HashOrHeight::Height(height)))
+            .await;
+        response_handler.respond(ReadResponse::BlockHeader {
+            header: header_block.header.clone(),
+            hash: header_hash,
+            height,
+            next_block_hash: Some(later_block.hash()),
+        });
+
+        let response_handler = read_state
+            .expect_request(ReadRequest::SaplingTree(HashOrHeight::Height(height)))
+            .await;
+        response_handler.respond(ReadResponse::SaplingTree(Some(
+            Arc::new(Default::default()),
+        )));
+
+        let response_handler = read_state
+            .expect_request(ReadRequest::Depth(header_hash))
+            .await;
+        response_handler.respond(ReadResponse::Depth(None));
+
+        let response_handler = read_state
+            .expect_request(ReadRequest::BlockAndSize(HashOrHeight::Height(height)))
+            .await;
+        response_handler.respond(ReadResponse::BlockAndSize(Some((
+            later_block.clone(),
+            later_block.zcash_serialized_size(),
+        ))));
+
+        let response_handler = read_state
+            .expect_request(ReadRequest::OrchardTree(HashOrHeight::Hash(header_hash)))
+            .await;
+        response_handler.respond(ReadResponse::OrchardTree(Some(
+            Arc::new(Default::default()),
+        )));
+
+        let response_handler = read_state
+            .expect_request(ReadRequest::BlockInfo(HashOrHeight::Hash(
+                header_block.header.previous_block_hash,
+            )))
+            .await;
+        response_handler.respond(ReadResponse::BlockInfo(None));
+
+        let response_handler = read_state
+            .expect_request(ReadRequest::BlockInfo(HashOrHeight::Hash(header_hash)))
+            .await;
+        response_handler.respond(ReadResponse::BlockInfo(None));
+    };
+
+    let _ = tokio::join!(get_block, respond_with_inconsistent_state);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn rpc_getblockheader() {
     let _init_guard = zebra_test::init();
 
@@ -1201,6 +1316,260 @@ async fn rpc_getrawtransaction() {
     assert!(rpc_tx_queue_task_result.is_none());
 }
 
+#[tokio::test]
+async fn getrawtransaction_no_blockhash_can_mix_mined_tx_and_best_chain_blockhash_today() {
+    let _init_guard = zebra_test::init();
+
+    let blocks: Vec<Arc<Block>> = zebra_test::vectors::CONTINUOUS_MAINNET_BLOCKS
+        .values()
+        .map(|block_bytes| {
+            block_bytes
+                .zcash_deserialize_into()
+                .expect("test block bytes should deserialize")
+        })
+        .collect();
+
+    let containing_block = blocks[1].clone();
+    let different_block = blocks[2].clone();
+    let tx = containing_block.transactions[0].clone();
+    let txid = tx.hash();
+    let mined_height = containing_block
+        .coinbase_height()
+        .expect("continuous mainnet test block should have a coinbase height");
+    let actual_containing_block_hash = containing_block.hash();
+    let mismatched_best_chain_hash = different_block.hash();
+    let confirmations = 7;
+
+    assert_ne!(
+        mismatched_best_chain_hash, actual_containing_block_hash,
+        "test setup should use a later best-chain hash that differs from the transaction's containing block"
+    );
+
+    let mut mempool: MockService<_, _, _, BoxError> = MockService::build().for_unit_tests();
+    let state: MockService<_, _, _, BoxError> = MockService::build().for_unit_tests();
+    let mut read_state: MockService<_, _, _, BoxError> = MockService::build().for_unit_tests();
+    let (_tx, rx) = tokio::sync::watch::channel(None);
+    let (rpc, rpc_tx_queue) = RpcImpl::new(
+        Mainnet,
+        Default::default(),
+        Default::default(),
+        "0.0.1",
+        "RPC test",
+        Buffer::new(mempool.clone(), 1),
+        Buffer::new(state, 1),
+        Buffer::new(read_state.clone(), 1),
+        MockService::build().for_unit_tests(),
+        MockSyncStatus::default(),
+        NoChainTip,
+        MockAddressBookPeers::default(),
+        rx,
+        None,
+    );
+
+    let rpc_req = rpc.get_raw_transaction(txid.encode_hex(), Some(1), None);
+
+    let service_requests = async {
+        mempool
+            .expect_request_that(|request| {
+                if let mempool::Request::TransactionsByMinedId(ids) = request {
+                    ids.len() == 1 && ids.contains(&txid)
+                } else {
+                    false
+                }
+            })
+            .await
+            .respond(mempool::Response::Transactions(vec![]));
+
+        read_state
+            .expect_request(zebra_state::ReadRequest::AnyChainTransaction(txid))
+            .await
+            .respond(zebra_state::ReadResponse::AnyChainTransaction(Some(
+                zebra_state::AnyTx::Mined(zebra_state::MinedTx::new(
+                    tx.clone(),
+                    mined_height,
+                    confirmations,
+                    containing_block.header.time,
+                )),
+            )));
+
+        read_state
+            .expect_request(zebra_state::ReadRequest::BestChainBlockHash(mined_height))
+            .await
+            .respond(zebra_state::ReadResponse::BlockHash(Some(
+                mismatched_best_chain_hash,
+            )));
+    };
+
+    let (response, _) = futures::join!(rpc_req, service_requests);
+
+    let GetRawTransactionResponse::Object(transaction_object) =
+        response.expect("RPC should return a verbose transaction object")
+    else {
+        panic!("verbose getrawtransaction should return an object");
+    };
+
+    assert_eq!(
+        transaction_object.hex,
+        tx.clone().into(),
+        "transaction bytes should come from the AnyChainTransaction response"
+    );
+    assert_eq!(
+        transaction_object.height(),
+        Some(mined_height.0 as i32),
+        "height should come from the mined transaction metadata"
+    );
+    assert_eq!(
+        transaction_object.confirmations(),
+        Some(confirmations),
+        "confirmations should come from the mined transaction metadata"
+    );
+    assert_eq!(
+        transaction_object.block_time(),
+        Some(containing_block.header.time.timestamp()),
+        "block time should come from the mined transaction metadata"
+    );
+    assert_eq!(
+        transaction_object.block_hash(),
+        Some(mismatched_best_chain_hash),
+        "blockhash should come from the later BestChainBlockHash lookup"
+    );
+    assert_eq!(
+        transaction_object.in_active_chain(),
+        Some(true),
+        "no-blockhash mined responses mark the returned metadata as active-chain today"
+    );
+    assert_ne!(
+        transaction_object.block_hash(),
+        Some(actual_containing_block_hash),
+        "current no-blockhash path can mix mined transaction metadata with a later best-chain block hash"
+    );
+
+    let rpc_tx_queue_task_result = rpc_tx_queue.now_or_never();
+    assert!(rpc_tx_queue_task_result.is_none());
+}
+
+#[tokio::test]
+async fn getrawtransaction_blockhash_can_return_different_v5_auth_variant_today() {
+    let _init_guard = zebra_test::init();
+
+    let outpoint = transparent::OutPoint {
+        hash: zebra_chain::transaction::Hash([0x42; 32]),
+        index: 0,
+    };
+
+    let v5_tx_with_unlock_script = |script_byte| {
+        Arc::new(Transaction::V5 {
+            network_upgrade: NetworkUpgrade::Nu5,
+            lock_time: LockTime::unlocked(),
+            expiry_height: Height(0),
+            inputs: vec![transparent::Input::PrevOut {
+                outpoint,
+                unlock_script: transparent::Script::new(&[script_byte]),
+                sequence: u32::MAX,
+            }],
+            outputs: Vec::new(),
+            sapling_shielded_data: None,
+            orchard_shielded_data: None,
+        })
+    };
+
+    let tx_in_caller_block = v5_tx_with_unlock_script(0x51);
+    let tx_returned_by_global_lookup = v5_tx_with_unlock_script(0x52);
+    let txid = tx_in_caller_block.hash();
+    let caller_block_hash = Hash([0x99; 32]);
+    let other_block_hash = Hash([0x88; 32]);
+
+    assert_eq!(
+        tx_returned_by_global_lookup.hash(),
+        txid,
+        "V5 transaction variants should share the same mined ID"
+    );
+    assert_ne!(
+        tx_returned_by_global_lookup.auth_digest(),
+        tx_in_caller_block.auth_digest(),
+        "test setup should create different V5 authorizing data"
+    );
+
+    let mempool: MockService<_, _, _, BoxError> = MockService::build().for_unit_tests();
+    let state: MockService<_, _, _, BoxError> = MockService::build().for_unit_tests();
+    let mut read_state: MockService<_, _, _, BoxError> = MockService::build().for_unit_tests();
+    let (_tx, rx) = tokio::sync::watch::channel(None);
+    let (rpc, _rpc_tx_queue) = RpcImpl::new(
+        Mainnet,
+        Default::default(),
+        Default::default(),
+        "0.0.1",
+        "RPC test",
+        Buffer::new(mempool, 1),
+        Buffer::new(state, 1),
+        Buffer::new(read_state.clone(), 1),
+        MockService::build().for_unit_tests(),
+        MockSyncStatus::default(),
+        NoChainTip,
+        MockAddressBookPeers::default(),
+        rx,
+        None,
+    );
+
+    let rpc_req = rpc.get_raw_transaction(
+        txid.encode_hex(),
+        Some(1),
+        Some(caller_block_hash.encode_hex()),
+    );
+
+    let state_requests = async {
+        read_state
+            .expect_request(zebra_state::ReadRequest::AnyChainTransactionIdsForBlock(
+                caller_block_hash.into(),
+            ))
+            .await
+            .respond(zebra_state::ReadResponse::AnyChainTransactionIdsForBlock(
+                Some((Arc::from([txid]), false)),
+            ));
+
+        read_state
+            .expect_request(zebra_state::ReadRequest::AnyChainTransaction(txid))
+            .await
+            .respond(zebra_state::ReadResponse::AnyChainTransaction(Some(
+                zebra_state::AnyTx::Side((tx_returned_by_global_lookup.clone(), other_block_hash)),
+            )));
+    };
+
+    let (response, _) = futures::join!(rpc_req, state_requests);
+
+    let GetRawTransactionResponse::Object(transaction_object) =
+        response.expect("RPC should return a transaction object")
+    else {
+        panic!("verbose getrawtransaction should return an object");
+    };
+
+    assert_eq!(
+        transaction_object.block_hash(),
+        Some(caller_block_hash),
+        "RPC response should report the caller-supplied block context"
+    );
+    assert_eq!(
+        transaction_object.in_active_chain(),
+        Some(false),
+        "RPC response should report the caller block's active-chain flag"
+    );
+    assert_eq!(
+        transaction_object.hex,
+        tx_returned_by_global_lookup.clone().into(),
+        "RPC response body comes from the global txid lookup today"
+    );
+    assert_eq!(
+        transaction_object.auth_digest(),
+        tx_returned_by_global_lookup.auth_digest(),
+        "authdigest comes from the returned body, not the caller block membership check"
+    );
+    assert_ne!(
+        transaction_object.auth_digest(),
+        tx_in_caller_block.auth_digest(),
+        "current response can mismatch the V5 auth variant in the requested block"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn rpc_getaddresstxids_invalid_arguments() {
     let _init_guard = zebra_test::init();
@@ -1271,6 +1640,203 @@ async fn rpc_getaddresstxids_invalid_arguments() {
     mempool.expect_no_requests().await;
 
     // The queue task should continue without errors or panics
+    let rpc_tx_queue_task_result = rpc_tx_queue.now_or_never();
+    assert!(rpc_tx_queue_task_result.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rpc_getaddresstxids_forwards_large_default_range_today() {
+    let _init_guard = zebra_test::init();
+
+    let mut mempool: MockService<_, _, _, BoxError> = MockService::build().for_unit_tests();
+    let state: MockService<_, _, _, BoxError> = MockService::build().for_unit_tests();
+    let mut read_state: MockService<_, _, _, BoxError> = MockService::build().for_unit_tests();
+
+    let (tip, tip_sender) = MockChainTip::new();
+    tip_sender.send_best_tip_height(Height(1_000));
+
+    let (_tx, rx) = tokio::sync::watch::channel(None);
+    let (rpc, rpc_tx_queue) = RpcImpl::new(
+        Mainnet,
+        Default::default(),
+        Default::default(),
+        "0.0.1",
+        "RPC test",
+        Buffer::new(mempool.clone(), 1),
+        Buffer::new(state.clone(), 1),
+        Buffer::new(read_state.clone(), 1),
+        MockService::build().for_unit_tests(),
+        MockSyncStatus::default(),
+        tip,
+        MockAddressBookPeers::default(),
+        rx,
+        None,
+    );
+
+    let addresses = transparent_address_strings(256);
+    let expected_addresses: HashSet<_> = addresses
+        .iter()
+        .map(|address| address.parse().expect("generated addresses are valid"))
+        .collect();
+    assert_eq!(
+        expected_addresses.len(),
+        addresses.len(),
+        "generated addresses should be unique"
+    );
+
+    let rpc_call = tokio::spawn(async move {
+        rpc.get_address_tx_ids(GetAddressTxIdsRequest {
+            addresses,
+            start: None,
+            end: None,
+        })
+        .await
+    });
+
+    let response_handler = read_state
+        .expect_request(ReadRequest::TransactionIdsByAddresses {
+            addresses: expected_addresses,
+            height_range: Height(0)..=Height(1_000),
+        })
+        .await;
+    response_handler.respond(ReadResponse::AddressesTransactionIds(BTreeMap::new()));
+
+    let response = rpc_call
+        .await
+        .expect("getaddresstxids task should not panic")
+        .expect("mocked read state response should succeed");
+    assert!(response.is_empty());
+
+    mempool.expect_no_requests().await;
+    read_state.expect_no_requests().await;
+
+    let rpc_tx_queue_task_result = rpc_tx_queue.now_or_never();
+    assert!(rpc_tx_queue_task_result.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rpc_getaddressbalance_forwards_large_address_set_today() {
+    let _init_guard = zebra_test::init();
+
+    let mut mempool: MockService<_, _, _, BoxError> = MockService::build().for_unit_tests();
+    let state: MockService<_, _, _, BoxError> = MockService::build().for_unit_tests();
+    let mut read_state: MockService<_, _, _, BoxError> = MockService::build().for_unit_tests();
+
+    let (_tx, rx) = tokio::sync::watch::channel(None);
+    let (rpc, rpc_tx_queue) = RpcImpl::new(
+        Mainnet,
+        Default::default(),
+        Default::default(),
+        "0.0.1",
+        "RPC test",
+        Buffer::new(mempool.clone(), 1),
+        Buffer::new(state.clone(), 1),
+        Buffer::new(read_state.clone(), 1),
+        MockService::build().for_unit_tests(),
+        MockSyncStatus::default(),
+        NoChainTip,
+        MockAddressBookPeers::default(),
+        rx,
+        None,
+    );
+
+    let addresses = transparent_address_strings(256);
+    let expected_addresses: HashSet<_> = addresses
+        .iter()
+        .map(|address| address.parse().expect("generated addresses are valid"))
+        .collect();
+    assert_eq!(
+        expected_addresses.len(),
+        addresses.len(),
+        "generated addresses should be unique"
+    );
+
+    let rpc_call = tokio::spawn(async move {
+        rpc.get_address_balance(GetAddressBalanceRequest::new(addresses))
+            .await
+    });
+
+    let response_handler = read_state
+        .expect_request(ReadRequest::AddressBalance(expected_addresses))
+        .await;
+    response_handler.respond(ReadResponse::AddressBalance {
+        balance: 0.try_into().expect("zero is a valid non-negative amount"),
+        received: 0,
+    });
+
+    let response = rpc_call
+        .await
+        .expect("getaddressbalance task should not panic")
+        .expect("mocked read state response should succeed");
+    assert_eq!(response.balance, 0);
+    assert_eq!(response.received, 0);
+
+    mempool.expect_no_requests().await;
+    read_state.expect_no_requests().await;
+
+    let rpc_tx_queue_task_result = rpc_tx_queue.now_or_never();
+    assert!(rpc_tx_queue_task_result.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rpc_getaddressutxos_forwards_large_address_set_today() {
+    let _init_guard = zebra_test::init();
+
+    let mut mempool: MockService<_, _, _, BoxError> = MockService::build().for_unit_tests();
+    let state: MockService<_, _, _, BoxError> = MockService::build().for_unit_tests();
+    let mut read_state: MockService<_, _, _, BoxError> = MockService::build().for_unit_tests();
+
+    let (_tx, rx) = tokio::sync::watch::channel(None);
+    let (rpc, rpc_tx_queue) = RpcImpl::new(
+        Mainnet,
+        Default::default(),
+        Default::default(),
+        "0.0.1",
+        "RPC test",
+        Buffer::new(mempool.clone(), 1),
+        Buffer::new(state.clone(), 1),
+        Buffer::new(read_state.clone(), 1),
+        MockService::build().for_unit_tests(),
+        MockSyncStatus::default(),
+        NoChainTip,
+        MockAddressBookPeers::default(),
+        rx,
+        None,
+    );
+
+    let addresses = transparent_address_strings(256);
+    let expected_addresses: HashSet<_> = addresses
+        .iter()
+        .map(|address| address.parse().expect("generated addresses are valid"))
+        .collect();
+    assert_eq!(
+        expected_addresses.len(),
+        addresses.len(),
+        "generated addresses should be unique"
+    );
+
+    let rpc_call = tokio::spawn(async move {
+        rpc.get_address_utxos(GetAddressUtxosRequest::new(addresses, false))
+            .await
+    });
+
+    let response_handler = read_state
+        .expect_request(ReadRequest::UtxosByAddresses(expected_addresses))
+        .await;
+    response_handler.respond(ReadResponse::AddressUtxos(Default::default()));
+
+    let response = rpc_call
+        .await
+        .expect("getaddressutxos task should not panic")
+        .expect("mocked read state response should succeed");
+    let GetAddressUtxosResponse::Utxos(response) = response else {
+        panic!("expected GetAddressUtxosResponse::ChainInfoFalse variant");
+    };
+    assert!(response.is_empty());
+
+    mempool.expect_no_requests().await;
+    read_state.expect_no_requests().await;
+
     let rpc_tx_queue_task_result = rpc_tx_queue.now_or_never();
     assert!(rpc_tx_queue_task_result.is_none());
 }
@@ -2047,6 +2613,56 @@ async fn rpc_getnetworksolps() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn rpc_getnetworksolps_forwards_i32_max_window_today() {
+    let _init_guard = zebra_test::init();
+
+    let mut mempool: MockService<_, _, _, BoxError> = MockService::build().for_unit_tests();
+    let state: MockService<_, _, _, BoxError> = MockService::build().for_unit_tests();
+    let mut read_state: MockService<_, _, _, BoxError> = MockService::build().for_unit_tests();
+
+    let (_tx, rx) = tokio::sync::watch::channel(None);
+    let (rpc, rpc_tx_queue) = RpcImpl::new(
+        Mainnet,
+        Default::default(),
+        Default::default(),
+        "0.0.1",
+        "RPC test",
+        Buffer::new(mempool.clone(), 1),
+        Buffer::new(state.clone(), 1),
+        Buffer::new(read_state.clone(), 1),
+        MockService::build().for_unit_tests(),
+        MockSyncStatus::default(),
+        NoChainTip,
+        MockAddressBookPeers::default(),
+        rx,
+        None,
+    );
+
+    let rpc_call =
+        tokio::spawn(async move { rpc.get_network_sol_ps(Some(i32::MAX), Some(123)).await });
+
+    let response_handler = read_state
+        .expect_request(ReadRequest::SolutionRate {
+            num_blocks: i32::MAX as usize,
+            height: Some(Height(123)),
+        })
+        .await;
+    response_handler.respond(ReadResponse::SolutionRate(Some(42)));
+
+    let response = rpc_call
+        .await
+        .expect("getnetworksolps task should not panic")
+        .expect("mocked read state response should succeed");
+    assert_eq!(response, 42);
+
+    mempool.expect_no_requests().await;
+    read_state.expect_no_requests().await;
+
+    let rpc_tx_queue_task_result = rpc_tx_queue.now_or_never();
+    assert!(rpc_tx_queue_task_result.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn getblocktemplate() {
     let _init_guard = zebra_test::init();
 
@@ -2060,6 +2676,289 @@ async fn getblocktemplate() {
     );
 
     gbt_with(net, addr).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn getblocktemplate_matching_longpollid_waits_when_maxtime_already_reached_today() {
+    let _init_guard = zebra_test::init();
+
+    let net = Network::Mainnet;
+    let addr = ZcashAddress::from_transparent_p2pkh(
+        NetworkType::from(NetworkKind::from(&net)),
+        [0x7e; 20],
+    );
+
+    let mut mempool: MockService<_, _, _, BoxError> = MockService::build().for_unit_tests();
+    let state: MockService<_, _, _, BoxError> = MockService::build().for_unit_tests();
+    let read_state: MockService<_, _, _, BoxError> = MockService::build().for_unit_tests();
+
+    let mut mock_sync_status = MockSyncStatus::default();
+    mock_sync_status.set_is_close_to_tip(true);
+
+    let mining_conf = crate::config::mining::Config {
+        miner_address: Some(addr),
+        extra_coinbase_data: None,
+        internal_miner: true,
+    };
+
+    let fake_tip_height = NetworkUpgrade::Nu5
+        .activation_height(&net)
+        .expect("nu5 activation height");
+    let fake_tip_hash =
+        Hash::from_hex("0000000000d723156d9b65ffcf4984da7a19675ed7e2f06d9e5d5188af087bf8")
+            .expect("fake tip hash should parse");
+    let fake_time = DateTime32::now();
+    let fake_difficulty = CompactDifficulty::from(ExpandedDifficulty::from(U256::one()));
+    let matching_long_poll_id = LongPollInput::new(
+        fake_tip_height,
+        fake_tip_hash,
+        fake_time,
+        std::iter::empty::<UnminedTxId>(),
+    )
+    .generate_id();
+
+    let (mock_tip, mock_tip_sender) = MockChainTip::new();
+    mock_tip_sender.send_best_tip_height(fake_tip_height);
+    mock_tip_sender.send_best_tip_hash(fake_tip_hash);
+    mock_tip_sender.send_estimated_distance_to_network_chain_tip(Some(0));
+
+    let (_tx, rx) = tokio::sync::watch::channel(None);
+    let (rpc, _) = RpcImpl::new(
+        net,
+        mining_conf,
+        Default::default(),
+        "0.0.1",
+        "RPC test",
+        Buffer::new(mempool.clone(), 1),
+        state.clone(),
+        Buffer::new(read_state.clone(), 1),
+        MockService::build().for_unit_tests(),
+        mock_sync_status,
+        mock_tip,
+        MockAddressBookPeers::default(),
+        rx,
+        None,
+    );
+
+    let mut read_state_for_response = read_state.clone();
+    let mock_read_state_request_handler = async move {
+        read_state_for_response
+            .expect_request_that(|req| matches!(req, ReadRequest::ChainInfo))
+            .await
+            .respond(ReadResponse::ChainInfo(GetBlockTemplateChainInfo {
+                expected_difficulty: fake_difficulty,
+                tip_height: fake_tip_height,
+                tip_hash: fake_tip_hash,
+                cur_time: fake_time,
+                min_time: fake_time,
+                max_time: fake_time,
+                chain_history_root: fake_history_tree(&Mainnet).hash(),
+            }));
+    };
+
+    let mock_mempool_request_handler = async move {
+        mempool
+            .expect_request(mempool::Request::FullTransactions)
+            .await
+            .respond(mempool::Response::FullTransactions {
+                transactions: vec![],
+                transaction_dependencies: Default::default(),
+                last_seen_tip_hash: fake_tip_hash,
+            });
+    };
+
+    let response = tokio::time::timeout(
+        std::time::Duration::from_millis(200),
+        rpc.get_block_template(Some(GetBlockTemplateParameters {
+            long_poll_id: Some(matching_long_poll_id),
+            ..Default::default()
+        })),
+    );
+
+    let (response, ..) = tokio::join!(
+        response,
+        mock_read_state_request_handler,
+        mock_mempool_request_handler,
+    );
+
+    assert!(
+        response.is_err(),
+        "a matching longpollid with cur_time already at maxtime should currently stay pending instead of returning submitold=false"
+    );
+}
+
+#[tokio::test]
+async fn getblocktemplate_matching_longpollid_repeats_full_mempool_poll_today() {
+    let _init_guard = zebra_test::init();
+
+    tokio::time::pause();
+
+    let net = Network::Mainnet;
+    let addr = ZcashAddress::from_transparent_p2pkh(
+        NetworkType::from(NetworkKind::from(&net)),
+        [0x7e; 20],
+    );
+
+    let mut mempool: MockService<_, _, _, BoxError> = MockService::build().for_unit_tests();
+    let state: MockService<_, _, _, BoxError> = MockService::build().for_unit_tests();
+    let read_state: MockService<_, _, _, BoxError> = MockService::build().for_unit_tests();
+
+    let mut mock_sync_status = MockSyncStatus::default();
+    mock_sync_status.set_is_close_to_tip(true);
+
+    let mining_conf = crate::config::mining::Config {
+        miner_address: Some(addr),
+        extra_coinbase_data: None,
+        internal_miner: true,
+    };
+
+    let fake_tip_height = NetworkUpgrade::Nu5
+        .activation_height(&net)
+        .expect("nu5 activation height");
+    let fake_tip_hash =
+        Hash::from_hex("0000000000d723156d9b65ffcf4984da7a19675ed7e2f06d9e5d5188af087bf8")
+            .expect("fake tip hash should parse");
+    let fake_min_time = DateTime32::from(1_654_008_606);
+    let fake_cur_time = DateTime32::from(1_654_008_617);
+    let fake_max_time = DateTime32::from(1_654_008_728);
+    let fake_difficulty = CompactDifficulty::from(ExpandedDifficulty::from(U256::one()));
+    let matching_long_poll_id = LongPollInput::new(
+        fake_tip_height,
+        fake_tip_hash,
+        fake_max_time,
+        std::iter::empty::<UnminedTxId>(),
+    )
+    .generate_id();
+
+    let (mock_tip, mock_tip_sender) = MockChainTip::new();
+    mock_tip_sender.send_best_tip_height(fake_tip_height);
+    mock_tip_sender.send_best_tip_hash(fake_tip_hash);
+    mock_tip_sender.send_estimated_distance_to_network_chain_tip(Some(0));
+
+    let (_tx, rx) = tokio::sync::watch::channel(None);
+    let (rpc, _) = RpcImpl::new(
+        net,
+        mining_conf,
+        Default::default(),
+        "0.0.1",
+        "RPC test",
+        Buffer::new(mempool.clone(), 1),
+        state.clone(),
+        Buffer::new(read_state.clone(), 1),
+        MockService::build().for_unit_tests(),
+        mock_sync_status,
+        mock_tip,
+        MockAddressBookPeers::default(),
+        rx,
+        None,
+    );
+
+    let mut get_block_template_task = tokio::spawn(async move {
+        rpc.get_block_template(Some(GetBlockTemplateParameters {
+            long_poll_id: Some(matching_long_poll_id),
+            ..Default::default()
+        }))
+        .await
+    });
+
+    for _ in 0..2 {
+        let mut read_state_for_response = read_state.clone();
+        read_state_for_response
+            .expect_request_that(|req| matches!(req, ReadRequest::ChainInfo))
+            .await
+            .respond(ReadResponse::ChainInfo(GetBlockTemplateChainInfo {
+                expected_difficulty: fake_difficulty,
+                tip_height: fake_tip_height,
+                tip_hash: fake_tip_hash,
+                cur_time: fake_cur_time,
+                min_time: fake_min_time,
+                max_time: fake_max_time,
+                chain_history_root: fake_history_tree(&Mainnet).hash(),
+            }));
+
+        mempool
+            .expect_request(mempool::Request::FullTransactions)
+            .await
+            .respond(mempool::Response::FullTransactions {
+                transactions: vec![],
+                transaction_dependencies: Default::default(),
+                last_seen_tip_hash: fake_tip_hash,
+            });
+
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_secs(MEMPOOL_LONG_POLL_INTERVAL)).await;
+        tokio::task::yield_now().await;
+    }
+
+    assert!(
+        (&mut get_block_template_task).now_or_never().is_none(),
+        "a matching longpollid should currently stay pending while polling the full mempool repeatedly"
+    );
+
+    get_block_template_task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rpc_generate_u32_max_reaches_template_work_on_disabled_pow_today() {
+    let _init_guard = zebra_test::init();
+
+    let net = Testnet(Arc::new(
+        Parameters::new_regtest(Default::default()).expect("failed to build regtest parameters"),
+    ));
+    let addr = ZcashAddress::from_transparent_p2pkh(
+        NetworkType::from(NetworkKind::from(&net)),
+        [0x7e; 20],
+    );
+
+    let mempool: MockService<_, _, _, BoxError> = MockService::build().for_unit_tests();
+    let state: MockService<_, _, _, BoxError> = MockService::build().for_unit_tests();
+    let mut read_state: MockService<_, _, _, BoxError> = MockService::build().for_unit_tests();
+
+    let mut mock_sync_status = MockSyncStatus::default();
+    mock_sync_status.set_is_close_to_tip(true);
+
+    let mining_conf = crate::config::mining::Config {
+        miner_address: Some(addr),
+        extra_coinbase_data: None,
+        internal_miner: true,
+    };
+
+    let (mock_tip, mock_tip_sender) = MockChainTip::new();
+    mock_tip_sender.send_best_tip_height(Height::MIN);
+    mock_tip_sender.send_best_tip_hash(net.genesis_hash());
+    mock_tip_sender.send_estimated_distance_to_network_chain_tip(Some(0));
+
+    let (_tx, rx) = tokio::sync::watch::channel(None);
+    let (rpc, _) = RpcImpl::new(
+        net,
+        mining_conf,
+        Default::default(),
+        "0.0.1",
+        "RPC test",
+        Buffer::new(mempool.clone(), 1),
+        state.clone(),
+        Buffer::new(read_state.clone(), 1),
+        MockService::build().for_unit_tests(),
+        mock_sync_status,
+        mock_tip,
+        MockAddressBookPeers::default(),
+        rx,
+        None,
+    );
+
+    let mut generate_task = tokio::spawn(async move { rpc.generate(u32::MAX).await });
+
+    let chain_info_request = read_state
+        .expect_request_that(|req| matches!(req, ReadRequest::ChainInfo))
+        .await;
+
+    assert!(
+        (&mut generate_task).now_or_never().is_none(),
+        "generate(u32::MAX) reaches template work on disabled-PoW networks instead of being rejected at the parameter boundary"
+    );
+
+    generate_task.abort();
+    drop(chain_info_request);
 }
 
 async fn gbt_with(net: Network, addr: ZcashAddress) {
@@ -2428,6 +3327,162 @@ async fn rpc_submitblock_errors() {
     mempool.expect_no_requests().await;
 
     // See zebrad::tests::acceptance::submit_block for success case.
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rpc_getblocktemplate_proposal_waits_without_timeout_when_block_verifier_hangs_today() {
+    let _init_guard = zebra_test::init();
+
+    let mempool: MockService<_, _, _, BoxError> = MockService::build().for_unit_tests();
+    let state: MockService<_, _, _, BoxError> = MockService::build().for_unit_tests();
+    let read_state: MockService<_, _, _, BoxError> = MockService::build().for_unit_tests();
+
+    let block_verifier_router = service_fn(|_request: zebra_consensus::Request| {
+        std::future::pending::<std::result::Result<Hash, zebra_consensus::BoxError>>()
+    });
+
+    let mut mock_sync_status = MockSyncStatus::default();
+    mock_sync_status.set_is_close_to_tip(true);
+
+    let (mock_tip, mock_tip_sender) = MockChainTip::new();
+    mock_tip_sender.send_best_tip_height(zebra_chain::block::Height(0));
+    mock_tip_sender.send_estimated_distance_to_network_chain_tip(Some(0));
+
+    let (_tx, rx) = tokio::sync::watch::channel(None);
+    let (rpc, _queue_handle) = RpcImpl::new(
+        Mainnet,
+        Default::default(),
+        Default::default(),
+        "0.0.1",
+        "RPC test",
+        Buffer::new(mempool.clone(), 1),
+        Buffer::new(state.clone(), 1),
+        Buffer::new(read_state.clone(), 1),
+        block_verifier_router,
+        mock_sync_status,
+        mock_tip,
+        MockAddressBookPeers::default(),
+        rx,
+        None,
+    );
+
+    let block_bytes = zebra_test::vectors::CONTINUOUS_MAINNET_BLOCKS
+        .values()
+        .next()
+        .expect("continuous mainnet test vectors must not be empty")
+        .to_vec();
+
+    let response = tokio::time::timeout(
+        std::time::Duration::from_millis(200),
+        rpc.get_block_template(Some(GetBlockTemplateParameters {
+            mode: GetBlockTemplateRequestMode::Proposal,
+            data: Some(HexData(block_bytes)),
+            ..Default::default()
+        })),
+    )
+    .await;
+
+    assert!(
+        response.is_err(),
+        "getblocktemplate proposal mode should currently wait for the block verifier without applying an RPC timeout"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rpc_submitblock_waits_without_timeout_when_block_verifier_hangs_today() {
+    let _init_guard = zebra_test::init();
+
+    let mempool: MockService<_, _, _, BoxError> = MockService::build().for_unit_tests();
+    let state: MockService<_, _, _, BoxError> = MockService::build().for_unit_tests();
+    let read_state: MockService<_, _, _, BoxError> = MockService::build().for_unit_tests();
+
+    let block_verifier_router = service_fn(|_request: zebra_consensus::Request| {
+        std::future::pending::<std::result::Result<Hash, zebra_consensus::BoxError>>()
+    });
+
+    let (_tx, rx) = tokio::sync::watch::channel(None);
+    let (rpc, _queue_handle) = RpcImpl::new(
+        Mainnet,
+        Default::default(),
+        Default::default(),
+        "0.0.1",
+        "RPC test",
+        Buffer::new(mempool.clone(), 1),
+        Buffer::new(state.clone(), 1),
+        Buffer::new(read_state.clone(), 1),
+        block_verifier_router,
+        MockSyncStatus::default(),
+        NoChainTip,
+        MockAddressBookPeers::default(),
+        rx,
+        None,
+    );
+
+    let block_bytes = zebra_test::vectors::CONTINUOUS_MAINNET_BLOCKS
+        .values()
+        .next()
+        .expect("continuous mainnet test vectors must not be empty")
+        .to_vec();
+
+    let response = tokio::time::timeout(
+        std::time::Duration::from_millis(200),
+        rpc.submit_block(HexData(block_bytes), None),
+    )
+    .await;
+
+    assert!(
+        response.is_err(),
+        "submitblock should currently wait for the block verifier without applying an RPC timeout"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rpc_submitblock_waits_without_timeout_for_out_of_order_checkpoint_block_today() {
+    let _init_guard = zebra_test::init();
+
+    let mut mempool: MockService<_, _, _, BoxError> = MockService::build().for_unit_tests();
+    let (state, read_state, tip, _) = zebra_state::init_test_services(&Mainnet).await;
+
+    let (block_verifier_router, _, _, _) = zebra_consensus::router::init_test(
+        zebra_consensus::Config::default(),
+        &Mainnet,
+        state.clone(),
+    )
+    .await;
+
+    let (_tx, rx) = tokio::sync::watch::channel(None);
+    let (rpc, _queue_handle) = RpcImpl::new(
+        Mainnet,
+        Default::default(),
+        Default::default(),
+        "0.0.1",
+        "RPC test",
+        Buffer::new(mempool.clone(), 1),
+        state.clone(),
+        Buffer::new(read_state.clone(), 1),
+        block_verifier_router,
+        MockSyncStatus::default(),
+        tip,
+        MockAddressBookPeers::default(),
+        rx,
+        None,
+    );
+
+    let response = tokio::time::timeout(
+        std::time::Duration::from_millis(200),
+        rpc.submit_block(
+            HexData(zebra_test::vectors::BLOCK_MAINNET_1_BYTES.clone()),
+            None,
+        ),
+    )
+    .await;
+
+    assert!(
+        response.is_err(),
+        "submitblock should currently wait for out-of-order checkpoint verification without applying an RPC timeout"
+    );
+
+    mempool.expect_no_requests().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2904,6 +3959,49 @@ async fn rpc_getdifficulty() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn rpc_getdifficulty_custom_tiny_target_returns_nan_today() {
+    let _init_guard = zebra_test::init();
+
+    let custom_network = Parameters::build()
+        .with_network_name("TinyTargetTestnet")
+        .expect("custom network name should be valid")
+        .with_target_difficulty_limit(U256::one())
+        .expect("difficulty limit should be representable")
+        .to_network()
+        .expect("custom testnet network should be valid");
+
+    let mut read_state: MockService<_, _, _, BoxError> = MockService::build().for_unit_tests();
+    let read_state_service = Buffer::new(read_state.clone(), 1);
+    let response_network = custom_network.clone();
+
+    let now = DateTime32::now();
+    let mock_read_state_request_handler = async move {
+        read_state
+            .expect_request_that(|req| matches!(req, ReadRequest::ChainInfo))
+            .await
+            .respond(ReadResponse::ChainInfo(GetBlockTemplateChainInfo {
+                expected_difficulty: response_network.target_difficulty_limit().into(),
+                tip_height: Height(1),
+                tip_hash: response_network.genesis_hash(),
+                cur_time: now,
+                min_time: now,
+                max_time: now,
+                chain_history_root: fake_history_tree(&response_network).hash(),
+            }));
+    };
+
+    let difficulty = chain_tip_difficulty(custom_network, read_state_service, false);
+    let (difficulty, ..) = tokio::join!(difficulty, mock_read_state_request_handler,);
+
+    assert!(
+        difficulty
+            .expect("difficulty RPC helper should return a value")
+            .is_nan(),
+        "tiny custom difficulty operands shift to zero, producing NaN today"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn rpc_z_listunifiedreceivers() {
     let _init_guard = zebra_test::init();
 
@@ -2961,6 +4059,39 @@ async fn rpc_z_listunifiedreceivers() {
         Some(String::from("t1dMjwmwM2a6NtavQ6SiPP8i9ofx4cgfYYP"))
     );
     assert_eq!(*response.p2sh(), None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[should_panic(expected = "using data already decoded as valid")]
+async fn rpc_z_listunifiedreceivers_panics_on_invalid_sapling_receiver_today() {
+    use zcash_address::unified::{Encoding, Receiver};
+
+    let _init_guard = zebra_test::init();
+
+    let (_tx, rx) = tokio::sync::watch::channel(None);
+    let (rpc, _) = RpcImpl::new(
+        Mainnet,
+        Default::default(),
+        Default::default(),
+        "0.0.1",
+        "RPC test",
+        MockService::build().for_unit_tests(),
+        MockService::build().for_unit_tests(),
+        MockService::build().for_unit_tests(),
+        MockService::build().for_unit_tests(),
+        MockSyncStatus::default(),
+        NoChainTip,
+        MockAddressBookPeers::default(),
+        rx,
+        None,
+    );
+
+    let invalid_sapling_ua =
+        zcash_address::unified::Address::try_from_items(vec![Receiver::Sapling([0; 43])])
+            .expect("single receiver UA shape is valid")
+            .encode(&NetworkType::Main);
+
+    let _ = rpc.z_list_unified_receivers(invalid_sapling_ua).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -177,3 +177,28 @@ To set the filter, POST the new filter string to /filter:
     };
     Ok(rsp)
 }
+
+#[cfg(all(test, feature = "filter-reload"))]
+mod tests {
+    use bytes::Bytes;
+    use http_body_util::Full;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn tracing_filter_endpoint_read_filter_accepts_large_body_today() {
+        let oversized_filter = "zebrad=trace,".repeat(256 * 1024);
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/filter")
+            .body(Full::new(Bytes::from(oversized_filter.clone())))
+            .expect("hard-coded request is valid");
+
+        let filter = read_filter(request)
+            .await
+            .expect("large UTF-8 filter bodies are accepted today");
+
+        assert_eq!(filter.len(), oversized_filter.len());
+        assert_eq!(filter, oversized_filter);
+    }
+}

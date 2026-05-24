@@ -214,6 +214,25 @@ pub struct Inbound {
     setup: Setup,
 }
 
+fn report_block_download_misbehavior(
+    misbehavior_sender: &tokio::sync::mpsc::Sender<(PeerSocketAddr, u32)>,
+    err: BoxError,
+    advertiser_addr: Option<PeerSocketAddr>,
+) {
+    let Some(advertiser_addr) = advertiser_addr else {
+        return;
+    };
+
+    let Ok(err) = err.downcast::<VerifyBlockError>() else {
+        return;
+    };
+
+    let misbehavior_score = err.misbehavior_score();
+    if misbehavior_score != 0 {
+        let _ = misbehavior_sender.try_send((advertiser_addr, misbehavior_score));
+    }
+}
+
 impl Inbound {
     /// Create a new inbound service.
     ///
@@ -330,18 +349,11 @@ impl Service<zn::Request> for Inbound {
                 // If we returned Pending here, and there were no waiting block downloads,
                 // then inbound requests would wait for the next block download, and hang forever.
                 while let Poll::Ready(Some(result)) = block_downloads.as_mut().poll_next(cx) {
-                    let Err((err, Some(advertiser_addr))) = result else {
+                    let Err((err, advertiser_addr)) = result else {
                         continue;
                     };
 
-                    let Ok(err) = err.downcast::<VerifyBlockError>() else {
-                        continue;
-                    };
-
-                    if err.misbehavior_score() != 0 {
-                        let _ =
-                            misbehavior_sender.try_send((advertiser_addr, err.misbehavior_score()));
-                    }
+                    report_block_download_misbehavior(&misbehavior_sender, err, advertiser_addr);
                 }
 
                 result = Ok(());

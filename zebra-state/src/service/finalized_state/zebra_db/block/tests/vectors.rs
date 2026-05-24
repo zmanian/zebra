@@ -13,6 +13,7 @@
 use std::{iter, sync::Arc};
 
 use zebra_chain::{
+    amount::{Amount, NonNegative, MAX_MONEY},
     block::{
         tests::generate::{
             large_multi_transaction_block, large_single_transaction_block_many_inputs,
@@ -22,14 +23,22 @@ use zebra_chain::{
     },
     parameters::Network::{self, *},
     serialization::{ZcashDeserializeInto, ZcashSerialize},
-    transparent::new_ordered_outputs_with_height,
+    transaction::{LockTime, Transaction},
+    transparent::{self, new_ordered_outputs_with_height},
+    value_balance::ValueBalance,
 };
 use zebra_test::vectors::{MAINNET_BLOCKS, TESTNET_BLOCKS};
 
 use crate::{
     constants::{state_database_format_version_in_code, STATE_DATABASE_KIND},
     request::{FinalizedBlock, Treestate},
-    service::finalized_state::{disk_db::DiskWriteBatch, ZebraDb, STATE_COLUMN_FAMILIES_IN_CODE},
+    service::finalized_state::{
+        disk_db::DiskWriteBatch,
+        disk_format::upgrade::{
+            block_info_and_address_received::Upgrade, DbFormatChange, DiskFormatUpgrade,
+        },
+        ZebraDb, STATE_COLUMN_FAMILIES_IN_CODE,
+    },
     CheckpointVerifiedBlock, Config, SemanticallyVerifiedBlock,
 };
 
@@ -172,4 +181,195 @@ fn test_block_db_round_trip_with(
 
         assert_eq!(stored_block, original_block);
     }
+}
+
+#[test]
+fn check_open_current_marks_upgrades_finished_before_validation_panics_today() {
+    let _init_guard = zebra_test::init();
+
+    let state = ZebraDb::new(
+        &Config::ephemeral(),
+        STATE_DATABASE_KIND,
+        &state_database_format_version_in_code(),
+        &Mainnet,
+        // Skip the background checker so this test can create a current-version
+        // database with validator-visible missing block info.
+        true,
+        STATE_COLUMN_FAMILIES_IN_CODE
+            .iter()
+            .map(ToString::to_string),
+        false,
+    );
+
+    let genesis: Arc<Block> = MAINNET_BLOCKS
+        .get(&0)
+        .expect("mainnet genesis block test vector should exist")
+        .zcash_deserialize_into()
+        .expect("mainnet genesis block should deserialize");
+    let genesis_finalized = FinalizedBlock::from_checkpoint_verified(
+        CheckpointVerifiedBlock::from(genesis),
+        Treestate::default(),
+    );
+
+    let mut batch = DiskWriteBatch::new();
+    batch.prepare_block_header_and_transaction_data_batch(&state.db, &genesis_finalized);
+    state
+        .db
+        .write(batch)
+        .expect("raw genesis data is valid for writing");
+
+    assert!(
+        !state.finished_format_upgrades(),
+        "the test starts before the non-upgrade path marks format upgrades complete"
+    );
+
+    let (_cancel_sender, cancel_receiver) = crossbeam_channel::bounded(1);
+    let detailed_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        DbFormatChange::format_validity_checks_detailed(&state, &cancel_receiver)
+    }));
+
+    match detailed_result {
+        Ok(Ok(inner_result)) => assert!(
+            inner_result.is_err(),
+            "the raw current-format database is missing required detailed-format data"
+        ),
+        Ok(Err(_cancelled)) => panic!("validation should not be cancelled"),
+        Err(_panic) => {}
+    }
+    assert!(
+        !state.finished_format_upgrades(),
+        "standalone validation should not mark format upgrades complete"
+    );
+
+    let (_cancel_sender, cancel_receiver) = crossbeam_channel::bounded(1);
+    let format_check = DbFormatChange::CheckOpenCurrent {
+        running_version: state_database_format_version_in_code(),
+    };
+
+    let format_check_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        format_check.run_format_change_or_check(
+            &state,
+            state.finalized_tip_height(),
+            &cancel_receiver,
+        )
+    }));
+
+    assert!(
+        format_check_result.is_err(),
+        "CheckOpenCurrent should eventually panic on the invalid detailed format"
+    );
+    assert!(
+        state.finished_format_upgrades(),
+        "CheckOpenCurrent marks format upgrades finished before detailed validation fails"
+    );
+}
+
+#[test]
+fn block_info_upgrade_persists_zero_value_pool_when_recomputed_block_value_errors_today() {
+    let _init_guard = zebra_test::init();
+
+    let state = ZebraDb::new(
+        &Config::ephemeral(),
+        STATE_DATABASE_KIND,
+        &state_database_format_version_in_code(),
+        &Mainnet,
+        // The raw database access below creates an invalid historical database shape.
+        true,
+        STATE_COLUMN_FAMILIES_IN_CODE
+            .iter()
+            .map(ToString::to_string),
+        false,
+    );
+
+    let genesis: Arc<Block> = MAINNET_BLOCKS
+        .get(&0)
+        .expect("mainnet genesis block test vector should exist")
+        .zcash_deserialize_into()
+        .expect("mainnet genesis block should deserialize");
+    let genesis_finalized = FinalizedBlock::from_checkpoint_verified(
+        CheckpointVerifiedBlock::from(genesis),
+        Treestate::default(),
+    );
+    let mut batch = DiskWriteBatch::new();
+    batch.prepare_block_header_and_transaction_data_batch(&state.db, &genesis_finalized);
+    state
+        .db
+        .write(batch)
+        .expect("raw genesis data is valid for writing");
+
+    let height = Height(1);
+    let max_money: Amount<NonNegative> = MAX_MONEY.try_into().expect("MAX_MONEY is a valid amount");
+    let coinbase = Arc::new(Transaction::V1 {
+        inputs: vec![transparent::Input::new_coinbase(height, vec![], None)],
+        outputs: vec![
+            transparent::Output::new(max_money, transparent::Script::new(&[])),
+            transparent::Output::new(max_money, transparent::Script::new(&[])),
+        ],
+        lock_time: LockTime::unlocked(),
+    });
+
+    assert!(
+        coinbase.value_balance(&Default::default()).is_err(),
+        "transaction-level value balance should reject an output sum above MAX_MONEY"
+    );
+
+    let header = zebra_test::vectors::DUMMY_HEADER
+        .zcash_deserialize_into()
+        .expect("dummy header should deserialize");
+    let block = Arc::new(Block {
+        header: Arc::new(header),
+        transactions: vec![coinbase],
+    });
+    let hash = block.hash();
+    let transaction_hashes: Arc<[_]> = block.transactions.iter().map(|tx| tx.hash()).collect();
+    let new_outputs = new_ordered_outputs_with_height(&block, height, &transaction_hashes);
+    let finalized = FinalizedBlock::from_checkpoint_verified(
+        CheckpointVerifiedBlock(SemanticallyVerifiedBlock {
+            block,
+            hash,
+            height,
+            new_outputs,
+            transaction_hashes,
+            deferred_pool_balance_change: None,
+        }),
+        Treestate::default(),
+    );
+
+    let mut batch = DiskWriteBatch::new();
+    batch.prepare_block_header_and_transaction_data_batch(&state.db, &finalized);
+    state
+        .db
+        .write(batch)
+        .expect("raw block data is valid for writing");
+
+    assert!(
+        state.block_info_cf().zs_get(&height).is_none(),
+        "test setup should start from an older database shape without block info"
+    );
+
+    let (_cancel_sender, cancel_receiver) = crossbeam_channel::bounded(1);
+    let upgrade = Upgrade;
+    upgrade
+        .run(height, &state, &cancel_receiver)
+        .expect("upgrade should not be cancelled");
+    upgrade
+        .validate(&state, &cancel_receiver)
+        .expect("validation should not be cancelled")
+        .expect("current validation accepts the zero-delta block info");
+
+    let block_info = state
+        .block_info_cf()
+        .zs_get(&height)
+        .expect("upgrade should write block info");
+
+    assert_ne!(
+        block_info,
+        Default::default(),
+        "serialized size keeps the block info from being treated as empty"
+    );
+    assert_eq!(
+        *block_info.value_pools(),
+        ValueBalance::zero(),
+        "current upgrade converts the recomputation failure into a zero value-pool delta"
+    );
 }

@@ -278,3 +278,35 @@ fn apply_tx_id_changes(
     // by combining them with overlapping non-finalized block tx IDs.
     finalized_tx_ids.into_iter().chain(chain_tx_ids).collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invalid_max_finalized_tip_panics_tx_id_overlay_in_debug_today() {
+        let _init_guard = zebra_test::init();
+
+        let invalid_height = Height(u32::MAX);
+        let result = std::panic::catch_unwind(|| {
+            let _ = chain_transparent_tx_id_changes::<std::sync::Arc<Chain>>(
+                None,
+                &HashSet::new(),
+                Some(invalid_height..=invalid_height),
+                Height(1)..=Height::MAX,
+            );
+        });
+
+        if cfg!(debug_assertions) {
+            assert!(
+                result.is_err(),
+                "debug builds currently panic while computing finalized tip + 1 for invalid Height(u32::MAX)"
+            );
+        } else {
+            assert!(
+                result.is_ok(),
+                "release builds do not use debug overflow checks for this boundary"
+            );
+        }
+    }
+}

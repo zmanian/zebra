@@ -31,7 +31,7 @@ use zebra_chain::{
             insert_fake_orchard_shielded_data, test_transactions, transactions_from_blocks,
             v5_transactions,
         },
-        zip317, Hash, HashType, JoinSplitData, LockTime, Transaction,
+        zip317, Hash, HashType, JoinSplitData, LockTime, SigHasher, Transaction,
     },
     transparent::{self, CoinbaseData, CoinbaseSpendRestriction},
 };
@@ -252,6 +252,126 @@ async fn mempool_request_with_missing_input_is_rejected() {
 
         assert_eq!(rsp, Err(TransactionError::TransparentInputNotFound));
     }
+}
+
+#[tokio::test]
+async fn mempool_request_with_state_lookup_error_is_currently_missing_input() {
+    let mut state: MockService<_, _, _, _> = MockService::build().for_unit_tests();
+    let net = Network::Mainnet;
+    let verifier = Verifier::new_for_tests(&net, state.clone());
+
+    let (height, tx) = transactions_from_blocks(net.block_iter())
+        .find(|(_, tx)| !(tx.is_coinbase() || tx.inputs().is_empty()))
+        .expect("at least one non-coinbase transaction with transparent inputs in test vectors");
+
+    let input_outpoint = match tx.inputs()[0] {
+        transparent::Input::PrevOut { outpoint, .. } => outpoint,
+        transparent::Input::Coinbase { .. } => panic!("requires a non-coinbase transaction"),
+    };
+
+    let state_req = state
+        .expect_request(zebra_state::Request::UnspentBestChainUtxo(input_outpoint))
+        .map(|responder| {
+            responder.respond(Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "synthetic state lookup failure",
+            )));
+        });
+
+    let verifier_req = verifier.oneshot(Request::Mempool {
+        transaction: tx.into(),
+        height,
+    });
+
+    let (rsp, _) = futures::join!(verifier_req, state_req);
+
+    assert_eq!(rsp, Err(TransactionError::TransparentInputNotFound));
+}
+
+#[tokio::test]
+async fn v5_sighash_single_missing_corresponding_output_is_accepted_by_transaction_verifier_today()
+{
+    let network = Network::Mainnet;
+    let height = (NetworkUpgrade::Nu5
+        .activation_height(&network)
+        .expect("NU5 activation height is specified")
+        + 1)
+    .expect("test height is valid");
+    let previous_utxo_height = (height - 1).expect("previous UTXO height is valid");
+
+    let (transaction, known_utxos) = v5_p2pkh_sighash_single_missing_output_transaction(
+        previous_utxo_height,
+        HashType::SINGLE,
+        0x03,
+    );
+    let tx_id = transaction.unmined_id();
+    let tx_hash = transaction.hash();
+
+    let state_service =
+        service_fn(|_| async { unreachable!("known_utxos should satisfy all UTXO lookups") });
+    let verifier = Verifier::new_for_tests(&network, state_service);
+
+    let result = verifier
+        .oneshot(Request::Block {
+            transaction_hash: tx_hash,
+            transaction: Arc::new(transaction),
+            known_outpoint_hashes: Arc::new(HashSet::new()),
+            known_utxos: Arc::new(known_utxos),
+            height,
+            time: DateTime::<Utc>::MAX_UTC,
+        })
+        .await
+        .expect("current transaction verifier accepts the missing-output SIGHASH_SINGLE spend");
+
+    assert_eq!(result.tx_id(), tx_id);
+    assert_eq!(
+        result.miner_fee(),
+        Some(Amount::try_from(5000_0000).expect("valid fee"))
+    );
+}
+
+#[tokio::test]
+async fn v5_sighash_single_anyonecanpay_missing_corresponding_output_is_accepted_by_transaction_verifier_today(
+) {
+    let network = Network::Mainnet;
+    let height = (NetworkUpgrade::Nu5
+        .activation_height(&network)
+        .expect("NU5 activation height is specified")
+        + 1)
+    .expect("test height is valid");
+    let previous_utxo_height = (height - 1).expect("previous UTXO height is valid");
+
+    let (transaction, known_utxos) = v5_p2pkh_sighash_single_missing_output_transaction(
+        previous_utxo_height,
+        HashType::SINGLE | HashType::ANYONECANPAY,
+        0x83,
+    );
+    let tx_id = transaction.unmined_id();
+    let tx_hash = transaction.hash();
+
+    let state_service =
+        service_fn(|_| async { unreachable!("known_utxos should satisfy all UTXO lookups") });
+    let verifier = Verifier::new_for_tests(&network, state_service);
+
+    let result = verifier
+        .oneshot(Request::Block {
+            transaction_hash: tx_hash,
+            transaction: Arc::new(transaction),
+            known_outpoint_hashes: Arc::new(HashSet::new()),
+            known_utxos: Arc::new(known_utxos),
+            height,
+            time: DateTime::<Utc>::MAX_UTC,
+        })
+        .await
+        .expect(
+            "current transaction verifier accepts the missing-output SIGHASH_SINGLE|ANYONECANPAY spend",
+        );
+
+    assert_eq!(result.tx_id(), tx_id);
+    assert_eq!(
+        result.miner_fee(),
+        Some(Amount::try_from(5000_0000).expect("valid fee"))
+    );
 }
 
 #[tokio::test]
@@ -3094,6 +3214,131 @@ fn mock_transparent_transfer(
     known_utxos.insert(previous_outpoint, previous_utxo);
 
     (input, output, known_utxos)
+}
+
+fn v5_p2pkh_sighash_single_missing_output_transaction(
+    previous_utxo_height: block::Height,
+    missing_output_hash_type: HashType,
+    missing_output_hash_type_byte: u8,
+) -> (
+    Transaction,
+    HashMap<transparent::OutPoint, transparent::OrderedUtxo>,
+) {
+    use ripemd::{Digest as _, Ripemd160};
+    use secp256k1::{Message, Secp256k1, SecretKey};
+    use sha2::Sha256;
+
+    let secp = Secp256k1::new();
+    let secret_key = SecretKey::from_slice(&[0xcd; 32]).expect("valid secret key");
+    let public_key = secp256k1::PublicKey::from_secret_key(&secp, &secret_key);
+    let pubkey_bytes = public_key.serialize();
+
+    let sha_hash = Sha256::digest(pubkey_bytes);
+    let pub_key_hash: [u8; 20] = Ripemd160::digest(sha_hash).into();
+    let mut lock_script_bytes = vec![0x76, 0xa9, 0x14];
+    lock_script_bytes.extend_from_slice(&pub_key_hash);
+    lock_script_bytes.push(0x88);
+    lock_script_bytes.push(0xac);
+    let lock_script = transparent::Script::new(&lock_script_bytes);
+
+    let previous_output = transparent::Output {
+        value: Amount::try_from(1_0000_0000).expect("valid amount"),
+        lock_script,
+    };
+    let all_previous_outputs = Arc::new(vec![previous_output.clone(), previous_output.clone()]);
+
+    let outpoint_0 = transparent::OutPoint {
+        hash: Hash([0u8; 32]),
+        index: 0,
+    };
+    let outpoint_1 = transparent::OutPoint {
+        hash: Hash([1u8; 32]),
+        index: 0,
+    };
+
+    let empty_input = |outpoint| transparent::Input::PrevOut {
+        outpoint,
+        unlock_script: transparent::Script::new(&[]),
+        sequence: u32::MAX,
+    };
+
+    let outputs = vec![transparent::Output {
+        value: Amount::try_from(1_5000_0000).expect("valid amount"),
+        lock_script: transparent::Script::new(&[0x00]),
+    }];
+
+    let placeholder_tx = Transaction::V5 {
+        network_upgrade: NetworkUpgrade::Nu5,
+        lock_time: LockTime::unlocked(),
+        expiry_height: block::Height(0),
+        inputs: vec![empty_input(outpoint_0), empty_input(outpoint_1)],
+        outputs: outputs.clone(),
+        sapling_shielded_data: None,
+        orchard_shielded_data: None,
+    };
+
+    let sighasher = SigHasher::new(
+        &placeholder_tx,
+        NetworkUpgrade::Nu5,
+        all_previous_outputs.clone(),
+    )
+    .expect("sighasher creation should succeed");
+
+    let sign_input = |input_index, hash_type, hash_type_byte| {
+        let sighash = sighasher.sighash(hash_type, Some((input_index, lock_script_bytes.clone())));
+
+        let msg = Message::from_digest(*sighash.as_ref());
+        let signature = secp.sign_ecdsa(&msg, &secret_key);
+        let der_sig = signature.serialize_der();
+
+        let mut unlock_script_bytes = Vec::new();
+        let sig_with_hashtype_len = der_sig.len() + 1;
+        unlock_script_bytes.push(
+            u8::try_from(sig_with_hashtype_len)
+                .expect("DER signature plus hash type fits in one-byte push"),
+        );
+        unlock_script_bytes.extend_from_slice(&der_sig);
+        unlock_script_bytes.push(hash_type_byte);
+        unlock_script_bytes.push(
+            u8::try_from(pubkey_bytes.len()).expect("compressed pubkey fits in one-byte push"),
+        );
+        unlock_script_bytes.extend_from_slice(&pubkey_bytes);
+        transparent::Script::new(&unlock_script_bytes)
+    };
+
+    let input_0 = transparent::Input::PrevOut {
+        outpoint: outpoint_0,
+        unlock_script: sign_input(0, HashType::ALL, 0x01),
+        sequence: u32::MAX,
+    };
+    let input_1 = transparent::Input::PrevOut {
+        outpoint: outpoint_1,
+        unlock_script: sign_input(1, missing_output_hash_type, missing_output_hash_type_byte),
+        sequence: u32::MAX,
+    };
+
+    let transaction = Transaction::V5 {
+        network_upgrade: NetworkUpgrade::Nu5,
+        lock_time: LockTime::unlocked(),
+        expiry_height: block::Height(0),
+        inputs: vec![input_0, input_1],
+        outputs,
+        sapling_shielded_data: None,
+        orchard_shielded_data: None,
+    };
+
+    let known_utxos = HashMap::from([
+        (
+            outpoint_0,
+            transparent::OrderedUtxo::new(previous_output.clone(), previous_utxo_height, 1),
+        ),
+        (
+            outpoint_1,
+            transparent::OrderedUtxo::new(previous_output, previous_utxo_height, 1),
+        ),
+    ]);
+
+    (transaction, known_utxos)
 }
 
 /// Create a mock coinbase input with a transparent output.

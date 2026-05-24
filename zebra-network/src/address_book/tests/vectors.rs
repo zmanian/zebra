@@ -1,6 +1,6 @@
 //! Fixed test vectors for the address book.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use tracing::Span;
@@ -11,10 +11,14 @@ use zebra_chain::{
 };
 
 use crate::{
-    constants::{DEFAULT_MAX_CONNS_PER_IP, MAX_ADDRS_IN_ADDRESS_BOOK},
-    meta_addr::MetaAddr,
+    address_book_updater::AddressBookUpdater,
+    constants::{
+        DEFAULT_MAX_CONNS_PER_IP, MAX_ADDRS_IN_ADDRESS_BOOK, MAX_PEER_MISBEHAVIOR_SCORE,
+        MIN_PEER_RECONNECTION_DELAY,
+    },
+    meta_addr::{MetaAddr, MetaAddrChange},
     protocol::external::types::PeerServices,
-    AddressBook,
+    AddressBook, Config,
 };
 
 /// Make sure an empty address book is actually empty.
@@ -34,6 +38,135 @@ fn address_book_empty() {
         None
     );
     assert_eq!(address_book.len(), 0);
+}
+
+#[test]
+#[should_panic(expected = "should be some when should_remove_most_recent_by_ip is true")]
+fn misbehavior_ban_panics_with_max_connections_per_ip_above_one_today() {
+    let mut address_book =
+        AddressBook::new("0.0.0.0:0".parse().unwrap(), &Mainnet, 2, Span::current());
+
+    address_book.update(MetaAddrChange::UpdateMisbehavior {
+        addr: "127.0.0.1:8233".parse().unwrap(),
+        score_increment: MAX_PEER_MISBEHAVIOR_SCORE,
+    });
+}
+
+#[tokio::test]
+async fn misbehavior_ban_panics_updater_and_poisons_address_book_today() {
+    let _init_guard = zebra_test::init();
+
+    let config = Config {
+        max_connections_per_ip: 2,
+        ..Config::default()
+    };
+    let (
+        address_book,
+        _bans_receiver,
+        address_book_updater,
+        _address_metrics,
+        address_book_updater_task,
+    ) = AddressBookUpdater::spawn(&config, config.listen_addr);
+
+    address_book_updater
+        .send(MetaAddrChange::UpdateMisbehavior {
+            addr: "127.0.0.1:8233".parse().unwrap(),
+            score_increment: MAX_PEER_MISBEHAVIOR_SCORE,
+        })
+        .await
+        .expect("updater receiver should still be live before the panic");
+
+    let join_result = address_book_updater_task.await;
+    assert!(
+        join_result
+            .expect_err("ban-threshold misbehavior should panic the updater task")
+            .is_panic(),
+        "updater task should exit by panic today"
+    );
+    assert!(
+        address_book.lock().is_err(),
+        "panic while holding the address-book mutex should poison it today"
+    );
+}
+
+#[test]
+fn ban_cleanup_leaves_non_contiguous_same_ip_entries_today() {
+    let banned_addr1 = "127.0.0.1:8233".parse().unwrap();
+    let other_addr = "127.0.0.2:8233".parse().unwrap();
+    let banned_addr2 = "127.0.0.1:8234".parse().unwrap();
+
+    let banned_meta_addr1 =
+        MetaAddr::new_gossiped_meta_addr(banned_addr1, PeerServices::NODE_NETWORK, DateTime32::MIN);
+    let other_meta_addr = MetaAddr::new_gossiped_meta_addr(
+        other_addr,
+        PeerServices::NODE_NETWORK,
+        DateTime32::MIN.saturating_add(Duration32::from_seconds(1)),
+    );
+    let banned_meta_addr2 = MetaAddr::new_gossiped_meta_addr(
+        banned_addr2,
+        PeerServices::NODE_NETWORK,
+        DateTime32::MIN.saturating_add(Duration32::from_seconds(2)),
+    );
+
+    let mut address_book = AddressBook::new_with_addrs(
+        "0.0.0.0:0".parse().unwrap(),
+        &Mainnet,
+        DEFAULT_MAX_CONNS_PER_IP,
+        MAX_ADDRS_IN_ADDRESS_BOOK,
+        Span::current(),
+        [banned_meta_addr1, other_meta_addr, banned_meta_addr2],
+    );
+
+    address_book.update(MetaAddrChange::UpdateMisbehavior {
+        addr: banned_addr1,
+        score_increment: MAX_PEER_MISBEHAVIOR_SCORE,
+    });
+
+    assert!(
+        address_book.bans().contains_key(&banned_addr1.ip()),
+        "the misbehavior update should ban the shared IP"
+    );
+    assert!(
+        address_book.get(banned_addr1).is_some() || address_book.get(banned_addr2).is_some(),
+        "current ban cleanup leaves at least one non-contiguous banned-IP entry in the address book"
+    );
+    assert!(
+        address_book.get(other_addr).is_some(),
+        "unrelated IP entries should remain after banning a different IP"
+    );
+}
+
+#[test]
+fn inbound_ephemeral_address_becomes_reconnection_candidate_today() {
+    let mut address_book = AddressBook::new(
+        "0.0.0.0:0".parse().unwrap(),
+        &Mainnet,
+        DEFAULT_MAX_CONNS_PER_IP,
+        Span::current(),
+    );
+
+    let inbound_ephemeral_addr = "198.51.100.10:49152".parse().unwrap();
+    let updated = address_book
+        .update(MetaAddr::new_connected(
+            inbound_ephemeral_addr,
+            &PeerServices::NODE_NETWORK,
+            true,
+        ))
+        .expect("inbound remote address is accepted into the address book today");
+
+    assert!(updated.is_inbound());
+
+    let later = MIN_PEER_RECONNECTION_DELAY + Duration::from_secs(1);
+    let later_chrono =
+        Utc::now() + chrono::Duration::from_std(later).expect("test duration fits in chrono");
+
+    assert_eq!(
+        address_book
+            .reconnection_peers(Instant::now() + later, later_chrono)
+            .next()
+            .map(|peer| peer.addr()),
+        Some(inbound_ephemeral_addr),
+    );
 }
 
 /// Make sure peers are attempted in priority order.

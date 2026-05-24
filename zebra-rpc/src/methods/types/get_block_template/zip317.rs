@@ -8,6 +8,9 @@
 
 use std::collections::{HashMap, HashSet};
 
+#[cfg(test)]
+use std::cell::RefCell;
+
 use rand::{
     distributions::{Distribution, WeightedIndex},
     prelude::thread_rng,
@@ -34,6 +37,11 @@ use zebra_chain::{amount::NonNegative, parameters::NetworkUpgrade};
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+thread_local! {
+    static FEE_WEIGHTED_INDEX_CANDIDATE_COUNTS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+}
 
 #[cfg(test)]
 use crate::methods::types::get_block_template::InBlockTxDependenciesDepth;
@@ -203,10 +211,18 @@ fn setup_fee_weighted_index(transactions: &[VerifiedUnminedTx]) -> Option<Weight
         return None;
     }
 
+    #[cfg(test)]
+    FEE_WEIGHTED_INDEX_CANDIDATE_COUNTS.with_borrow_mut(|counts| counts.push(transactions.len()));
+
     let tx_weights: Vec<f32> = transactions.iter().map(|tx| tx.fee_weight_ratio).collect();
 
     // Setup the transaction weights.
     WeightedIndex::new(tx_weights).ok()
+}
+
+#[cfg(test)]
+fn take_fee_weighted_index_candidate_counts() -> Vec<usize> {
+    FEE_WEIGHTED_INDEX_CANDIDATE_COUNTS.with_borrow_mut(std::mem::take)
 }
 
 /// Checks if every item in `candidate_tx_deps` is present in `selected_txs`.
@@ -215,6 +231,26 @@ fn setup_fee_weighted_index(transactions: &[VerifiedUnminedTx]) -> Option<Weight
 fn has_direct_dependencies(
     candidate_tx_deps: Option<&HashSet<transaction::Hash>>,
     selected_txs: &Vec<SelectedMempoolTx>,
+) -> bool {
+    has_direct_dependencies_inner(candidate_tx_deps, selected_txs, || {})
+}
+
+#[cfg(test)]
+fn has_direct_dependencies_with_scan_count(
+    candidate_tx_deps: Option<&HashSet<transaction::Hash>>,
+    selected_txs: &Vec<SelectedMempoolTx>,
+) -> (bool, usize) {
+    let mut scan_count = 0;
+    let has_dependencies =
+        has_direct_dependencies_inner(candidate_tx_deps, selected_txs, || scan_count += 1);
+
+    (has_dependencies, scan_count)
+}
+
+fn has_direct_dependencies_inner(
+    candidate_tx_deps: Option<&HashSet<transaction::Hash>>,
+    selected_txs: &Vec<SelectedMempoolTx>,
+    mut record_scan: impl FnMut(),
 ) -> bool {
     let Some(deps) = candidate_tx_deps else {
         return true;
@@ -226,6 +262,8 @@ fn has_direct_dependencies(
 
     let mut num_available_deps = 0;
     for tx in selected_txs {
+        record_scan();
+
         #[cfg(test)]
         let (_, tx) = tx;
         if deps.contains(&tx.transaction.id.mined_id()) {

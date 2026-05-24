@@ -18,7 +18,8 @@ use futures::{
 use tower::load_shed::error::Overloaded;
 use tracing::Span;
 
-use zebra_chain::serialization::SerializationError;
+use zebra_chain::serialization::ZcashDeserializeInto;
+use zebra_chain::{block, serialization::SerializationError, transaction};
 use zebra_test::mock_service::{MockService, PanicAssertion};
 
 use crate::{
@@ -27,9 +28,12 @@ use crate::{
         connection::{overload_drop_connection_probability, Connection, State},
         ClientRequest, ErrorSlot,
     },
-    protocol::external::Message,
+    protocol::external::{
+        types::{Filter, Tweak},
+        Message,
+    },
     types::Nonce,
-    PeerError, Request, Response,
+    InventoryResponse, PeerError, Request, Response,
 };
 
 /// Test that the connection run loop works as a future
@@ -110,6 +114,205 @@ async fn connection_run_loop_spawn_ok() {
     assert_eq!(outbound_message, None);
 }
 
+#[tokio::test]
+async fn bip37_filter_messages_are_consumed_without_inbound_request_today() {
+    let _init_guard = zebra_test::init();
+
+    let filter_messages = [
+        Message::FilterLoad {
+            filter: Filter(vec![0xab]),
+            hash_functions_count: 51,
+            tweak: Tweak(0),
+            flags: 0,
+        },
+        Message::FilterAdd {
+            data: vec![0xab; 520],
+        },
+        Message::FilterClear,
+    ];
+
+    for msg in filter_messages {
+        let (mut peer_tx, peer_rx) = mpsc::channel(1);
+        let (
+            connection,
+            client_tx,
+            mut inbound_service,
+            mut peer_outbound_messages,
+            shared_error_slot,
+        ) = new_test_connection();
+
+        let mut connection_join_handle = tokio::spawn(connection.run(peer_rx));
+
+        peer_tx
+            .send(Ok(msg))
+            .await
+            .expect("peer inbound message channel is valid");
+
+        tokio::task::yield_now().await;
+
+        inbound_service.expect_no_requests().await;
+
+        let error = shared_error_slot.try_get_error();
+        assert!(error.is_none(), "unexpected error: {error:?}");
+        assert!(!client_tx.is_closed());
+        assert!(!peer_tx.is_closed());
+
+        let outbound_result = peer_outbound_messages.try_recv();
+        assert!(
+            outbound_result.is_err(),
+            "unexpected outbound message after consumed BIP37 message: {outbound_result:?}",
+        );
+
+        let connection_result = futures::poll!(&mut connection_join_handle);
+        assert!(
+            matches!(connection_result, Poll::Pending),
+            "unexpected run loop termination: {connection_result:?}",
+        );
+
+        connection_join_handle.abort();
+    }
+}
+
+#[tokio::test]
+async fn unsolicited_block_message_is_unused_without_inbound_request_today() {
+    let _init_guard = zebra_test::init();
+
+    let block: std::sync::Arc<block::Block> = zebra_test::vectors::BLOCK_MAINNET_GENESIS_BYTES
+        .zcash_deserialize_into()
+        .expect("genesis block test vector should deserialize");
+
+    let (mut peer_tx, peer_rx) = mpsc::channel(1);
+    let (connection, client_tx, mut inbound_service, mut peer_outbound_messages, shared_error_slot) =
+        new_test_connection();
+
+    let mut connection_join_handle = tokio::spawn(connection.run(peer_rx));
+
+    peer_tx
+        .send(Ok(Message::Block(block)))
+        .await
+        .expect("peer inbound message channel is valid");
+
+    tokio::task::yield_now().await;
+
+    inbound_service.expect_no_requests().await;
+
+    let error = shared_error_slot.try_get_error();
+    assert!(error.is_none(), "unexpected error: {error:?}");
+    assert!(!client_tx.is_closed());
+    assert!(!peer_tx.is_closed());
+
+    let outbound_result = peer_outbound_messages.try_recv();
+    assert!(
+        outbound_result.is_err(),
+        "unexpected outbound message after unsolicited block: {outbound_result:?}",
+    );
+
+    let connection_result = futures::poll!(&mut connection_join_handle);
+    assert!(
+        matches!(connection_result, Poll::Pending),
+        "unexpected run loop termination: {connection_result:?}",
+    );
+
+    connection_join_handle.abort();
+}
+
+#[tokio::test]
+async fn mismatched_block_response_is_decoded_then_ignored_today() {
+    let _init_guard = zebra_test::init();
+
+    let requested_block: std::sync::Arc<block::Block> = zebra_test::vectors::BLOCK_MAINNET_1_BYTES
+        .zcash_deserialize_into()
+        .expect("requested block test vector should deserialize");
+    let requested_hash = requested_block.hash();
+    let unrelated_block: std::sync::Arc<block::Block> =
+        zebra_test::vectors::BLOCK_MAINNET_GENESIS_BYTES
+            .zcash_deserialize_into()
+            .expect("unrelated block test vector should deserialize");
+    assert_ne!(
+        requested_hash,
+        unrelated_block.hash(),
+        "test blocks should have different hashes"
+    );
+
+    let (mut peer_tx, peer_rx) = mpsc::channel(1);
+    let (
+        connection,
+        mut client_tx,
+        mut inbound_service,
+        mut peer_outbound_messages,
+        shared_error_slot,
+    ) = new_test_connection();
+
+    let connection_handle = tokio::spawn(connection.run(peer_rx));
+
+    let (response_tx, mut response_rx) = oneshot::channel();
+    client_tx
+        .send(ClientRequest {
+            request: Request::BlocksByHash(HashSet::from([requested_hash])),
+            tx: response_tx,
+            inv_collector: None,
+            transient_addr: None,
+            span: Span::none(),
+        })
+        .await
+        .expect("send to connection should succeed");
+
+    let outbound_message = peer_outbound_messages
+        .next()
+        .await
+        .expect("expected outbound getdata message");
+    assert_eq!(
+        outbound_message,
+        Message::GetData(vec![requested_hash.into()])
+    );
+
+    peer_tx
+        .send(Ok(Message::Block(unrelated_block)))
+        .await
+        .expect("sending mismatched block to connection should succeed");
+
+    tokio::task::yield_now().await;
+
+    assert!(
+        matches!(futures::poll!(&mut response_rx), Poll::Pending),
+        "mismatched full block should not complete the active block request"
+    );
+    inbound_service.expect_no_requests().await;
+    assert!(
+        shared_error_slot.try_get_error().is_none(),
+        "mismatched full block should not close the connection"
+    );
+
+    peer_tx
+        .send(Ok(Message::Block(requested_block.clone())))
+        .await
+        .expect("sending requested block to connection should succeed");
+
+    let response = response_rx
+        .await
+        .expect("response channel should succeed")
+        .expect("requested block should complete the active request");
+
+    match response {
+        Response::Blocks(blocks) => {
+            assert_eq!(blocks.len(), 1);
+            match &blocks[0] {
+                InventoryResponse::Available((block, transient_addr)) => {
+                    assert_eq!(block.hash(), requested_hash);
+                    assert!(
+                        transient_addr.is_none(),
+                        "isolated test connection has no transient peer address"
+                    );
+                }
+                other => panic!("unexpected block response: {other:?}"),
+            }
+        }
+        other => panic!("unexpected response: {other:?}"),
+    }
+
+    connection_handle.abort();
+}
+
 /// Test that the connection run loop works as a spawned task with messages in and out
 #[tokio::test]
 async fn connection_run_loop_message_ok() {
@@ -187,6 +390,134 @@ async fn connection_run_loop_message_ok() {
     connection_join_handle.abort();
     let outbound_message = peer_outbound_messages.next().await;
     assert_eq!(outbound_message, None);
+}
+
+#[tokio::test]
+async fn unrelated_notfound_completes_active_block_request_today() {
+    let _init_guard = zebra_test::init();
+
+    let (mut peer_tx, peer_rx) = mpsc::channel(1);
+
+    let (
+        connection,
+        mut client_tx,
+        mut inbound_service,
+        mut peer_outbound_messages,
+        shared_error_slot,
+    ) = new_test_connection();
+
+    let connection_handle = tokio::spawn(connection.run(peer_rx));
+
+    let requested_hash = block::Hash([1; 32]);
+    let unrelated_hash = block::Hash([2; 32]);
+
+    let (response_tx, response_rx) = oneshot::channel();
+    client_tx
+        .send(ClientRequest {
+            request: Request::BlocksByHash(HashSet::from([requested_hash])),
+            tx: response_tx,
+            inv_collector: None,
+            transient_addr: None,
+            span: Span::none(),
+        })
+        .await
+        .expect("send to connection should succeed");
+
+    let outbound_message = peer_outbound_messages
+        .next()
+        .await
+        .expect("expected outbound getdata message");
+    assert_eq!(
+        outbound_message,
+        Message::GetData(vec![requested_hash.into()])
+    );
+
+    peer_tx
+        .send(Ok(Message::NotFound(vec![unrelated_hash.into()])))
+        .await
+        .expect("sending notfound to connection should succeed");
+
+    let error = response_rx
+        .await
+        .expect("response channel should succeed")
+        .expect_err("unrelated notfound currently completes block requests as missing");
+    assert!(
+        error.inner_debug().contains("NotFoundResponse"),
+        "unexpected response error: {}",
+        error.inner_debug()
+    );
+
+    assert!(
+        shared_error_slot.try_get_error().is_none(),
+        "notfound response should not close the connection"
+    );
+    inbound_service.expect_no_requests().await;
+
+    connection_handle.abort();
+}
+
+#[tokio::test]
+async fn unrelated_notfound_completes_active_transaction_request_today() {
+    let _init_guard = zebra_test::init();
+
+    let (mut peer_tx, peer_rx) = mpsc::channel(1);
+
+    let (
+        connection,
+        mut client_tx,
+        mut inbound_service,
+        mut peer_outbound_messages,
+        shared_error_slot,
+    ) = new_test_connection();
+
+    let connection_handle = tokio::spawn(connection.run(peer_rx));
+
+    let requested_id = transaction::UnminedTxId::Legacy(transaction::Hash([3; 32]));
+    let unrelated_id = transaction::UnminedTxId::Legacy(transaction::Hash([4; 32]));
+
+    let (response_tx, response_rx) = oneshot::channel();
+    client_tx
+        .send(ClientRequest {
+            request: Request::TransactionsById(HashSet::from([requested_id])),
+            tx: response_tx,
+            inv_collector: None,
+            transient_addr: None,
+            span: Span::none(),
+        })
+        .await
+        .expect("send to connection should succeed");
+
+    let outbound_message = peer_outbound_messages
+        .next()
+        .await
+        .expect("expected outbound getdata message");
+    assert_eq!(
+        outbound_message,
+        Message::GetData(vec![requested_id.into()])
+    );
+
+    peer_tx
+        .send(Ok(Message::NotFound(vec![unrelated_id.into()])))
+        .await
+        .expect("sending notfound to connection should succeed");
+
+    let error = response_rx
+        .await
+        .expect("response channel should succeed")
+        .expect_err("unrelated notfound currently completes transaction requests as missing");
+    assert!(
+        error.inner_debug().contains("NotFoundResponse"),
+        "unexpected response error: {}",
+        error.inner_debug()
+    );
+
+    assert!(
+        shared_error_slot.try_get_error().is_none(),
+        "notfound response should not close the connection"
+    );
+    inbound_service.expect_no_requests().await;
+
+    connection_handle.abort();
 }
 
 /// Test that the connection run loop fails correctly when dropped

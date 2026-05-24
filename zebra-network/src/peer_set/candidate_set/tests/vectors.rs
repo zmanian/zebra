@@ -4,7 +4,7 @@ use std::{
     net::{IpAddr, SocketAddr},
     str::FromStr,
     sync::Arc,
-    time::Duration as StdDuration,
+    time::{Duration as StdDuration, Instant as StdInstant},
 };
 
 use chrono::{DateTime, Duration, Utc};
@@ -63,6 +63,27 @@ fn doesnt_offset_last_seen_times_in_the_past() {
     let expected_peers = input_peers;
 
     assert_eq!(validated_peers, expected_peers);
+}
+
+/// Test that old gossiped addresses survive validation and get one connection attempt.
+#[test]
+fn old_gossiped_peer_is_still_initially_connectable_today() {
+    let last_seen_limit = DateTime32::now();
+    let last_seen_limit_chrono = last_seen_limit.to_chrono();
+
+    let input_peers = mock_gossiped_peers(vec![last_seen_limit_chrono - Duration::days(30)]);
+
+    let mut validated_peers = validate_addrs(input_peers, last_seen_limit);
+    let old_peer = validated_peers
+        .next()
+        .expect("old gossiped peer is currently preserved by validation");
+
+    let chrono_now = Utc::now();
+
+    assert!(!old_peer.is_active_for_gossip(chrono_now));
+    assert!(!old_peer.last_seen_is_recent(chrono_now));
+    assert!(old_peer.is_ready_for_connection_attempt(StdInstant::now(), chrono_now, &Mainnet));
+    assert!(validated_peers.next().is_none());
 }
 
 /// Test that offset is applied to all the addresses if at least one has a `last_seen` time in the

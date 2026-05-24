@@ -3,7 +3,7 @@
 use zcash_protocol::consensus::{self as zp_consensus, NetworkConstants as _, Parameters};
 
 use crate::{
-    amount::{Amount, NonNegative},
+    amount::{Amount, NonNegative, MAX_MONEY},
     block::Height,
     parameters::{
         network::error::ParametersBuilderError,
@@ -162,6 +162,31 @@ fn activates_network_upgrades_correctly() {
             "network activation list should match expected activation heights"
         );
     }
+}
+
+#[test]
+fn omitted_nu6_1_inherits_nu7_lockbox_boundary_today() {
+    let inherited_activation_height = Height(10);
+    let network = Network::new_regtest(
+        ConfiguredActivationHeights {
+            nu7: Some(inherited_activation_height.0),
+            ..Default::default()
+        }
+        .into(),
+    );
+
+    assert_eq!(
+        NetworkUpgrade::Nu6_1.activation_height(&network),
+        Some(inherited_activation_height),
+        "omitted NU6.1 currently inherits the later configured NU7 height"
+    );
+
+    assert!(
+        network
+            .lockbox_disbursements(inherited_activation_height)
+            .is_empty(),
+        "custom networks default to empty lockbox disbursements"
+    );
 }
 
 /// Checks that configured testnet names are validated and used correctly.
@@ -587,6 +612,77 @@ fn sum_of_one_time_lockbox_disbursements_is_correct() {
             "total lockbox disbursement value should match expected total"
         );
     }
+}
+
+#[test]
+#[should_panic(expected = "hard-coded address must deserialize")]
+fn configured_lockbox_disbursement_invalid_address_panics_today() {
+    let configured_activation_heights: ConfiguredActivationHeights =
+        Network::new_default_testnet().activation_list().into();
+    let nu6_1_activation_height = configured_activation_heights
+        .nu6_1
+        .expect("default Testnet has an NU6.1 activation height");
+
+    let custom_testnet = testnet::Parameters::build()
+        .with_activation_heights(configured_activation_heights)
+        .expect("failed to set activation heights")
+        .with_lockbox_disbursements(vec![ConfiguredLockboxDisbursement {
+            address: "not a transparent address".to_string(),
+            amount: Amount::try_from(1).expect("amount is valid"),
+        }])
+        .to_network()
+        .expect("failed to build configured network");
+
+    let _disbursements = custom_testnet.lockbox_disbursements(Height(nu6_1_activation_height));
+}
+
+#[test]
+#[should_panic(expected = "sum of configured amounts should be valid")]
+fn configured_lockbox_disbursement_total_overflow_panics_today() {
+    let configured_activation_heights: ConfiguredActivationHeights =
+        Network::new_default_testnet().activation_list().into();
+    let nu6_1_activation_height = configured_activation_heights
+        .nu6_1
+        .expect("default Testnet has an NU6.1 activation height");
+
+    let max_money = MAX_MONEY.try_into().expect("MAX_MONEY is a valid amount");
+    let custom_testnet = testnet::Parameters::build()
+        .with_activation_heights(configured_activation_heights)
+        .expect("failed to set activation heights")
+        .with_lockbox_disbursements(vec![
+            ConfiguredLockboxDisbursement {
+                address: "t26ovBdKAJLtrvBsE2QGF4nqBkEuptuPFZz".to_string(),
+                amount: max_money,
+            },
+            ConfiguredLockboxDisbursement {
+                address: "t26ovBdKAJLtrvBsE2QGF4nqBkEuptuPFZz".to_string(),
+                amount: max_money,
+            },
+        ])
+        .to_network()
+        .expect("failed to build configured network");
+
+    let _total = custom_testnet.lockbox_disbursement_total_amount(Height(nu6_1_activation_height));
+}
+
+#[test]
+#[should_panic(expected = "recipients must have a sufficient number of addresses")]
+fn configured_slow_start_interval_can_make_funding_stream_validation_panic_today() {
+    let _custom_testnet = testnet::Parameters::build()
+        .with_slow_start_interval(Height(7))
+        .to_network();
+}
+
+#[test]
+#[should_panic(expected = "divisor must divide amount evenly")]
+fn configured_slow_start_interval_can_make_founders_reward_panic_today() {
+    let custom_testnet = testnet::Parameters::build()
+        .with_slow_start_interval(Height(7))
+        .clear_funding_streams()
+        .to_network()
+        .expect("failed to build configured network");
+
+    let _founders_reward = subsidy::founders_reward(&custom_testnet, Height(1));
 }
 
 /// Lockbox funding stream total input value for a block height.

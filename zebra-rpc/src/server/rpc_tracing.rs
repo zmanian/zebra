@@ -88,3 +88,137 @@ where
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::{
+        borrow::Cow,
+        future,
+        sync::{Arc, Mutex},
+    };
+
+    use jsonrpsee::{
+        types::{Id, Request},
+        ResponsePayload,
+    };
+    use tracing::field::{Field, Visit};
+    use tracing_subscriber::{layer::Context, prelude::*, registry::LookupSpan, Layer};
+
+    #[derive(Clone, Debug)]
+    struct SuccessRpcService;
+
+    impl<'a> RpcServiceT<'a> for SuccessRpcService {
+        type Future = future::Ready<MethodResponse>;
+
+        fn call(&self, request: Request<'a>) -> Self::Future {
+            future::ready(MethodResponse::response(
+                request.id().into_owned(),
+                ResponsePayload::success("ok"),
+                usize::MAX,
+            ))
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct RecordingSpanLayer {
+        rpc_methods: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl RecordingSpanLayer {
+        fn recorded_rpc_methods(&self) -> Vec<String> {
+            self.rpc_methods
+                .lock()
+                .expect("span recorder mutex should not be poisoned because tests do not panic while holding it")
+                .clone()
+        }
+    }
+
+    impl<S> Layer<S> for RecordingSpanLayer
+    where
+        S: tracing::Subscriber + for<'span> LookupSpan<'span>,
+    {
+        fn on_new_span(
+            &self,
+            attrs: &tracing::span::Attributes<'_>,
+            _id: &tracing::Id,
+            _ctx: Context<'_, S>,
+        ) {
+            if attrs.metadata().name() != "rpc_request" {
+                return;
+            }
+
+            let mut visitor = RpcMethodVisitor::default();
+            attrs.record(&mut visitor);
+
+            if let Some(method) = visitor.rpc_method {
+                self.rpc_methods
+                    .lock()
+                    .expect("span recorder mutex should not be poisoned because tests do not panic while holding it")
+                    .push(method);
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct RpcMethodVisitor {
+        rpc_method: Option<String>,
+    }
+
+    impl Visit for RpcMethodVisitor {
+        fn record_str(&mut self, field: &Field, value: &str) {
+            if field.name() == "rpc.method" {
+                self.rpc_method = Some(value.to_string());
+            }
+        }
+
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "rpc.method" {
+                self.rpc_method = Some(format!("{value:?}"));
+            }
+        }
+    }
+
+    #[test]
+    fn rpc_tracing_method_attribute_uses_raw_unknown_method_today() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("current-thread runtime should build for this tracing capture test");
+        let service = RpcTracingMiddleware::new(SuccessRpcService);
+        let span_layer = RecordingSpanLayer::default();
+        let subscriber = tracing_subscriber::registry().with(span_layer.clone());
+        let unknown_methods = [
+            "unknown_tracing_probe_method_a",
+            "unknown_tracing_probe_method_b",
+        ];
+
+        tracing::subscriber::with_default(subscriber, || {
+            runtime.block_on(async {
+                for (id, method) in unknown_methods.iter().enumerate() {
+                    let response = service
+                        .call(Request::new(
+                            Cow::Borrowed(*method),
+                            None,
+                            Id::Number(id as u64),
+                        ))
+                        .await;
+
+                    assert!(
+                        !response.is_error(),
+                        "test service should return success for method {method}"
+                    );
+                }
+            });
+        });
+
+        let rpc_methods = span_layer.recorded_rpc_methods();
+        for method in unknown_methods {
+            assert!(
+                rpc_methods.iter().any(|recorded| recorded == method),
+                "tracing span should use the raw unknown method as rpc.method: {rpc_methods:?}"
+            );
+        }
+    }
+}

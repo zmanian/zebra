@@ -14,6 +14,7 @@
 //! skip all the network tests by setting the `SKIP_NETWORK_TESTS` environmental variable.
 
 use std::{
+    collections::HashMap,
     net::{Ipv4Addr, SocketAddr},
     sync::Arc,
     time::{Duration, Instant},
@@ -38,8 +39,8 @@ use crate::{
     peer::{self, ClientTestHarness, HandshakeRequest, OutboundConnectorRequest},
     peer_set::{
         initialize::{
-            accept_inbound_connections, add_initial_peers, crawl_and_dial, open_listener,
-            DiscoveredPeer,
+            accept_inbound_connections, accumulate_misbehavior_update, add_initial_peers,
+            crawl_and_dial, open_listener, DiscoveredPeer,
         },
         set::MorePeers,
         ActiveConnectionCounter, CandidateSet,
@@ -67,6 +68,36 @@ const LISTENER_TEST_DURATION: Duration = Duration::from_secs(10);
 
 /// The amount of time to make the inbound connection acceptor wait between peer connections.
 const MIN_INBOUND_PEER_CONNECTION_INTERVAL_FOR_TESTS: Duration = Duration::from_millis(25);
+
+#[test]
+fn misbehavior_batch_accumulator_overflows_before_flush_today() {
+    let _init_guard = zebra_test::init();
+
+    let peer_addr = PeerSocketAddr::from(([192, 168, 180, 9], 10_000));
+    let mut misbehaviors = HashMap::from([(peer_addr, u32::MAX)]);
+
+    #[cfg(debug_assertions)]
+    {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            accumulate_misbehavior_update(&mut misbehaviors, peer_addr, 1);
+        }));
+
+        assert!(
+            result.is_err(),
+            "debug builds panic before the batched misbehavior update can flush a ban score"
+        );
+    }
+
+    #[cfg(not(debug_assertions))]
+    {
+        accumulate_misbehavior_update(&mut misbehaviors, peer_addr, 1);
+
+        assert_eq!(
+            misbehaviors[&peer_addr], 0,
+            "release builds wrap the raw batch accumulator before flush"
+        );
+    }
+}
 
 /// Test that zebra-network discovers dynamic bind-to-all-interfaces listener ports,
 /// and sends them to the `AddressBook`.
@@ -361,6 +392,59 @@ async fn written_peer_cache_can_be_read_manually() {
     }
 }
 
+/// Test that manual peer cache files larger than Zebra's writer cap are fully loaded today.
+#[tokio::test]
+async fn oversized_peer_cache_file_loads_more_than_writer_limit_today() {
+    let _init_guard = zebra_test::init();
+
+    let temp_dir = tempfile::TempDir::new().expect("temporary cache directory should be created");
+    let config = Config {
+        cache_dir: CacheDir::custom_path(temp_dir.path()),
+        ..Config::default()
+    };
+    let peer_cache_file = config
+        .cache_dir
+        .peer_cache_file_path(&config.network)
+        .expect("custom cache directory is enabled");
+
+    std::fs::create_dir_all(
+        peer_cache_file
+            .parent()
+            .expect("peer cache path should have a parent directory"),
+    )
+    .expect("peer cache directory should be created");
+
+    let oversized_peer_count = constants::MAX_PEER_DISK_CACHE_SIZE + 25;
+    let peer_data = (0..oversized_peer_count)
+        .map(|index| {
+            let third_octet =
+                u8::try_from(index / 250).expect("test peer count keeps third octet in range");
+            let fourth_octet = u8::try_from((index % 250) + 1)
+                .expect("test peer count keeps fourth octet in range");
+
+            format!("192.0.{third_octet}.{fourth_octet}:8233")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    std::fs::write(&peer_cache_file, peer_data).expect("peer cache file should be written");
+
+    let cached_peers = config
+        .load_peer_cache()
+        .await
+        .expect("oversized peer cache file should still parse today");
+
+    assert!(
+        cached_peers.len() > constants::MAX_PEER_DISK_CACHE_SIZE,
+        "loader should accept more entries than Zebra writes today: {cached_peers:?}"
+    );
+    assert_eq!(
+        cached_peers.len(),
+        oversized_peer_count,
+        "loader should accept every valid oversized cache entry today"
+    );
+}
+
 /// Test zebra-network writes a peer cache file, and reads it back automatically.
 #[tokio::test]
 async fn written_peer_cache_is_automatically_read_on_startup() {
@@ -452,6 +536,56 @@ async fn crawler_peer_limit_one_connect_error() {
         peer_result.is_err(),
         "unexpected peer when all connections error: {peer_result:?}",
     );
+}
+
+#[tokio::test]
+async fn failed_dial_requeues_consumed_demand_token_today() {
+    let _init_guard = zebra_test::init();
+
+    let addr = SocketAddr::new(Ipv4Addr::new(127, 1, 1, 1).into(), 1);
+    let candidate = MetaAddr::new_gossiped_meta_addr(
+        addr.into(),
+        PeerServices::NODE_NETWORK,
+        DateTime32::now(),
+    );
+
+    let error_outbound_connector = service_fn(|_| async {
+        Err::<(PeerSocketAddr, peer::Client), BoxError>(
+            "test outbound connector always returns errors".into(),
+        )
+    });
+
+    let mut active_outbound_connections = ActiveConnectionCounter::new_counter();
+    let outbound_connection_tracker = active_outbound_connections.track_connection();
+    let outbound_connections = active_outbound_connections.update_count();
+    let (peerset_tx, mut peerset_rx) = mpsc::channel::<DiscoveredPeer>(1);
+    let (address_book_updater, mut address_book_rx) = tokio::sync::mpsc::channel(1);
+    let (demand_tx, mut demand_rx) = mpsc::channel::<MorePeers>(1);
+
+    super::super::dial(
+        candidate,
+        error_outbound_connector,
+        outbound_connection_tracker,
+        outbound_connections,
+        peerset_tx,
+        address_book_updater,
+        demand_tx,
+    )
+    .await
+    .expect("failed dials should report failure and requeue demand without returning an error");
+
+    assert!(
+        peerset_rx.try_recv().is_err(),
+        "failed dials should not send a discovered peer to the peer set"
+    );
+    assert!(
+        address_book_rx.try_recv().is_ok(),
+        "failed dials should report the failed candidate to the address book updater"
+    );
+    assert!(matches!(
+        demand_rx.next().now_or_never(),
+        Some(Some(MorePeers))
+    ));
 }
 
 /// Test the crawler with an outbound peer limit of one peer,

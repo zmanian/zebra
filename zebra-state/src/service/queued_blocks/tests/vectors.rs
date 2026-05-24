@@ -137,3 +137,108 @@ fn prune_removes_right_children() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn dequeue_drops_height_index_for_other_parents_today() -> Result<()> {
+    let _init_guard = zebra_test::init();
+
+    let block1: Arc<Block> =
+        zebra_test::vectors::BLOCK_MAINNET_419200_BYTES.zcash_deserialize_into()?;
+    let parent1 = block1.clone().set_work(1);
+    let parent2 = block1.set_work(2);
+    let child1 = parent1.make_fake_child();
+    let child2 = parent2.make_fake_child();
+    let child_height = child1.coinbase_height().unwrap();
+
+    assert_eq!(child_height, child2.coinbase_height().unwrap());
+    assert_ne!(parent1.hash(), parent2.hash());
+
+    let mut queue = QueuedBlocks::default();
+    queue.queue(child1.clone().into_queued());
+    queue.queue(child2.clone().into_queued());
+
+    let children = queue.dequeue_children(parent1.hash());
+
+    assert_eq!(1, children.len());
+    assert_eq!(child1.hash(), children[0].0.hash);
+    assert!(queue.get_mut(&child2.hash()).is_some());
+    assert_eq!(
+        queue.by_height.get(&child_height),
+        None,
+        "dequeueing one same-height child removes the whole height index today"
+    );
+
+    queue.prune_by_height(child_height);
+
+    assert!(
+        queue.get_mut(&child2.hash()).is_some(),
+        "height pruning cannot find the remaining same-height child today"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn queued_utxo_lookup_is_global_across_parent_hashes_today() -> Result<()> {
+    let _init_guard = zebra_test::init();
+
+    let block1: Arc<Block> =
+        zebra_test::vectors::BLOCK_MAINNET_419200_BYTES.zcash_deserialize_into()?;
+    let queued_child = block1.make_fake_child().into_queued();
+    let unrelated_parent_hash = block1.set_work(99).hash();
+
+    let (queued_outpoint, queued_utxo) = queued_child
+        .0
+        .new_outputs
+        .iter()
+        .next()
+        .map(|(outpoint, ordered_utxo)| (*outpoint, ordered_utxo.utxo.clone()))
+        .expect("fake child should create transparent outputs");
+
+    let mut queue = QueuedBlocks::default();
+    queue.queue(queued_child);
+
+    assert!(
+        !queue.has_queued_children(unrelated_parent_hash),
+        "the unrelated parent should have no queued children"
+    );
+    assert_eq!(
+        queue.utxo(&queued_outpoint),
+        Some(queued_utxo),
+        "queued block UTXO lookup is global, not scoped by parent chain"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn queued_block_remains_after_result_receiver_is_dropped_today() -> Result<()> {
+    let _init_guard = zebra_test::init();
+
+    let block: Arc<Block> =
+        zebra_test::vectors::BLOCK_MAINNET_419200_BYTES.zcash_deserialize_into()?;
+    let block_hash = block.hash();
+    let block_height = block.coinbase_height().expect("test block has height");
+    let queued = block.into_queued();
+
+    let mut queue = QueuedBlocks::default();
+    queue.queue(queued);
+
+    assert!(
+        queue.get_mut(&block_hash).is_some(),
+        "dropping the caller receiver does not remove the queued block today"
+    );
+    assert!(
+        !queue.known_utxos.is_empty(),
+        "queued block outputs remain available after the receiver is dropped"
+    );
+
+    queue.prune_by_height(block_height);
+
+    assert!(
+        queue.get_mut(&block_hash).is_none(),
+        "height pruning is the cleanup path for the abandoned queued block"
+    );
+
+    Ok(())
+}

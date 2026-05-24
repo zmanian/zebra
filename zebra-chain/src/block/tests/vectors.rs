@@ -1,20 +1,26 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     io::{Cursor, Write},
+    sync::Arc,
 };
 
 use chrono::{DateTime, Duration, LocalResult, TimeZone, Utc};
 
 use crate::{
+    amount::{Amount, NonNegative, MAX_MONEY},
     block::{
-        serialize::MAX_BLOCK_BYTES, Block, BlockTimeError, Commitment::*, Hash, Header, Height,
+        serialize::MAX_BLOCK_BYTES, Block, BlockTimeError, Commitment::*, CountedHeader, Hash,
+        Header, Height,
     },
     parameters::{Network, NetworkUpgrade::*},
     sapling,
     serialization::{
-        sha256d, SerializationError, ZcashDeserialize, ZcashDeserializeInto, ZcashSerialize,
+        sha256d, CompactSizeMessage, SerializationError, ZcashDeserialize, ZcashDeserializeInto,
+        ZcashSerialize,
     },
-    transaction::LockTime,
+    transaction::{LockTime, Transaction},
+    transparent,
+    value_balance::ValueBalance,
 };
 
 use super::generate; // TODO: this should be rewritten as strategies
@@ -60,6 +66,64 @@ fn blockheaderhash_from_blockheader() {
         .expect("these bytes to deserialize into a blockheader without issue");
 
     assert_eq!(blockheader, other_header);
+}
+
+#[test]
+fn counted_header_nonzero_transaction_count_is_accepted_today() {
+    let _init_guard = zebra_test::init();
+
+    let header: Header = zebra_test::vectors::DUMMY_HEADER
+        .zcash_deserialize_into()
+        .expect("dummy header should deserialize");
+
+    let mut bytes = Vec::new();
+    header
+        .zcash_serialize(&mut bytes)
+        .expect("dummy header should serialize");
+    CompactSizeMessage::try_from(1)
+        .expect("1 is below the message size limit")
+        .zcash_serialize(&mut bytes)
+        .expect("transaction count should serialize");
+
+    let counted_header = CountedHeader::zcash_deserialize(&bytes[..])
+        .expect("nonzero counted-header transaction count is accepted today");
+
+    assert_eq!(counted_header.header.as_ref(), &header);
+}
+
+#[test]
+fn chain_value_pool_change_drops_transaction_value_balance_errors_today() {
+    let _init_guard = zebra_test::init();
+
+    let max_money: Amount<NonNegative> = MAX_MONEY.try_into().expect("MAX_MONEY is a valid amount");
+    let coinbase = Transaction::V1 {
+        inputs: vec![transparent::Input::new_coinbase(Height(1), vec![], None)],
+        outputs: vec![
+            transparent::Output::new(max_money, transparent::Script::new(&[])),
+            transparent::Output::new(max_money, transparent::Script::new(&[])),
+        ],
+        lock_time: LockTime::unlocked(),
+    };
+    let utxos = HashMap::new();
+
+    assert!(
+        coinbase.value_balance(&utxos).is_err(),
+        "transaction-level value balance should reject an output sum above MAX_MONEY"
+    );
+
+    let header: Header = zebra_test::vectors::DUMMY_HEADER
+        .zcash_deserialize_into()
+        .expect("dummy header should deserialize");
+    let block = Block {
+        header: Arc::new(header),
+        transactions: vec![Arc::new(coinbase)],
+    };
+
+    let chain_value_pool_change = block
+        .chain_value_pool_change(&utxos, None)
+        .expect("block-level aggregation currently drops transaction value-balance errors");
+
+    assert_eq!(chain_value_pool_change, ValueBalance::zero());
 }
 
 #[test]

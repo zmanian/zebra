@@ -146,3 +146,30 @@ fn apply_balance_change(
     let received = finalized_received.saturating_add(chain_received_change);
     Ok((balance?.constrain()?, received))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn terminal_finalized_tip_panics_balance_overlay_in_debug_today() {
+        let _init_guard = zebra_test::init();
+
+        let chain = Arc::new(Chain::default());
+        let result = std::panic::catch_unwind(|| {
+            let _ = chain_transparent_balance_change(chain, &HashSet::new(), Some(Height::MAX));
+        });
+
+        if cfg!(debug_assertions) {
+            assert!(
+                result.is_err(),
+                "debug builds currently panic while computing finalized tip + 1 at Height::MAX"
+            );
+        } else {
+            assert!(
+                result.is_ok(),
+                "release builds do not use debug overflow checks for this boundary"
+            );
+        }
+    }
+}

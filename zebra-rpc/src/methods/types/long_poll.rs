@@ -326,3 +326,26 @@ fn long_poll_input_mempool_tx_ids_are_sorted() {
         "long poll input should sort mempool tx ids"
     );
 }
+
+#[test]
+#[should_panic(expected = "byte index 10 is not a char boundary")]
+fn non_ascii_long_poll_id_with_valid_byte_length_panics_today() {
+    let long_poll_id = format!("{}é{}", "0".repeat(9), "0".repeat(35));
+
+    assert_eq!(long_poll_id.len(), LONG_POLL_ID_LENGTH);
+
+    let _ = long_poll_id.parse::<LongPollId>();
+}
+
+#[test]
+#[should_panic(expected = "byte index 10 is not a char boundary")]
+fn getblocktemplate_parameters_non_ascii_long_poll_id_panics_today() {
+    let long_poll_id = format!("{}é{}", "0".repeat(9), "0".repeat(35));
+    assert_eq!(long_poll_id.len(), LONG_POLL_ID_LENGTH);
+
+    let request = serde_json::json!({ "longpollid": long_poll_id });
+
+    let _ = serde_json::from_value::<
+        crate::methods::types::get_block_template::GetBlockTemplateParameters,
+    >(request);
+}

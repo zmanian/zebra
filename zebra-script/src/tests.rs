@@ -350,6 +350,111 @@ fn build_and_verify_v5_p2pkh(
     verifier.is_valid(0)
 }
 
+/// Construct a V5 P2PKH transaction with two transparent inputs and one transparent output,
+/// then verify the second input using a canonical `SIGHASH_SINGLE` type.
+///
+/// This documents the current missing-corresponding-output behavior: the input index is valid,
+/// previous-output alignment is valid, but `input_index >= transaction.outputs().len()`.
+fn build_and_verify_v5_p2pkh_sighash_single_missing_output(
+    canonical_hash_type: HashType,
+    sig_hash_type_byte: u8,
+) -> std::result::Result<(), crate::Error> {
+    use ripemd::{Digest as _, Ripemd160};
+    use secp256k1::{Message, Secp256k1, SecretKey};
+    use sha2::Sha256;
+
+    let secp = Secp256k1::new();
+    let secret_key = SecretKey::from_slice(&[0xcd; 32]).expect("valid secret key");
+    let public_key = secp256k1::PublicKey::from_secret_key(&secp, &secret_key);
+    let pubkey_bytes = public_key.serialize();
+
+    let sha_hash = Sha256::digest(pubkey_bytes);
+    let pub_key_hash: [u8; 20] = Ripemd160::digest(sha_hash).into();
+    let mut lock_script_bytes = vec![0x76, 0xa9, 0x14];
+    lock_script_bytes.extend_from_slice(&pub_key_hash);
+    lock_script_bytes.push(0x88);
+    lock_script_bytes.push(0xac);
+    let lock_script = transparent::Script::new(&lock_script_bytes);
+
+    let previous_output = transparent::Output {
+        value: 1_0000_0000u64.try_into().expect("valid amount"),
+        lock_script: lock_script.clone(),
+    };
+    let all_previous_outputs = Arc::new(vec![previous_output.clone(), previous_output]);
+
+    let empty_input = |tag: u8| transparent::Input::PrevOut {
+        outpoint: transparent::OutPoint {
+            hash: transaction::Hash([tag; 32]),
+            index: 0,
+        },
+        unlock_script: transparent::Script::new(&[]),
+        sequence: u32::MAX,
+    };
+
+    let outputs = vec![transparent::Output {
+        value: 9000_0000u64.try_into().expect("valid amount"),
+        lock_script: transparent::Script::new(&[0x00]),
+    }];
+
+    let placeholder_tx = Transaction::V5 {
+        network_upgrade: NetworkUpgrade::Nu5,
+        lock_time: LockTime::unlocked(),
+        expiry_height: block::Height(0),
+        inputs: vec![empty_input(0), empty_input(1)],
+        outputs: outputs.clone(),
+        sapling_shielded_data: None,
+        orchard_shielded_data: None,
+    };
+
+    let sighasher = SigHasher::new(
+        &placeholder_tx,
+        NetworkUpgrade::Nu5,
+        all_previous_outputs.clone(),
+    )
+    .expect("sighasher creation should succeed");
+    let sighash = sighasher.sighash(canonical_hash_type, Some((1, lock_script_bytes.clone())));
+
+    let msg = Message::from_digest(*sighash.as_ref());
+    let signature = secp.sign_ecdsa(&msg, &secret_key);
+    let der_sig = signature.serialize_der();
+
+    let mut unlock_script_bytes = Vec::new();
+    let sig_with_hashtype_len = der_sig.len() + 1;
+    unlock_script_bytes.push(sig_with_hashtype_len as u8);
+    unlock_script_bytes.extend_from_slice(&der_sig);
+    unlock_script_bytes.push(sig_hash_type_byte);
+    unlock_script_bytes.push(pubkey_bytes.len() as u8);
+    unlock_script_bytes.extend_from_slice(&pubkey_bytes);
+
+    let signed_input = transparent::Input::PrevOut {
+        outpoint: transparent::OutPoint {
+            hash: transaction::Hash([1u8; 32]),
+            index: 0,
+        },
+        unlock_script: transparent::Script::new(&unlock_script_bytes),
+        sequence: u32::MAX,
+    };
+
+    let final_tx = Transaction::V5 {
+        network_upgrade: NetworkUpgrade::Nu5,
+        lock_time: LockTime::unlocked(),
+        expiry_height: block::Height(0),
+        inputs: vec![empty_input(0), signed_input],
+        outputs,
+        sapling_shielded_data: None,
+        orchard_shielded_data: None,
+    };
+
+    let verifier = super::CachedFfiTransaction::new(
+        Arc::new(final_tx),
+        all_previous_outputs,
+        NetworkUpgrade::Nu5,
+    )
+    .expect("network upgrade should be valid for v5 tx");
+
+    verifier.is_valid(1)
+}
+
 /// Baseline: a standard V5 P2PKH spend with SIGHASH_ALL (0x01) passes verification.
 /// Both Zebra and zcashd accept this.
 #[test]
@@ -368,6 +473,32 @@ fn sighash_divergence_v5_p2pkh_canonical_sighash_all_anyonecanpay() {
 
     build_and_verify_v5_p2pkh(HashType::ALL | HashType::ANYONECANPAY, 0x81)
         .expect("canonical SIGHASH_ALL|ANYONECANPAY (0x81) should be accepted");
+}
+
+/// Current behavior: a V5 P2PKH spend with canonical `SIGHASH_SINGLE` is accepted
+/// even when the verified input has no corresponding transparent output.
+#[test]
+fn sighash_single_v5_p2pkh_missing_corresponding_output_is_accepted_today() {
+    let _init_guard = zebra_test::init();
+
+    build_and_verify_v5_p2pkh_sighash_single_missing_output(HashType::SINGLE, 0x03).expect(
+        "current Zebra accepts SIGHASH_SINGLE when input_index >= transaction.outputs().len()",
+    );
+}
+
+/// Current behavior: a V5 P2PKH spend with canonical `SIGHASH_SINGLE|ANYONECANPAY`
+/// is accepted even when the verified input has no corresponding transparent output.
+#[test]
+fn sighash_single_anyonecanpay_v5_p2pkh_missing_corresponding_output_is_accepted_today() {
+    let _init_guard = zebra_test::init();
+
+    build_and_verify_v5_p2pkh_sighash_single_missing_output(
+        HashType::SINGLE | HashType::ANYONECANPAY,
+        0x83,
+    )
+    .expect(
+        "current Zebra accepts SIGHASH_SINGLE|ANYONECANPAY when input_index >= transaction.outputs().len()",
+    );
 }
 
 /// V5 P2PKH spend with malformed hash_type 0x84 is now rejected.

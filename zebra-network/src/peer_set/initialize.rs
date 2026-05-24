@@ -62,6 +62,14 @@ mod recent_by_ip;
 /// - tower::Discover interprets an error as stream termination
 type DiscoveredPeer = (PeerSocketAddr, peer::Client);
 
+fn accumulate_misbehavior_update(
+    misbehaviors: &mut HashMap<PeerSocketAddr, u32>,
+    peer_addr: PeerSocketAddr,
+    score_increment: u32,
+) {
+    *misbehaviors.entry(peer_addr).or_default() += score_increment;
+}
+
 /// Initialize a peer set, using a network `config`, `inbound_service`,
 /// and `latest_chain_tip`.
 ///
@@ -139,10 +147,13 @@ where
             loop {
                 tokio::select! {
                     msg = misbehavior_rx.recv() => match msg {
-                        Some((peer_addr, score_increment)) => *misbehaviors
-                            .entry(peer_addr)
-                            .or_default()
-                            += score_increment,
+                        Some((peer_addr, score_increment)) => {
+                            accumulate_misbehavior_update(
+                                &mut misbehaviors,
+                                peer_addr,
+                                score_increment,
+                            );
+                        }
                         None => break,
                     },
 

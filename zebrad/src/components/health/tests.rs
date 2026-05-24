@@ -175,6 +175,59 @@ async fn not_ready_when_tip_is_too_old() {
 }
 
 #[tokio::test]
+async fn idle_health_connection_waits_without_request_timeout_today() {
+    let cfg = config_for(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0));
+
+    let mut sync_status = MockSyncStatus::default();
+    sync_status.set_is_close_to_tip(true);
+
+    let (chain_tip_metrics_sender, chain_tip_metrics_receiver) = ChainTipMetrics::channel();
+    let _ = chain_tip_metrics_sender.send(ChainTipMetrics::new(Instant::now(), Some(0)));
+
+    let (task, addr_opt) = init(
+        cfg,
+        Network::Mainnet,
+        chain_tip_metrics_receiver,
+        sync_status,
+        peers_with_count(1),
+    )
+    .await;
+    let addr = addr_opt.expect("server bound addr");
+
+    let mut stream = timeout(Duration::from_secs(2), tokio::net::TcpStream::connect(addr))
+        .await
+        .expect("connect timeout")
+        .expect("connect ok");
+
+    let mut first_byte = [0; 1];
+    let idle_read = timeout(Duration::from_millis(250), stream.read(&mut first_byte)).await;
+    assert!(
+        idle_read.is_err(),
+        "idle health connection should remain open without a request timeout today",
+    );
+
+    let request = "GET /healthy HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+    timeout(Duration::from_secs(2), stream.write_all(request.as_bytes()))
+        .await
+        .expect("write timeout")
+        .expect("write ok");
+
+    let mut response = Vec::new();
+    timeout(Duration::from_secs(2), stream.read_to_end(&mut response))
+        .await
+        .expect("read timeout")
+        .expect("read ok");
+
+    let response = String::from_utf8_lossy(&response);
+    assert!(
+        response.starts_with("HTTP/1.1 200"),
+        "health server should accept a later request on the same idle connection: {response}",
+    );
+
+    task.abort();
+}
+
+#[tokio::test]
 #[cfg(not(target_os = "windows"))]
 async fn rate_limiting_drops_bursts() {
     // With a sleep shorter than the configured interval we should only be able

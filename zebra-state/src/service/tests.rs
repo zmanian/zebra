@@ -4,18 +4,29 @@
 
 // TODO: move these tests into tests::vectors and tests::prop modules.
 
-use std::{env, sync::Arc, time::Duration};
+use std::{env, process::Command, sync::Arc, time::Duration};
+
+#[cfg(unix)]
+use std::os::unix::process::ExitStatusExt;
 
 use tokio::runtime::Runtime;
-use tower::{buffer::Buffer, util::BoxService};
+use tower::{buffer::Buffer, util::BoxService, Service, ServiceExt};
 
 use zebra_chain::{
+    amount::{Amount, NonNegative, MAX_MONEY},
     block::{self, Block, CountedHeader, Height},
     chain_tip::ChainTip,
     fmt::SummaryDebug,
-    parameters::{Network, NetworkUpgrade},
+    history_tree::HistoryTree,
+    orchard,
+    parameters::{
+        testnet::{self, ConfiguredActivationHeights},
+        Network, NetworkUpgrade,
+    },
     serialization::{ZcashDeserialize, ZcashDeserializeInto},
-    transaction, transparent,
+    subtree::{NoteCommitmentSubtree, NoteCommitmentSubtreeIndex},
+    transaction::{self, LockTime, Transaction},
+    transparent,
     value_balance::ValueBalance,
 };
 
@@ -23,10 +34,18 @@ use zebra_test::{prelude::*, transcript::Transcript};
 
 use crate::{
     arbitrary::Prepare,
-    init_test,
-    service::{arbitrary::populated_state, chain_tip::TipAction, StateService},
-    tests::setup::{partial_nu5_chain_strategy, transaction_v4_from_coinbase},
-    BoxError, CheckpointVerifiedBlock, Config, Request, Response, SemanticallyVerifiedBlock,
+    constants::{MAX_FIND_BLOCK_HASHES_RESULTS, MAX_FIND_BLOCK_HEADERS_RESULTS},
+    init_test, init_test_services,
+    service::{
+        arbitrary::populated_state, chain_tip::TipAction, finalized_state::DiskWriteBatch,
+        StateService,
+    },
+    tests::{
+        setup::{partial_nu5_chain_strategy, transaction_v4_from_coinbase},
+        FakeChainHelper,
+    },
+    BoxError, CheckpointVerifiedBlock, Config, ReadRequest, ReadResponse, ReadStateService,
+    Request, Response, SemanticallyVerifiedBlock, MAX_BLOCK_REORG_HEIGHT,
 };
 
 const LAST_BLOCK_HEIGHT: u32 = 10;
@@ -195,6 +214,167 @@ async fn test_populated_state_responds_correctly(
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn find_blocks_scans_large_locator_before_response_cap_today() -> Result<()> {
+    let _init_guard = zebra_test::init();
+
+    let blocks: Vec<Arc<Block>> = zebra_test::vectors::MAINNET_BLOCKS
+        .range(0..=LAST_BLOCK_HEIGHT)
+        .map(|(_, block_bytes)| block_bytes.zcash_deserialize_into().unwrap())
+        .collect();
+    let tip_hash = blocks
+        .last()
+        .expect("test chain should have a tip block")
+        .hash();
+    let block_headers: Vec<CountedHeader> = Vec::new();
+
+    let unknown_locator_len =
+        (MAX_FIND_BLOCK_HASHES_RESULTS.max(MAX_FIND_BLOCK_HEADERS_RESULTS) as usize) + 3;
+    let mut known_blocks: Vec<block::Hash> = (0..unknown_locator_len)
+        .map(|index| {
+            let mut bytes = [0xff; 32];
+            bytes[..8].copy_from_slice(&(index as u64).to_le_bytes());
+            block::Hash(bytes)
+        })
+        .collect();
+    known_blocks.push(tip_hash);
+
+    let (mut state, _, _, _) = populated_state(blocks, &Network::Mainnet).await;
+
+    let response = state
+        .ready()
+        .await
+        .expect("state service should be ready")
+        .call(Request::FindBlockHashes {
+            known_blocks: known_blocks.clone(),
+            stop: None,
+        })
+        .await
+        .expect("FindBlockHashes request should succeed");
+    assert_eq!(
+        response,
+        Response::BlockHashes(Vec::new()),
+        "state scans past the response cap to find the tip hash at the end of the locator today",
+    );
+
+    let response = state
+        .ready()
+        .await
+        .expect("state service should be ready")
+        .call(Request::FindBlockHeaders {
+            known_blocks,
+            stop: None,
+        })
+        .await
+        .expect("FindBlockHeaders request should succeed");
+    assert_eq!(
+        response,
+        Response::BlockHeaders(block_headers),
+        "state scans past the response cap to find the tip hash at the end of the locator today",
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn subtree_overflow_limit_matches_omitted_limit_today() -> Result<()> {
+    let _init_guard = zebra_test::init();
+
+    let (_state, read_state, _latest_chain_tip, _chain_tip_change) =
+        init_test_services(&Network::Mainnet).await;
+
+    let sapling_root = sapling_crypto::Node::from_bytes([0; 32]).unwrap();
+    let orchard_root = orchard::tree::Node::default();
+
+    let mut db_batch = DiskWriteBatch::new();
+    for index in 0..3u16 {
+        let height = Height(index.into());
+
+        db_batch.insert_sapling_subtree(
+            read_state.db(),
+            &NoteCommitmentSubtree::new(index, height, sapling_root),
+        );
+        db_batch.insert_orchard_subtree(
+            read_state.db(),
+            &NoteCommitmentSubtree::new(index, height, orchard_root),
+        );
+    }
+    read_state
+        .db()
+        .write_batch(db_batch)
+        .expect("Writing a batch with note commitment subtrees should succeed.");
+
+    let start_index = NoteCommitmentSubtreeIndex(1);
+    let overflowing_limit = Some(NoteCommitmentSubtreeIndex(u16::MAX));
+
+    let overflow_response = read_state
+        .clone()
+        .oneshot(ReadRequest::SaplingSubtrees {
+            start_index,
+            limit: overflowing_limit,
+        })
+        .await
+        .expect("SaplingSubtrees request should succeed");
+    let omitted_limit_response = read_state
+        .clone()
+        .oneshot(ReadRequest::SaplingSubtrees {
+            start_index,
+            limit: None,
+        })
+        .await
+        .expect("SaplingSubtrees request should succeed");
+
+    let ReadResponse::SaplingSubtrees(overflow_subtrees) = overflow_response else {
+        panic!("unexpected response to SaplingSubtrees request");
+    };
+    let ReadResponse::SaplingSubtrees(omitted_limit_subtrees) = omitted_limit_response else {
+        panic!("unexpected response to SaplingSubtrees request");
+    };
+
+    assert_eq!(
+        overflow_subtrees, omitted_limit_subtrees,
+        "an explicit overflowing Sapling limit takes the same suffix range as an omitted limit today",
+    );
+    assert_eq!(
+        overflow_subtrees.keys().copied().collect::<Vec<_>>(),
+        vec![NoteCommitmentSubtreeIndex(1), NoteCommitmentSubtreeIndex(2)],
+    );
+
+    let overflow_response = read_state
+        .clone()
+        .oneshot(ReadRequest::OrchardSubtrees {
+            start_index,
+            limit: overflowing_limit,
+        })
+        .await
+        .expect("OrchardSubtrees request should succeed");
+    let omitted_limit_response = read_state
+        .oneshot(ReadRequest::OrchardSubtrees {
+            start_index,
+            limit: None,
+        })
+        .await
+        .expect("OrchardSubtrees request should succeed");
+
+    let ReadResponse::OrchardSubtrees(overflow_subtrees) = overflow_response else {
+        panic!("unexpected response to OrchardSubtrees request");
+    };
+    let ReadResponse::OrchardSubtrees(omitted_limit_subtrees) = omitted_limit_response else {
+        panic!("unexpected response to OrchardSubtrees request");
+    };
+
+    assert_eq!(
+        overflow_subtrees, omitted_limit_subtrees,
+        "an explicit overflowing Orchard limit takes the same suffix range as an omitted limit today",
+    );
+    assert_eq!(
+        overflow_subtrees.keys().copied().collect::<Vec<_>>(),
+        vec![NoteCommitmentSubtreeIndex(1), NoteCommitmentSubtreeIndex(2)],
+    );
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn populate_and_check(blocks: Vec<Arc<Block>>) -> Result<()> {
     let (state, _, _, _) = populated_state(blocks, &Network::Mainnet).await;
@@ -261,6 +441,305 @@ async fn empty_state_still_responds_to_requests() -> Result<()> {
     transcript.check(state).await?;
 
     Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dropped_semantic_commit_future_retains_queued_missing_parent_today() -> Result<()> {
+    let _init_guard = zebra_test::init();
+
+    let network = Network::Mainnet;
+    let (mut state, _read_state, _latest_chain_tip, _chain_tip_change) =
+        StateService::new(Config::ephemeral(), &network, Height::MAX, 0).await;
+    let block =
+        zebra_test::vectors::BLOCK_MAINNET_1046401_BYTES.zcash_deserialize_into::<Arc<Block>>()?;
+    let block_hash = block.hash();
+
+    assert!(
+        block
+            .coinbase_height()
+            .expect("test block should have a coinbase height")
+            > network.mandatory_checkpoint_height(),
+        "the test block must satisfy the semantically verified state-service height contract"
+    );
+
+    let commit_future = state
+        .ready()
+        .await
+        .expect("state service should become ready")
+        .call(Request::CommitSemanticallyVerifiedBlock(block.prepare()));
+
+    assert!(
+        state
+            .non_finalized_state_queued_blocks
+            .get_mut(&block_hash)
+            .is_some(),
+        "state service queues missing-parent semantically verified blocks before the caller awaits the result"
+    );
+
+    std::mem::drop(commit_future);
+
+    assert!(
+        state
+            .non_finalized_state_queued_blocks
+            .get_mut(&block_hash)
+            .is_some(),
+        "dropping the commit future after queue insertion does not remove the queued block today"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn known_block_misses_queued_missing_parent_today() -> Result<()> {
+    let _init_guard = zebra_test::init();
+
+    let network = Network::Mainnet;
+    let (mut state, _read_state, _latest_chain_tip, _chain_tip_change) =
+        StateService::new(Config::ephemeral(), &network, Height::MAX, 0).await;
+    let block =
+        zebra_test::vectors::BLOCK_MAINNET_1046401_BYTES.zcash_deserialize_into::<Arc<Block>>()?;
+    let block_hash = block.hash();
+
+    let commit_future = state
+        .ready()
+        .await
+        .expect("state service should become ready")
+        .call(Request::CommitSemanticallyVerifiedBlock(block.prepare()));
+
+    assert!(
+        state
+            .non_finalized_state_queued_blocks
+            .get_mut(&block_hash)
+            .is_some(),
+        "state service should queue the missing-parent block before caller awaits the result"
+    );
+
+    let known_block = state
+        .ready()
+        .await
+        .expect("state service should become ready")
+        .call(Request::KnownBlock(block_hash))
+        .await
+        .expect("KnownBlock request should succeed");
+
+    assert_eq!(
+        known_block,
+        Response::KnownBlock(None),
+        "KnownBlock currently misses blocks retained in the non-finalized validation queue"
+    );
+
+    std::mem::drop(commit_future);
+
+    assert!(
+        state
+            .non_finalized_state_queued_blocks
+            .get_mut(&block_hash)
+            .is_some(),
+        "dropping the commit future does not remove the queued block today"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn direct_checkpoint_commit_accepts_bad_value_balance_block_today() {
+    let _init_guard = zebra_test::init();
+
+    let (mut state, read_state, _, _) = init_test_services(&Network::Mainnet).await;
+
+    let genesis = zebra_test::vectors::BLOCK_MAINNET_GENESIS_BYTES
+        .zcash_deserialize_into::<Arc<Block>>()
+        .expect("genesis block test vector should deserialize");
+    let genesis_hash = genesis.hash();
+
+    let response = state
+        .ready()
+        .await
+        .expect("state service should become ready")
+        .call(Request::CommitCheckpointVerifiedBlock(genesis.into()))
+        .await
+        .expect("genesis checkpoint commit should succeed");
+    assert_eq!(response, Response::Committed(genesis_hash));
+
+    let real_block_1 = zebra_test::vectors::BLOCK_MAINNET_1_BYTES
+        .zcash_deserialize_into::<Arc<Block>>()
+        .expect("block 1 test vector should deserialize");
+    let height = Height(1);
+    let max_money: Amount<NonNegative> = MAX_MONEY.try_into().expect("MAX_MONEY is a valid amount");
+    let coinbase = Arc::new(Transaction::V1 {
+        inputs: vec![transparent::Input::new_coinbase(height, vec![], None)],
+        outputs: vec![
+            transparent::Output::new(max_money, transparent::Script::new(&[])),
+            transparent::Output::new(max_money, transparent::Script::new(&[])),
+        ],
+        lock_time: LockTime::unlocked(),
+    });
+
+    assert!(
+        coinbase.value_balance(&Default::default()).is_err(),
+        "transaction-level value balance should reject an output sum above MAX_MONEY"
+    );
+
+    let malformed_block = Arc::new(Block {
+        header: real_block_1.header.clone(),
+        transactions: vec![coinbase],
+    });
+    let malformed_hash = malformed_block.hash();
+    assert_eq!(
+        malformed_hash,
+        real_block_1.hash(),
+        "block hash should remain the header hash even when transaction bytes change"
+    );
+
+    let response = state
+        .ready()
+        .await
+        .expect("state service should become ready")
+        .call(Request::CommitCheckpointVerifiedBlock(
+            CheckpointVerifiedBlock::from(malformed_block),
+        ))
+        .await
+        .expect("direct checkpoint commit currently accepts the malformed block");
+    assert_eq!(response, Response::Committed(malformed_hash));
+
+    let block_info = read_state
+        .oneshot(ReadRequest::BlockInfo(height.into()))
+        .await
+        .expect("read state should return block info");
+    let ReadResponse::BlockInfo(Some(block_info)) = block_info else {
+        panic!("committed block should have block info");
+    };
+
+    assert_eq!(
+        *block_info.value_pools(),
+        ValueBalance::zero(),
+        "direct checkpoint commit reaches the zero-delta value-pool path today"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn state_service_invalidate_side_chain_then_finalization_aborts_today() {
+    let _init_guard = zebra_test::init();
+
+    let status = Command::new(env::current_exe().expect("test binary path should be available"))
+        .arg("--exact")
+        .arg("service::tests::state_service_invalidate_side_chain_then_finalization_abort_helper")
+        .arg("--ignored")
+        .env("ZEBRA_RUN_ABORT_HELPER", "1")
+        .status()
+        .expect("abort helper test process should run");
+
+    assert_eq!(
+        status.signal(),
+        Some(6),
+        "helper should abort after the block write task hits the empty-chain finalization panic"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "helper for state_service_invalidate_side_chain_then_finalization_aborts_today; aborts the process when enabled"]
+async fn state_service_invalidate_side_chain_then_finalization_abort_helper() {
+    if env::var_os("ZEBRA_RUN_ABORT_HELPER").is_none() {
+        return;
+    }
+
+    let _init_guard = zebra_test::init();
+
+    let network = testnet::Parameters::build()
+        .with_activation_heights(ConfiguredActivationHeights {
+            canopy: Some(1),
+            ..Default::default()
+        })
+        .expect("custom activation heights should be valid")
+        .clear_funding_streams()
+        .clear_checkpoints()
+        .expect("custom checkpoint list should be valid")
+        .to_network()
+        .expect("custom testnet should be valid");
+
+    let (mut state, read_state, _, _) =
+        StateService::new(Config::ephemeral(), &network, Height::MAX, 0).await;
+
+    let genesis = zebra_test::vectors::BLOCK_TESTNET_GENESIS_BYTES
+        .zcash_deserialize_into::<Arc<Block>>()
+        .expect("testnet genesis block test vector should deserialize");
+    let genesis_hash = genesis.hash();
+
+    let response = state
+        .ready()
+        .await
+        .expect("state service should become ready")
+        .call(Request::CommitCheckpointVerifiedBlock(
+            genesis.clone().into(),
+        ))
+        .await
+        .expect("genesis checkpoint commit should succeed");
+    assert_eq!(response, Response::Committed(genesis_hash));
+
+    let block1 = genesis.make_fake_child().set_block_commitment([0u8; 32]);
+    commit_semantically_verified(&mut state, block1.clone()).await;
+
+    let block2_commitment = next_block_commitment(&read_state);
+    let mut best_tip = block1
+        .make_fake_child()
+        .set_work(10)
+        .set_block_commitment(block2_commitment);
+    let side_tip = block1
+        .make_fake_child()
+        .set_work(1)
+        .set_block_commitment(block2_commitment);
+
+    commit_semantically_verified(&mut state, best_tip.clone()).await;
+    commit_semantically_verified(&mut state, side_tip.clone()).await;
+
+    let response = state
+        .ready()
+        .await
+        .expect("state service should become ready")
+        .call(Request::InvalidateBlock(side_tip.hash()))
+        .await
+        .expect("invalidateblock request should reach the state writer");
+    assert_eq!(response, Response::Invalidated(side_tip.hash()));
+
+    for _ in 0..MAX_BLOCK_REORG_HEIGHT {
+        let next_block = best_tip
+            .make_fake_child()
+            .set_work(10)
+            .set_block_commitment(next_block_commitment(&read_state));
+
+        commit_semantically_verified(&mut state, next_block.clone()).await;
+
+        best_tip = next_block;
+    }
+}
+
+async fn commit_semantically_verified(state: &mut StateService, block: Arc<Block>) {
+    let hash = block.hash();
+
+    let response = state
+        .ready()
+        .await
+        .expect("state service should become ready")
+        .call(Request::CommitSemanticallyVerifiedBlock(block.prepare()))
+        .await
+        .expect("synthetic block should commit");
+
+    assert_eq!(response, Response::Committed(hash));
+}
+
+fn next_block_commitment(read_state: &ReadStateService) -> [u8; 32] {
+    let non_finalized_state = read_state.latest_non_finalized_state();
+    let best_chain = non_finalized_state
+        .best_chain()
+        .expect("synthetic chain should have a best chain");
+
+    let history_tree: Arc<HistoryTree> = best_chain.history_block_commitment_tree();
+
+    history_tree
+        .hash()
+        .expect("Canopy-active synthetic chain should have a history root")
+        .into()
 }
 
 #[test]

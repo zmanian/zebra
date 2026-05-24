@@ -1,9 +1,18 @@
 //! Fixed test vectors for the peer set.
 
-use std::{cmp::max, collections::HashSet, iter, net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    cmp::max,
+    collections::HashSet,
+    iter,
+    net::SocketAddr,
+    sync::Arc,
+    task::{Context, Poll},
+    time::Duration,
+};
 
+use futures::{future, stream, FutureExt, StreamExt};
 use tokio::time::timeout;
-use tower::{Service, ServiceExt};
+use tower::{discover::Change, Service, ServiceExt};
 
 use zebra_chain::{
     block,
@@ -12,8 +21,8 @@ use zebra_chain::{
 
 use crate::{
     constants::DEFAULT_MAX_CONNS_PER_IP,
-    peer::{ClientRequest, MinimumPeerVersion},
-    peer_set::inventory_registry::InventoryStatus,
+    peer::{ClientRequest, ClientTestHarness, LoadTrackedClient, MinimumPeerVersion},
+    peer_set::{inventory_registry::InventoryStatus, set::MorePeers},
     protocol::external::{types::Version, InventoryHash},
     PeerSocketAddr, Request, SharedPeerError,
 };
@@ -385,6 +394,326 @@ fn remove_unready_peer_clears_cancel_handle_and_updates_counts() {
         // After removal, the cancel handle should be gone and the count zero.
         assert!(!peer_set.cancel_handles.contains_key(&banned_addr));
         assert_eq!(peer_set.num_peers_with_ip(banned_ip), 0);
+    });
+}
+
+#[test]
+fn queued_broadcast_all_keeps_removed_unready_peer_today() {
+    let peer_versions = PeerVersions {
+        peer_versions: vec![Version::min_specified_for_upgrade(
+            &Network::Mainnet,
+            NetworkUpgrade::Nu6,
+        )],
+    };
+
+    let (runtime, _init_guard) = zebra_test::init_async();
+    let _guard = runtime.enter();
+
+    let (discovered_peers, _handles) = peer_versions.mock_peer_discovery();
+    let (minimum_peer_version, _best_tip_height) =
+        MinimumPeerVersion::with_mock_chain_tip(&Network::Mainnet);
+
+    runtime.block_on(async move {
+        let (mut peer_set, _peer_set_guard) = PeerSetBuilder::new()
+            .with_discover(discovered_peers)
+            .with_minimum_peer_version(minimum_peer_version.clone())
+            .build();
+
+        let peer_addr: PeerSocketAddr =
+            SocketAddr::new("127.0.0.1".parse().expect("unexpected invalid test IP"), 1).into();
+
+        let (cancel_tx, _cancel_rx) =
+            crate::peer_set::set::oneshot::channel::<crate::peer_set::set::CancelClientWork>();
+        peer_set.cancel_handles.insert(peer_addr, cancel_tx);
+
+        let mut remaining_peers = HashSet::new();
+        remaining_peers.insert(peer_addr);
+
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        peer_set.queued_broadcast_all = Some((Request::Peers, sender, remaining_peers));
+
+        peer_set.remove(&peer_addr);
+
+        assert!(
+            !peer_set.cancel_handles.contains_key(&peer_addr),
+            "removing an unready peer should clear its cancel handle"
+        );
+
+        let Some((_req, sender, remaining_peers)) = peer_set.queued_broadcast_all.as_ref() else {
+            panic!("queued broadcast state should remain after removing the unready peer");
+        };
+        assert!(
+            !sender.is_closed(),
+            "the queued broadcast sender stays open while stale peers remain"
+        );
+        assert!(
+            remaining_peers.contains(&peer_addr),
+            "removed unready peer remains in queued broadcast state today"
+        );
+
+        peer_set.broadcast_all_queued();
+
+        let Some((_req, _sender, remaining_peers)) = peer_set.queued_broadcast_all.as_ref() else {
+            panic!("queued broadcast state should still remain after retrying with no ready peers");
+        };
+        assert!(
+            remaining_peers.contains(&peer_addr),
+            "retrying queued broadcasts does not prune removed unready peers today"
+        );
+        assert!(
+            receiver.try_recv().is_ok(),
+            "retry should send an empty follow-up future while keeping stale queued state"
+        );
+    });
+}
+
+#[test]
+fn unready_peer_with_full_request_channel_is_not_age_evicted_today() {
+    let peer_version = Version::min_specified_for_upgrade(&Network::Mainnet, NetworkUpgrade::Nu6);
+
+    let (runtime, _init_guard) = zebra_test::init_async();
+    let _guard = runtime.enter();
+
+    tokio::time::pause();
+
+    let (client, _handle) = ClientTestHarness::build()
+        .with_version(peer_version)
+        .with_connection_task(future::pending())
+        .with_heartbeat_task(future::pending())
+        .finish();
+
+    let peer_addr: PeerSocketAddr = "127.0.0.1:1"
+        .parse()
+        .expect("unexpected invalid peer address");
+    let discovered_peers = stream::iter([Ok::<_, crate::BoxError>(Change::Insert(
+        peer_addr,
+        client.into(),
+    ))])
+    .chain(stream::pending());
+
+    let (minimum_peer_version, _best_tip_height) =
+        MinimumPeerVersion::with_mock_chain_tip(&Network::Mainnet);
+
+    runtime.block_on(async move {
+        let (mut peer_set, _peer_set_guard) = PeerSetBuilder::new()
+            .with_discover(discovered_peers)
+            .with_minimum_peer_version(minimum_peer_version.clone())
+            .build();
+
+        let peer_ready = peer_set
+            .ready()
+            .await
+            .expect("peer set service is always ready");
+
+        assert_eq!(peer_ready.ready_services.len(), 1);
+        assert_eq!(peer_ready.unready_services.len(), 0);
+
+        let _first_response_fut = peer_ready.call(Request::Peers);
+
+        let peer_ready = peer_ready
+            .ready()
+            .await
+            .expect("peer set service is ready for one more queued request");
+
+        let _second_response_fut = peer_ready.call(Request::MempoolTransactionIds);
+
+        assert_eq!(peer_ready.ready_services.len(), 0);
+        assert_eq!(peer_ready.unready_services.len(), 1);
+        assert_eq!(peer_ready.cancel_handles.len(), 1);
+
+        tokio::time::advance(Duration::from_secs(10 * 60)).await;
+
+        let peer_ready_again = peer_ready.ready();
+        assert!(
+            timeout(Duration::from_secs(1), peer_ready_again)
+                .await
+                .is_err(),
+            "peer set should remain pending with only a busy unready peer"
+        );
+
+        assert_eq!(peer_ready.unready_services.len(), 1);
+        assert_eq!(peer_ready.cancel_handles.len(), 1);
+    });
+}
+
+#[test]
+fn full_more_peers_channel_preserves_existing_demand_today() {
+    let (runtime, _init_guard) = zebra_test::init_async();
+    let _guard = runtime.enter();
+
+    let (mut demand_tx, mut demand_rx) = futures::channel::mpsc::channel(1);
+    let mut initial_demand_tokens = 0;
+
+    loop {
+        match demand_tx.try_send(MorePeers) {
+            Ok(()) => initial_demand_tokens += 1,
+            Err(send_error) if send_error.is_full() => break,
+            Err(_send_error) => panic!("unexpected demand channel send error"),
+        }
+    }
+
+    assert!(
+        initial_demand_tokens > 0,
+        "demand channel should accept at least one initial demand token"
+    );
+
+    let (background_tasks_tx, background_tasks_rx) = tokio::sync::oneshot::channel();
+    let background_task = tokio::spawn(future::pending::<Result<(), crate::BoxError>>());
+    assert!(
+        background_tasks_tx.send(vec![background_task]).is_ok(),
+        "peer set background-task receiver should accept the dummy task handle"
+    );
+
+    let discovered_peers =
+        stream::pending::<Result<Change<PeerSocketAddr, LoadTrackedClient>, crate::BoxError>>();
+    let (minimum_peer_version, _best_tip_height) =
+        MinimumPeerVersion::with_mock_chain_tip(&Network::Mainnet);
+
+    runtime.block_on(async move {
+        let (mut peer_set, _peer_set_guard) = PeerSetBuilder::new()
+            .with_discover(discovered_peers)
+            .with_minimum_peer_version(minimum_peer_version.clone())
+            .with_demand_signal(demand_tx)
+            .with_handle_rx(background_tasks_rx)
+            .build();
+
+        let waker = futures::task::noop_waker();
+        let mut cx = Context::from_waker(&waker);
+
+        assert!(matches!(
+            Service::poll_ready(&mut peer_set, &mut cx),
+            Poll::Pending
+        ));
+
+        assert_eq!(peer_set.ready_services.len(), 0);
+        assert_eq!(peer_set.unready_services.len(), 0);
+        assert_eq!(peer_set.cancel_handles.len(), 0);
+
+        let mut received_demand_tokens = 0;
+        while matches!(demand_rx.next().now_or_never(), Some(Some(MorePeers))) {
+            received_demand_tokens += 1;
+        }
+
+        assert_eq!(
+            received_demand_tokens, initial_demand_tokens,
+            "full-channel demand signaling should preserve the existing queued demand without adding another token"
+        );
+    });
+}
+
+#[test]
+fn ban_watch_update_does_not_drop_ready_peer_until_peer_set_polled_today() {
+    let peer_versions = PeerVersions {
+        peer_versions: vec![Version::min_specified_for_upgrade(
+            &Network::Mainnet,
+            NetworkUpgrade::Nu6,
+        )],
+    };
+
+    let (runtime, _init_guard) = zebra_test::init_async();
+    let _guard = runtime.enter();
+
+    let (discovered_peers, _handles) = peer_versions.mock_peer_discovery();
+    let (minimum_peer_version, _best_tip_height) =
+        MinimumPeerVersion::with_mock_chain_tip(&Network::Mainnet);
+
+    runtime.block_on(async move {
+        let (mut peer_set, _peer_set_guard) = PeerSetBuilder::new()
+            .with_discover(discovered_peers)
+            .with_minimum_peer_version(minimum_peer_version.clone())
+            .build();
+
+        let (bans_tx, bans_rx) = watch::channel(Arc::new(IndexMap::new()));
+        peer_set.bans_receiver = bans_rx;
+
+        let peer_ready = peer_set
+            .ready()
+            .await
+            .expect("peer set service is always ready");
+
+        assert_eq!(peer_ready.ready_services.len(), 1);
+
+        let banned_ip = "127.0.0.1"
+            .parse()
+            .expect("unexpected invalid test IP address");
+        let mut bans_map = IndexMap::new();
+        bans_map.insert(banned_ip, std::time::Instant::now());
+        bans_tx
+            .send(Arc::new(bans_map))
+            .expect("peer set still holds the bans receiver");
+
+        assert_eq!(
+            peer_ready.ready_services.len(),
+            1,
+            "ban watch updates do not eagerly remove already-ready peers"
+        );
+
+        let waker = futures::task::noop_waker();
+        let mut cx = std::task::Context::from_waker(&waker);
+
+        assert!(matches!(
+            Service::poll_ready(peer_ready, &mut cx),
+            Poll::Pending
+        ));
+        assert_eq!(peer_ready.ready_services.len(), 0);
+    });
+}
+
+#[test]
+fn stall_events_are_deferred_until_next_poll_then_disconnect_today() {
+    let peer_versions = PeerVersions {
+        peer_versions: vec![Version::min_specified_for_upgrade(
+            &Network::Mainnet,
+            NetworkUpgrade::Nu6,
+        )],
+    };
+
+    let (runtime, _init_guard) = zebra_test::init_async();
+    let _guard = runtime.enter();
+
+    let (discovered_peers, _handles) = peer_versions.mock_peer_discovery();
+    let (minimum_peer_version, _best_tip_height) =
+        MinimumPeerVersion::with_mock_chain_tip(&Network::Mainnet);
+
+    runtime.block_on(async move {
+        let (mut peer_set, _peer_set_guard) = PeerSetBuilder::new()
+            .with_discover(discovered_peers)
+            .with_minimum_peer_version(minimum_peer_version.clone())
+            .build();
+
+        let peer_ready = peer_set
+            .ready()
+            .await
+            .expect("peer set service is always ready");
+
+        let peer_addr = *peer_ready
+            .ready_services
+            .keys()
+            .next()
+            .expect("mock discovery inserts one ready peer");
+
+        for _ in 0..crate::peer_set::stall_tracker::FIND_RESPONSE_STALL_THRESHOLD {
+            peer_ready
+                .stall_event_tx
+                .send((peer_addr, super::super::StallOutcome::Stall))
+                .expect("stall event receiver should remain open while the peer set is alive");
+        }
+
+        assert!(
+            peer_ready.ready_services.contains_key(&peer_addr),
+            "stall events are only enforced when the peer set is polled"
+        );
+
+        let waker = futures::task::noop_waker();
+        let mut cx = Context::from_waker(&waker);
+
+        let _ = Service::poll_ready(peer_ready, &mut cx);
+
+        assert!(
+            !peer_ready.ready_services.contains_key(&peer_addr),
+            "the next peer-set poll should drain stall events and disconnect the stalled peer"
+        );
+        assert!(!peer_ready.cancel_handles.contains_key(&peer_addr));
     });
 }
 

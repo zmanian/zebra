@@ -29,6 +29,150 @@ use zebra_chain::{
 
 use crate::service::finalized_state::disk_format::{FromDisk, IntoDisk};
 
+/// Test the current Elasticsearch indexing behavior when the endpoint accepts
+/// pings but reports bulk indexing errors.
+#[cfg(feature = "elasticsearch")]
+#[test]
+#[should_panic(expected = "ES error")]
+fn elasticsearch_bulk_error_response_panics_today() {
+    use std::{
+        io::{Read, Write},
+        net::{Ipv4Addr, TcpListener, TcpStream},
+        sync::Arc,
+        time::Duration,
+    };
+
+    use zebra_chain::{block::Block, parameters::Network, serialization::ZcashDeserializeInto};
+
+    use crate::{service::finalized_state::FinalizedState, Config};
+
+    let _init_guard = zebra_test::init();
+
+    let listener =
+        TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("local test listener should bind");
+    let elasticsearch_addr = listener
+        .local_addr()
+        .expect("local test listener address should be available");
+
+    let server = std::thread::spawn(move || {
+        respond_to_elasticsearch_ping_and_bulk_error(listener);
+    });
+
+    let mut config = Config::ephemeral();
+    config.elasticsearch_url = format!("http://{elasticsearch_addr}");
+
+    let network = Network::Mainnet;
+    let mut finalized_state = FinalizedState::new_with_debug(&config, &network, false, true, false);
+
+    // The genesis block is old, so the indexing path waits for the away-from-tip
+    // bulk threshold. Pre-fill 46 lines; `elasticsearch()` adds two more lines.
+    finalized_state.elastic_blocks.resize(46, "{}".to_string());
+
+    let genesis = zebra_test::vectors::BLOCK_MAINNET_GENESIS_BYTES
+        .zcash_deserialize_into::<Arc<Block>>()
+        .expect("genesis block test vector should deserialize");
+
+    finalized_state.elasticsearch(&genesis);
+
+    server
+        .join()
+        .expect("fake Elasticsearch server should not panic");
+
+    fn respond_to_elasticsearch_ping_and_bulk_error(listener: TcpListener) {
+        let (mut ping_stream, _) = listener
+            .accept()
+            .expect("fake Elasticsearch server should receive ping");
+        ping_stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("read timeout should be set");
+        read_http_request(&mut ping_stream);
+        ping_stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\n\
+                  x-elastic-product: Elasticsearch\r\n\
+                  content-length: 0\r\n\
+                  connection: close\r\n\
+                  \r\n",
+            )
+            .expect("ping response should be written");
+
+        let (mut bulk_stream, _) = listener
+            .accept()
+            .expect("fake Elasticsearch server should receive bulk request");
+        bulk_stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("read timeout should be set");
+        read_http_request(&mut bulk_stream);
+
+        let body = r#"{"errors":true,"items":[{"index":{"status":400,"error":{"type":"test_error","reason":"test bulk failure"}}}]}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\n\
+             x-elastic-product: Elasticsearch\r\n\
+             content-type: application/json\r\n\
+             content-length: {}\r\n\
+             connection: close\r\n\
+             \r\n\
+             {body}",
+            body.len()
+        );
+        bulk_stream
+            .write_all(response.as_bytes())
+            .expect("bulk response should be written");
+    }
+
+    fn read_http_request(stream: &mut TcpStream) -> Vec<u8> {
+        let mut request = Vec::new();
+        let mut buffer = [0; 1024];
+
+        loop {
+            let read = stream
+                .read(&mut buffer)
+                .expect("HTTP request should be readable");
+
+            if read == 0 {
+                break;
+            }
+
+            request.extend_from_slice(&buffer[..read]);
+
+            let Some(headers_end) = request.windows(4).position(|window| window == b"\r\n\r\n")
+            else {
+                continue;
+            };
+
+            let header_bytes = &request[..headers_end];
+            let headers = String::from_utf8_lossy(header_bytes);
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+                .unwrap_or(0);
+            let expected_len = headers_end + 4 + content_length;
+
+            while request.len() < expected_len {
+                let read = stream
+                    .read(&mut buffer)
+                    .expect("HTTP request body should be readable");
+
+                if read == 0 {
+                    break;
+                }
+
+                request.extend_from_slice(&buffer[..read]);
+            }
+
+            break;
+        }
+
+        request
+    }
+}
+
 /// Check that the sprout tree database serialization format has not changed.
 #[test]
 fn sprout_note_commitment_tree_serialization() {

@@ -83,3 +83,84 @@ impl Default for Config {
         }
     }
 }
+
+#[cfg(all(test, feature = "prometheus"))]
+mod tests {
+    use std::{
+        net::{IpAddr, Ipv4Addr, SocketAddr},
+        time::Duration,
+    };
+
+    use metrics::{Key, Recorder};
+    use metrics_exporter_prometheus::PrometheusBuilder;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        time::timeout,
+    };
+
+    static METADATA: metrics::Metadata =
+        metrics::Metadata::new(module_path!(), metrics::Level::INFO, Some(module_path!()));
+
+    async fn available_local_addr() -> SocketAddr {
+        let listener =
+            tokio::net::TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+                .await
+                .expect("test should bind a local ephemeral port");
+        let addr = listener
+            .local_addr()
+            .expect("bound test listener should have a local address");
+        drop(listener);
+
+        addr
+    }
+
+    #[tokio::test]
+    async fn prometheus_metrics_connection_waits_without_request_timeout_today() {
+        let addr = available_local_addr().await;
+        let (recorder, exporter) = PrometheusBuilder::new()
+            .with_http_listener(addr)
+            .build()
+            .expect("test metrics exporter should build");
+        let exporter_task = tokio::spawn(exporter);
+
+        let key = Key::from_name("metrics_endpoint_idle_connection_probe");
+        let gauge = recorder.register_gauge(&key, &METADATA);
+        gauge.set(1.0);
+
+        let mut stream = timeout(Duration::from_secs(2), tokio::net::TcpStream::connect(addr))
+            .await
+            .expect("connect timeout")
+            .expect("connect ok");
+
+        let mut first_byte = [0; 1];
+        let idle_read = timeout(Duration::from_millis(250), stream.read(&mut first_byte)).await;
+        assert!(
+            idle_read.is_err(),
+            "idle metrics connection should remain open without a request timeout today",
+        );
+
+        let request = "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+        timeout(Duration::from_secs(2), stream.write_all(request.as_bytes()))
+            .await
+            .expect("write timeout")
+            .expect("write ok");
+
+        let mut response = Vec::new();
+        timeout(Duration::from_secs(2), stream.read_to_end(&mut response))
+            .await
+            .expect("read timeout")
+            .expect("read ok");
+
+        let response = String::from_utf8_lossy(&response);
+        assert!(
+            response.starts_with("HTTP/1.1 200"),
+            "metrics exporter should accept a later scrape on the same idle connection: {response}",
+        );
+        assert!(
+            response.contains("metrics_endpoint_idle_connection_probe"),
+            "metrics exporter should render the probe metric after the idle wait: {response}",
+        );
+
+        exporter_task.abort();
+    }
+}

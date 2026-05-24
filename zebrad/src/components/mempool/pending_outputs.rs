@@ -62,4 +62,56 @@ impl PendingOutputs {
     pub fn clear(&mut self) {
         self.0.clear();
     }
+
+    /// Returns the number of pending output entries.
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use zebra_chain::transaction;
+
+    fn outpoint(byte: u8) -> transparent::OutPoint {
+        transparent::OutPoint {
+            hash: transaction::Hash([byte; 32]),
+            index: 0,
+        }
+    }
+
+    #[test]
+    fn dropped_waiters_remain_until_pruned() {
+        let mut pending_outputs = PendingOutputs::default();
+
+        let waiter = pending_outputs.queue(outpoint(1));
+        assert_eq!(pending_outputs.0.len(), 1);
+
+        drop(waiter);
+        assert_eq!(pending_outputs.0.len(), 1);
+
+        pending_outputs.prune();
+        assert_eq!(pending_outputs.0.len(), 0);
+    }
+
+    #[test]
+    fn duplicate_outpoints_share_pending_sender() {
+        let mut pending_outputs = PendingOutputs::default();
+        let outpoint = outpoint(1);
+
+        let first_waiter = pending_outputs.queue(outpoint);
+        let second_waiter = pending_outputs.queue(outpoint);
+        assert_eq!(pending_outputs.0.len(), 1);
+
+        drop(first_waiter);
+        pending_outputs.prune();
+        assert_eq!(pending_outputs.0.len(), 1);
+
+        drop(second_waiter);
+        pending_outputs.prune();
+        assert_eq!(pending_outputs.0.len(), 0);
+    }
 }

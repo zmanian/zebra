@@ -558,3 +558,254 @@ where
         metrics::gauge!("mempool.currently.queued.transactions").set(0 as f64);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use futures::{future, StreamExt};
+    use tower::service_fn;
+
+    use zebra_chain::{
+        block::Height,
+        parameters::NetworkUpgrade,
+        transaction::{self, LockTime, Transaction, UnminedTx},
+    };
+    use zebra_consensus::error::TransactionError;
+    use zebra_node_services::mempool::Gossip;
+
+    fn pending_network(
+        _request: zn::Request,
+    ) -> impl futures::Future<Output = Result<zn::Response, BoxError>> + Send {
+        future::pending()
+    }
+
+    fn pending_verifier(
+        _request: tx::Request,
+    ) -> impl futures::Future<Output = Result<tx::Response, BoxError>> + Send {
+        future::pending()
+    }
+
+    fn pending_state(
+        _request: zs::Request,
+    ) -> impl futures::Future<Output = Result<zs::Response, BoxError>> + Send {
+        future::pending()
+    }
+
+    async fn ready_state(request: zs::Request) -> Result<zs::Response, BoxError> {
+        match request {
+            zs::Request::Transaction(_) => Ok(zs::Response::Transaction(None)),
+            zs::Request::Tip => Ok(zs::Response::Tip(None)),
+            _ => unreachable!("unexpected request in pushed-transaction attribution test"),
+        }
+    }
+
+    async fn invalid_verifier(_request: tx::Request) -> Result<tx::Response, BoxError> {
+        Err(Box::new(TransactionError::BadBalance))
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn timed_out_downloads_accumulate_cancel_handles_today() {
+        let network = service_fn(pending_network);
+        let verifier = service_fn(pending_verifier);
+        let state = service_fn(pending_state);
+        let mut downloads = Downloads::new(network, verifier, state);
+
+        let first_txid = transaction::UnminedTxId::from_legacy_id(transaction::Hash([1; 32]));
+        downloads
+            .download_if_needed_and_verify(Gossip::Id(first_txid), None)
+            .expect("first transaction should queue");
+        assert_eq!(downloads.in_flight(), 1);
+
+        tokio::time::advance(RATE_LIMIT_DELAY).await;
+
+        let result = downloads
+            .next()
+            .await
+            .expect("timed-out task should be yielded");
+        assert!(result.is_err(), "outer timeout should be reported");
+        assert_eq!(downloads.in_flight(), 0);
+
+        assert!(
+            downloads
+                .transaction_requests()
+                .any(|request| request.id() == first_txid),
+            "timeout path should leave the request in cancel_handles today"
+        );
+        assert!(matches!(
+            downloads.download_if_needed_and_verify(Gossip::Id(first_txid), None),
+            Err(MempoolError::AlreadyQueued)
+        ));
+
+        let second_txid = transaction::UnminedTxId::from_legacy_id(transaction::Hash([2; 32]));
+        downloads
+            .download_if_needed_and_verify(Gossip::Id(second_txid), None)
+            .expect("new transaction should queue after first timeout");
+        assert_eq!(downloads.in_flight(), 1);
+
+        tokio::time::advance(RATE_LIMIT_DELAY).await;
+
+        let result = downloads
+            .next()
+            .await
+            .expect("second timed-out task should be yielded");
+        assert!(result.is_err(), "outer timeout should be reported");
+        assert_eq!(downloads.in_flight(), 0);
+
+        let retained_requests = downloads.transaction_requests().count();
+        assert_eq!(
+            retained_requests, 2,
+            "sequential timeout paths should accumulate stale cancel_handles today"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn timed_out_pushed_transaction_retains_full_request_today() {
+        let network = service_fn(pending_network);
+        let verifier = service_fn(pending_verifier);
+        let state = service_fn(pending_state);
+        let mut downloads = Downloads::new(network, verifier, state);
+
+        let transaction = Transaction::V5 {
+            network_upgrade: NetworkUpgrade::Nu5,
+            lock_time: LockTime::min_lock_time_timestamp(),
+            expiry_height: Height(0),
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+            sapling_shielded_data: None,
+            orchard_shielded_data: None,
+        };
+        let unmined_tx: UnminedTx = transaction.into();
+        let txid = unmined_tx.id;
+
+        downloads
+            .download_if_needed_and_verify(Gossip::Tx(unmined_tx), None)
+            .expect("pushed transaction should queue");
+        assert_eq!(downloads.in_flight(), 1);
+
+        tokio::time::advance(RATE_LIMIT_DELAY).await;
+
+        let result = downloads
+            .next()
+            .await
+            .expect("timed-out task should be yielded");
+        assert!(result.is_err(), "outer timeout should be reported");
+        assert_eq!(downloads.in_flight(), 0);
+
+        let retained_request = downloads
+            .transaction_requests()
+            .find(|request| request.id() == txid)
+            .expect("timeout path should retain pushed transaction request today");
+
+        assert!(
+            retained_request.tx().is_some(),
+            "pushed transaction timeout should retain full transaction contents today"
+        );
+        assert!(matches!(
+            downloads.download_if_needed_and_verify(Gossip::Id(txid), None),
+            Err(MempoolError::AlreadyQueued)
+        ));
+    }
+
+    #[tokio::test]
+    async fn invalid_direct_pushed_transaction_has_no_advertiser_addr_today() {
+        let network = service_fn(pending_network);
+        let verifier = service_fn(invalid_verifier);
+        let state = service_fn(ready_state);
+        let mut downloads = Downloads::new(network, verifier, state);
+
+        let transaction = Transaction::V5 {
+            network_upgrade: NetworkUpgrade::Nu5,
+            lock_time: LockTime::min_lock_time_timestamp(),
+            expiry_height: Height(0),
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+            sapling_shielded_data: None,
+            orchard_shielded_data: None,
+        };
+        let unmined_tx: UnminedTx = transaction.into();
+        let txid = unmined_tx.id;
+
+        downloads
+            .download_if_needed_and_verify(Gossip::Tx(unmined_tx), None)
+            .expect("pushed transaction should queue");
+
+        let result = downloads
+            .next()
+            .await
+            .expect("invalid pushed transaction should finish")
+            .expect("invalid verifier should not time out")
+            .expect_err("invalid verifier should reject the pushed transaction");
+        let (rejected_txid, error) = *result;
+
+        assert_eq!(rejected_txid, txid);
+
+        let TransactionDownloadVerifyError::Invalid {
+            error,
+            advertiser_addr,
+        } = error
+        else {
+            panic!("unexpected pushed transaction error: {error:?}");
+        };
+
+        assert_eq!(error, TransactionError::BadBalance);
+        assert_ne!(
+            error.mempool_misbehavior_score(),
+            0,
+            "test error should be score-bearing"
+        );
+        assert_eq!(
+            advertiser_addr, None,
+            "direct pushed transactions lose peer attribution before invalid verification reporting today"
+        );
+    }
+
+    #[tokio::test]
+    async fn same_mined_id_v5_wtxids_queue_separately_today() {
+        let network = service_fn(pending_network);
+        let verifier = service_fn(pending_verifier);
+        let state = service_fn(pending_state);
+        let mut downloads = Downloads::new(network, verifier, state);
+
+        let mined_id = transaction::Hash([7; 32]);
+        let mut txids = Vec::new();
+
+        for auth_byte in 0..MAX_INBOUND_CONCURRENCY {
+            let txid = transaction::UnminedTxId::from(transaction::WtxId {
+                id: mined_id,
+                auth_digest: transaction::AuthDigest([auth_byte as u8; 32]),
+            });
+
+            downloads
+                .download_if_needed_and_verify(Gossip::Id(txid), None)
+                .expect("same-effects witnessed transaction should queue today");
+
+            txids.push(txid);
+        }
+
+        assert_eq!(downloads.in_flight(), MAX_INBOUND_CONCURRENCY);
+
+        let queued_same_effects = downloads
+            .transaction_requests()
+            .filter(|request| request.id().mined_id() == mined_id)
+            .count();
+        assert_eq!(
+            queued_same_effects, MAX_INBOUND_CONCURRENCY,
+            "same-effects V5 witnessed transaction IDs can fill the queue today"
+        );
+
+        assert!(matches!(
+            downloads.download_if_needed_and_verify(Gossip::Id(txids[0]), None),
+            Err(MempoolError::AlreadyQueued)
+        ));
+
+        let over_cap_txid = transaction::UnminedTxId::from(transaction::WtxId {
+            id: mined_id,
+            auth_digest: transaction::AuthDigest([MAX_INBOUND_CONCURRENCY as u8; 32]),
+        });
+        assert!(matches!(
+            downloads.download_if_needed_and_verify(Gossip::Id(over_cap_txid), None),
+            Err(MempoolError::FullQueue)
+        ));
+    }
+}

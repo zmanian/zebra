@@ -24,6 +24,25 @@ where
     pub(super) mempool_change: MempoolTxSubscriber,
 }
 
+#[cfg(test)]
+impl<ReadStateService, Tip> IndexerRPC<ReadStateService, Tip>
+where
+    ReadStateService: ReadState,
+    Tip: ChainTip + Clone + Send + Sync + 'static,
+{
+    pub(crate) fn new_for_tests(
+        read_state: ReadStateService,
+        chain_tip_change: Tip,
+        mempool_change: MempoolTxSubscriber,
+    ) -> Self {
+        Self {
+            read_state,
+            chain_tip_change,
+            mempool_change,
+        }
+    }
+}
+
 /// Initializes the indexer RPC server
 #[tracing::instrument(skip_all)]
 pub async fn init<ReadStateService, Tip>(

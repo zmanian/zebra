@@ -87,6 +87,9 @@ hex = { workspace = true }
 num-integer = { workspace = true }
 proptest = { workspace = true }
 proptest-derive = { workspace = true }
+ripemd = { workspace = true }
+secp256k1 = { workspace = true }
+sha2 = { workspace = true }
 spandoc = { workspace = true }
 
 tokio = { workspace = true, features = ["full", "tracing", "test-util"] }

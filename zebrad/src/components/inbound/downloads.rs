@@ -179,6 +179,164 @@ where
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::sync::Arc;
+
+    use futures::StreamExt;
+    use zebra_chain::{
+        parameters::Network, serialization::ZcashDeserializeInto, transaction::Transaction,
+    };
+    use zebra_network::InventoryResponse::Available;
+    use zebra_test::mock_service::{MockService, PanicAssertion};
+
+    #[tokio::test]
+    async fn inbound_downloader_verifies_exact_min_accepted_height_today() -> Result<(), BoxError> {
+        let block: Arc<block::Block> =
+            zebra_test::vectors::BLOCK_MAINNET_2_BYTES.zcash_deserialize_into()?;
+        let block_hash = block.hash();
+        let block_height = block
+            .coinbase_height()
+            .expect("test block should have a coinbase height");
+
+        let tip_block = zs::ChainTipBlock {
+            hash: block_hash,
+            height: block::Height(zs::MAX_BLOCK_REORG_HEIGHT + block_height.0),
+            time: block.header.time,
+            transactions: Vec::<Arc<Transaction>>::new(),
+            transaction_hashes: Arc::from([]),
+            previous_block_hash: block.header.previous_block_hash,
+        };
+        let (_chain_tip_sender, latest_chain_tip, _chain_tip_change) =
+            zs::ChainTipSender::new(tip_block, &Network::Mainnet);
+
+        let mut state: MockService<zs::Request, zs::Response, PanicAssertion> =
+            MockService::build().for_unit_tests();
+        let mut network: MockService<zn::Request, zn::Response, PanicAssertion> =
+            MockService::build().for_unit_tests();
+        let mut verifier: MockService<zebra_consensus::Request, block::Hash, PanicAssertion> =
+            MockService::build().for_unit_tests();
+
+        let mut downloads = Downloads::new(
+            10,
+            network.clone(),
+            verifier.clone(),
+            state.clone(),
+            latest_chain_tip,
+        );
+
+        assert!(
+            matches!(
+                downloads.download_and_verify(block_hash, None),
+                DownloadAction::AddedToQueue
+            ),
+            "exact-boundary block should be queued today"
+        );
+
+        state
+            .expect_request(zs::Request::KnownBlock(block_hash))
+            .await
+            .respond(zs::Response::KnownBlock(None));
+
+        network
+            .expect_request(zn::Request::BlocksByHash(
+                std::iter::once(block_hash).collect(),
+            ))
+            .await
+            .respond(zn::Response::Blocks(vec![Available((block.clone(), None))]));
+
+        verifier
+            .expect_request(zebra_consensus::Request::Commit(block))
+            .await
+            .respond(block_hash);
+
+        let result = downloads
+            .next()
+            .await
+            .expect("queued exact-boundary inbound download should finish")
+            .expect("exact-boundary inbound download should verify successfully today");
+
+        assert_eq!(
+            result, block_hash,
+            "a gossiped block at exactly tip - MAX_BLOCK_REORG_HEIGHT reaches verification today"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn inbound_missing_height_error_drops_advertiser_addr_today() -> Result<(), BoxError> {
+        let mut block_without_height: block::Block =
+            zebra_test::vectors::BLOCK_MAINNET_2_BYTES.zcash_deserialize_into()?;
+        block_without_height.transactions.clear();
+        let block_without_height = Arc::new(block_without_height);
+        let block_hash = block_without_height.hash();
+        let advertiser_addr: PeerSocketAddr = "127.0.0.1:8233"
+            .parse()
+            .expect("hard-coded peer address should parse");
+
+        assert!(
+            block_without_height.coinbase_height().is_none(),
+            "empty transaction list should remove the coinbase height"
+        );
+
+        let (_chain_tip_sender, latest_chain_tip, _chain_tip_change) =
+            zs::ChainTipSender::new(None, &Network::Mainnet);
+        let mut state: MockService<zs::Request, zs::Response, PanicAssertion> =
+            MockService::build().for_unit_tests();
+        let mut network: MockService<zn::Request, zn::Response, PanicAssertion> =
+            MockService::build().for_unit_tests();
+        let verifier: MockService<zebra_consensus::Request, block::Hash, PanicAssertion> =
+            MockService::build().for_unit_tests();
+
+        let mut downloads = Downloads::new(
+            10,
+            network.clone(),
+            verifier.clone(),
+            state.clone(),
+            latest_chain_tip,
+        );
+
+        assert!(
+            matches!(
+                downloads.download_and_verify(block_hash, Some(advertiser_addr)),
+                DownloadAction::AddedToQueue
+            ),
+            "missing-height block should be queued before block-body preflight today"
+        );
+
+        state
+            .expect_request(zs::Request::KnownBlock(block_hash))
+            .await
+            .respond(zs::Response::KnownBlock(None));
+
+        network
+            .expect_request(zn::Request::BlocksByHash(
+                std::iter::once(block_hash).collect(),
+            ))
+            .await
+            .respond(zn::Response::Blocks(vec![Available((
+                block_without_height,
+                Some(advertiser_addr),
+            ))]));
+
+        let (_error, returned_advertiser_addr) = downloads
+            .next()
+            .await
+            .expect("queued missing-height inbound download should finish")
+            .expect_err("missing-height inbound download should fail before verification");
+
+        assert_eq!(
+            returned_advertiser_addr, None,
+            "inbound no-height preflight drops the advertiser address today"
+        );
+
+        Ok(())
+    }
+}
+
 impl<ZN, ZV, ZS> Downloads<ZN, ZV, ZS>
 where
     ZN: Service<zn::Request, Response = zn::Response, Error = BoxError> + Send + Clone + 'static,

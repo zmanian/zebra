@@ -45,3 +45,25 @@ fn cookie_write_rejects_symlink() {
     let result = cookie::write_to_disk(&cookie, dir.path());
     assert!(result.is_err(), "should reject symlink at cookie path");
 }
+
+#[cfg(unix)]
+#[test]
+fn cookie_write_preserves_existing_regular_file_permissions_today() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _init_guard = zebra_test::init();
+
+    let dir = tempfile::tempdir().unwrap();
+    let cookie_path = dir.path().join(".cookie");
+    fs::write(&cookie_path, b"old-cookie").unwrap();
+    fs::set_permissions(&cookie_path, fs::Permissions::from_mode(0o644)).unwrap();
+
+    let cookie = Cookie::default();
+    cookie::write_to_disk(&cookie, dir.path()).unwrap();
+
+    let mode = fs::metadata(cookie_path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(
+        mode, 0o644,
+        "rewriting an existing regular cookie file preserves loose permissions today"
+    );
+}
