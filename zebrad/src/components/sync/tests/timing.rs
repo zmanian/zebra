@@ -22,7 +22,7 @@ use zebra_state::ChainTipSender;
 use crate::{
     components::sync::{
         ChainSync, BLOCK_DOWNLOAD_RETRY_LIMIT, BLOCK_DOWNLOAD_TIMEOUT, BLOCK_VERIFY_TIMEOUT,
-        GENESIS_TIMEOUT_RETRY, SYNC_RESTART_DELAY,
+        DEFAULT_STALL_RESTART_TIMEOUT, GENESIS_TIMEOUT_RETRY, SYNC_RESTART_DELAY,
     },
     config::ZebradConfig,
 };
@@ -68,6 +68,13 @@ fn ensure_timeouts_consistent() {
                 .target_spacing()
                 .num_seconds() as u64,
         "Block verify should allow for at least one new block to be generated and distributed"
+    );
+
+    // The default stall restart timeout must fire before the block verify timeout
+    // backstop, so stall recovery is fast rather than waiting on the verifier.
+    assert!(
+        DEFAULT_STALL_RESTART_TIMEOUT < BLOCK_VERIFY_TIMEOUT,
+        "default stall restart timeout must be shorter than the block verify timeout",
     );
 
     // This constraint makes genesis retries more likely to succeed
