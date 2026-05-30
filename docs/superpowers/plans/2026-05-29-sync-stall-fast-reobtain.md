@@ -30,7 +30,7 @@
 
 **Files:**
 - Modify: `zebra-consensus/src/checkpoint.rs` (struct fields ~118-178; `from_checkpoint_list` ~257-299; `target_checkpoint_height` ~409-479)
-- Test: `zebra-consensus/src/checkpoint/tests/` (add to the existing checkpoint test module)
+- Test: `zebra-consensus/src/checkpoint/tests.rs` (single file; add to the existing checkpoint test module)
 
 - [ ] **Step 1: Write the failing test**
 
@@ -465,7 +465,7 @@ Using Tokio paused time and the existing sync test harness (mock peer set / veri
 async fn syncer_fast_restarts_on_persistent_gap_stall() {
     // Build ChainSync with mocks: peer set that returns blocks to saturate in_flight,
     // a verifier that never commits (holds gap_receiver = Some), frozen latest_chain_tip,
-    // and stall_restart_timeout = Some(90s).
+    // and stall_restart_timeout = Duration::from_secs(90).
     // Advance time past 90s; assert the run ends in SyncError::Stalled (or that sync()
     // performs cancel_all + re-obtain) rather than blocking to 8 minutes.
 }
@@ -474,7 +474,7 @@ async fn syncer_fast_restarts_on_persistent_gap_stall() {
 Also add:
 - `syncer_does_not_restart_when_tip_advancing` — tip advances each interval → no `Stalled` before 8 min.
 - `syncer_does_not_restart_when_no_gap` — gap_receiver = `None` (slow-but-complete verify) → no `Stalled`.
-- `disabled_stall_timeout_preserves_legacy_behavior` — `stall_restart_timeout = None` → original bare-await path, no `Stalled`.
+- `disabled_stall_timeout_preserves_legacy_behavior` — `stall_restart_timeout = Duration::ZERO` → original bare-await path, no `Stalled`.
 
 > Implementer: match the construction style in `sync/tests/vectors.rs`. If full ChainSync construction is heavy, factor `is_gap_stalled` to be unit-testable in isolation (pure function of: now, last_tip_advance, in_flight, lookahead_limit, gap snapshot, last_stall_restart) and unit-test that directly, plus one integration test for the loop wiring.
 
