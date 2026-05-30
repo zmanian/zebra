@@ -231,6 +231,7 @@ impl StartCmd {
             consensus_task_handles,
             max_checkpoint_height,
             checkpoint_gap_receiver,
+            checkpoint_reset_sender,
         ) = zebra_consensus::router::init(
             config.consensus.clone(),
             &config.network.network,
@@ -249,6 +250,7 @@ impl StartCmd {
             latest_chain_tip.clone(),
             misbehavior_sender.clone(),
             checkpoint_gap_receiver,
+            checkpoint_reset_sender,
         );
 
         info!("initializing mempool");

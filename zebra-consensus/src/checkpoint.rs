@@ -323,6 +323,13 @@ where
         self.gap_sender.subscribe()
     }
 
+    /// Returns a sender that resets the verifier back to the given state tip,
+    /// clearing its queued blocks. Used by the syncer to clear a stale
+    /// gap-parked queue on restart (#5709, experimental).
+    pub(crate) fn reset_sender(&self) -> mpsc::Sender<Option<(block::Height, block::Hash)>> {
+        self.reset_sender.clone()
+    }
+
     /// Update diagnostics for queued blocks.
     fn queued_block_diagnostics(&self, height: block::Height, hash: block::Hash) {
         let max_queued_height = self
@@ -392,6 +399,11 @@ where
         let (initial_tip_hash, verifier_progress) = progress_from_tip(&self.checkpoint_list, tip);
         self.initial_tip_hash = initial_tip_hash;
         self.verifier_progress = verifier_progress;
+
+        // EXPERIMENTAL (#5709): clear the queued blocks on reset. Otherwise a stale
+        // gap-parked queue survives a syncer restart and immediately re-stalls.
+        self.queued.clear();
+        metrics::gauge!("checkpoint.queued_slots").set(0.0);
 
         self.verified_checkpoint_diagnostics(verifier_progress.height());
     }

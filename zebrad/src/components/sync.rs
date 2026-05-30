@@ -472,6 +472,11 @@ where
     /// Sender for reporting peer addresses that advertised unexpectedly invalid transactions.
     misbehavior_sender: mpsc::Sender<(PeerSocketAddr, u32)>,
 
+    /// Sender to reset the checkpoint verifier (clearing its queued blocks) back
+    /// to the state tip on restart. Experimental (#5709): clears a stale
+    /// gap-parked queue that a plain `cancel_all()` leaves behind.
+    checkpoint_reset_sender: std::sync::mpsc::Sender<Option<(block::Height, block::Hash)>>,
+
     /// When the state tip last advanced, used for stall detection.
     last_tip_advance: tokio::time::Instant,
 
@@ -553,6 +558,7 @@ where
         latest_chain_tip: ZSTip,
         misbehavior_sender: mpsc::Sender<(PeerSocketAddr, u32)>,
         checkpoint_gap_receiver: watch::Receiver<Option<block::Height>>,
+        checkpoint_reset_sender: std::sync::mpsc::Sender<Option<(block::Height, block::Hash)>>,
     ) -> (Self, SyncStatus) {
         let mut download_concurrency_limit = config.sync.download_concurrency_limit;
         let mut checkpoint_verify_concurrency_limit =
@@ -656,6 +662,7 @@ where
             past_lookahead_limit_receiver,
             checkpoint_gap_receiver,
             misbehavior_sender,
+            checkpoint_reset_sender,
             last_tip_advance: tokio::time::Instant::now(),
             last_stall_restart: tokio::time::Instant::now(),
         };
@@ -675,6 +682,8 @@ where
                 Ok(()) => {}
                 Err(SyncError::Stalled) => {
                     self.downloads.cancel_all();
+                    // EXPERIMENTAL (#5709): clear the verifier's stale gap-parked queue.
+                    self.reset_checkpoint_verifier().await;
                     self.last_stall_restart = tokio::time::Instant::now();
                     self.update_metrics();
                     info!(
@@ -687,6 +696,8 @@ where
                 Err(SyncError::Other(error)) => {
                     warn!(?error, "sync error, restarting");
                     self.downloads.cancel_all();
+                    // EXPERIMENTAL (#5709): clear the verifier's stale gap-parked queue.
+                    self.reset_checkpoint_verifier().await;
                 }
             }
 
@@ -1429,6 +1440,21 @@ where
 
     /// Returns `true` if the hash is present in the state, and `false`
     /// if the hash is not present in the state.
+    /// EXPERIMENTAL (#5709): reset the checkpoint verifier back to the state tip,
+    /// clearing its queued blocks, so a restart's re-walk starts from a clean
+    /// verifier instead of a stale gap-parked queue.
+    async fn reset_checkpoint_verifier(&mut self) {
+        let tip = match self.state.ready().await {
+            Ok(svc) => match svc.call(zs::Request::Tip).await {
+                Ok(zs::Response::Tip(tip)) => tip,
+                _ => return,
+            },
+            Err(_) => return,
+        };
+        // Ignore send errors (only fail if the verifier is being dropped).
+        let _ = self.checkpoint_reset_sender.send(tip);
+    }
+
     pub(crate) async fn state_contains(&mut self, hash: block::Hash) -> Result<bool, Report> {
         match self
             .state

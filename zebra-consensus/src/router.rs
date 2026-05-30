@@ -16,13 +16,16 @@ use core::fmt;
 use std::{
     future::Future,
     pin::Pin,
-    sync::Arc,
+    sync::{mpsc, Arc},
     task::{Context, Poll},
 };
 
 use futures::{FutureExt, TryFutureExt};
 use thiserror::Error;
-use tokio::{sync::{oneshot, watch}, task::JoinHandle};
+use tokio::{
+    sync::{oneshot, watch},
+    task::JoinHandle,
+};
 use tower::{buffer::Buffer, util::BoxService, Service, ServiceExt};
 use tracing::{instrument, Instrument, Span};
 
@@ -258,6 +261,9 @@ pub async fn init<S, Mempool>(
     BackgroundTaskHandles,
     Height,
     watch::Receiver<Option<block::Height>>,
+    // EXPERIMENTAL (#5709): reset sender to clear the checkpoint verifier's
+    // queued blocks back to the state tip on syncer restart.
+    mpsc::Sender<Option<(block::Height, block::Hash)>>,
 )
 where
     S: Service<zs::Request, Response = zs::Response, Error = BoxError> + Send + Clone + 'static,
@@ -379,6 +385,9 @@ where
     let block = SemanticBlockVerifier::new(network, state_service.clone(), transaction.clone());
     let checkpoint = CheckpointVerifier::from_checkpoint_list(list, network, tip, state_service);
     let checkpoint_gap_receiver = checkpoint.gap_receiver();
+    // EXPERIMENTAL (#5709): grab a reset sender before the verifier is moved into
+    // the router, so the syncer can clear its stale gap-parked queue on restart.
+    let checkpoint_reset_sender = checkpoint.reset_sender();
     let router = BlockVerifierRouter {
         checkpoint,
         max_checkpoint_height,
@@ -391,7 +400,14 @@ where
         state_checkpoint_verify_handle,
     };
 
-    (router, transaction, task_handles, max_checkpoint_height, checkpoint_gap_receiver)
+    (
+        router,
+        transaction,
+        task_handles,
+        max_checkpoint_height,
+        checkpoint_gap_receiver,
+        checkpoint_reset_sender,
+    )
 }
 
 /// Parses the checkpoint list for `network` and `config`.
@@ -440,16 +456,22 @@ where
     S: Service<zs::Request, Response = zs::Response, Error = BoxError> + Send + Clone + 'static,
     S::Future: Send + 'static,
 {
-    let (router, transaction, task_handles, max_checkpoint_height, _checkpoint_gap_receiver) =
-        init(
-            config.clone(),
-            network,
-            state_service.clone(),
-            oneshot::channel::<
-                Buffer<BoxService<mempool::Request, mempool::Response, BoxError>, mempool::Request>,
-            >()
-            .1,
-        )
-        .await;
+    let (
+        router,
+        transaction,
+        task_handles,
+        max_checkpoint_height,
+        _checkpoint_gap_receiver,
+        _checkpoint_reset_sender,
+    ) = init(
+        config.clone(),
+        network,
+        state_service.clone(),
+        oneshot::channel::<
+            Buffer<BoxService<mempool::Request, mempool::Response, BoxError>, mempool::Request>,
+        >()
+        .1,
+    )
+    .await;
     (router, transaction, task_handles, max_checkpoint_height)
 }

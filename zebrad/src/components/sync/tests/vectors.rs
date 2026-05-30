@@ -1183,6 +1183,7 @@ fn setup() -> (
 
     let (misbehavior_tx, _misbehavior_rx) = tokio::sync::mpsc::channel(1);
     let (_checkpoint_gap_sender, checkpoint_gap_receiver) = tokio::sync::watch::channel(None);
+    let (checkpoint_reset_sender, _checkpoint_reset_receiver) = std::sync::mpsc::channel();
     let (chain_sync, sync_status) = ChainSync::new(
         &config,
         Height(0),
@@ -1192,6 +1193,7 @@ fn setup() -> (
         mock_chain_tip,
         misbehavior_tx,
         checkpoint_gap_receiver,
+        checkpoint_reset_sender,
     );
 
     let chain_sync_future = chain_sync.sync();
@@ -1271,6 +1273,7 @@ fn setup_for_stall(
 
     let (misbehavior_tx, _misbehavior_rx) = tokio::sync::mpsc::channel(1);
     let (checkpoint_gap_sender, checkpoint_gap_receiver) = tokio::sync::watch::channel(None);
+    let (checkpoint_reset_sender, _checkpoint_reset_receiver) = std::sync::mpsc::channel();
 
     let (chain_sync, _sync_status) = ChainSync::new(
         &config,
@@ -1281,6 +1284,7 @@ fn setup_for_stall(
         mock_chain_tip,
         misbehavior_tx,
         checkpoint_gap_receiver,
+        checkpoint_reset_sender,
     );
 
     (
