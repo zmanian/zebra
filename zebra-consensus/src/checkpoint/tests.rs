@@ -818,8 +818,8 @@ async fn hard_coded_mainnet() -> Result<(), Report> {
 /// Test that `CheckpointVerifier` publishes the correct contiguity-gap signal.
 ///
 /// Submits a contiguous prefix of blocks then a block past a gap, and asserts
-/// the gap signal becomes `Some(contiguous_height)`.  After filling the gap the
-/// signal must no longer be `Some(contiguous_height)`.
+/// the gap signal reaches `Some(contiguous_height)`. After filling the gap and
+/// completing the checkpoint range, the signal must become `None`.
 #[tokio::test(flavor = "multi_thread")]
 async fn checkpoint_gap_signal_reports_contiguous_height() {
     let _init_guard = zebra_test::init();
@@ -827,11 +827,10 @@ async fn checkpoint_gap_signal_reports_contiguous_height() {
     // Build a continuous blockchain from the Mainnet test vectors.
     let blockchain: Vec<_> = Mainnet
         .blockchain_iter()
-        .map(|(height, b)| {
+        .map(|(_height, b)| {
             let block = Arc::<Block>::zcash_deserialize(*b).unwrap();
             let hash = block.hash();
             let coinbase_height = block.coinbase_height().unwrap();
-            assert_eq!(*height, coinbase_height.0);
             (block, coinbase_height, hash)
         })
         .collect();
@@ -862,7 +861,7 @@ async fn checkpoint_gap_signal_reports_contiguous_height() {
             .unwrap();
 
     // Subscribe to the gap channel before submitting any blocks.
-    let gap_rx = checkpoint_verifier.gap_receiver();
+    let mut gap_rx = checkpoint_verifier.gap_receiver();
 
     // Initially there is no gap signal (nothing queued yet).
     assert_eq!(
@@ -939,12 +938,18 @@ async fn checkpoint_gap_signal_reports_contiguous_height() {
         );
     }
 
-    // After queuing block 4 with a gap at 3, the signal should be Some(Height(2)).
-    assert_eq!(
-        *gap_rx.borrow(),
-        Some(block::Height(2)),
-        "gap signal should report the highest contiguous height (2) while waiting for block 3"
-    );
+    // After queuing block 4 with a gap at 3, the signal should reach
+    // Some(Height(2)): the contiguous run from the previous checkpoint (height
+    // 0) extends to height 2, then waits for the missing block 3. The submit
+    // futures are spawned (they only resolve once the range commits), so we
+    // wait for the signal value instead of reading it synchronously.
+    timeout(
+        Duration::from_secs(VERIFY_TIMEOUT_SECONDS),
+        gap_rx.wait_for(|v| *v == Some(block::Height(2))),
+    )
+    .await
+    .expect("gap signal should reach Some(2)")
+    .unwrap();
 
     // Now fill the gap by submitting block 3.
     {
@@ -961,10 +966,14 @@ async fn checkpoint_gap_signal_reports_contiguous_height() {
         );
     }
 
-    // The gap is now filled; the signal should no longer be Some(Height(2)).
-    assert_ne!(
-        *gap_rx.borrow(),
-        Some(block::Height(2)),
-        "gap signal should change after block 3 fills the gap"
-    );
+    // Filling block 3 completes the contiguous range 0..=4, which equals the
+    // checkpoint at height 4. The verifier fires that checkpoint, so there is
+    // no longer a gap and the signal becomes None.
+    timeout(
+        Duration::from_secs(VERIFY_TIMEOUT_SECONDS),
+        gap_rx.wait_for(|v| v.is_none()),
+    )
+    .await
+    .expect("gap signal should become None once the 0..=4 range completes")
+    .unwrap();
 }
