@@ -5,6 +5,23 @@ All notable changes to Zebra are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org).
 
+## [Unreleased]
+
+### Added
+
+- `sync.stall_restart_timeout` config option (default `90s`; set to `"0s"` to
+  disable) controlling fast recovery from initial-sync checkpoint-contiguity
+  stalls ([#5709](https://github.com/ZcashFoundation/zebra/issues/5709)).
+
+### Fixed
+
+- The syncer now detects checkpoint-contiguity stalls during initial sync
+  (download queue saturated, checkpoint verifier reporting a persistent gap,
+  state tip frozen) and restarts from the current tip within
+  `sync.stall_restart_timeout`, instead of waiting for the multi-minute
+  block-verify timeout
+  ([#5709](https://github.com/ZcashFoundation/zebra/issues/5709)).
+
 ## [Zebra 4.5.1](https://github.com/ZcashFoundation/zebra/releases/tag/v4.5.0) - 2026-05-29
 
 This hotfix release fixes a critical security issues that was not correctly
