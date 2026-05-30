@@ -385,7 +385,19 @@ where
                         tracing::info!(target: "dbg5709", %hash, "REQUEST: cancelled during download");
                         return Err(BlockDownloadVerifyError::CancelledDuringDownload { hash })
                     }
-                    rsp = block_req => rsp.map_err(|error| BlockDownloadVerifyError::DownloadFailed { error, hash})?,
+                    rsp = block_req => match rsp {
+                        Ok(rsp) => rsp,
+                        Err(error) => {
+                            // This is exactly where a 90s outer Timeout (or any
+                            // download error) surfaces. If a stuck hash logs this
+                            // ~90s after "issuing call", the Timeout IS firing and
+                            // the block is being dropped+retried (a throughput
+                            // problem). If it never logs this, the call genuinely
+                            // hangs (a Tower bug).
+                            tracing::info!(target: "dbg5709", %hash, error = ?error, "REQUEST: call(block_req) returned error — dropping (Timeout would surface here)");
+                            return Err(BlockDownloadVerifyError::DownloadFailed { error, hash });
+                        }
+                    },
                 };
 
                 let (block, advertiser_addr) = if let zn::Response::Blocks(blocks) = rsp {
