@@ -1181,8 +1181,7 @@ fn setup() -> (
     let (mock_chain_tip, mock_chain_tip_sender) = MockChainTip::new();
 
     let (misbehavior_tx, _misbehavior_rx) = tokio::sync::mpsc::channel(1);
-    let (_checkpoint_gap_sender, checkpoint_gap_receiver) =
-        tokio::sync::watch::channel(None);
+    let (_checkpoint_gap_sender, checkpoint_gap_receiver) = tokio::sync::watch::channel(None);
     let (chain_sync, sync_status) = ChainSync::new(
         &config,
         Height(0),
