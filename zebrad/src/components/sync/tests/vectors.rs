@@ -6,6 +6,7 @@ use std::{collections::HashMap, iter, sync::Arc, time::Duration};
 
 use color_eyre::Report;
 use futures::{Future, FutureExt};
+use indexmap::IndexSet;
 
 use zebra_chain::{
     block::{self, Block, Height},
@@ -1203,4 +1204,246 @@ fn setup() -> (
         state_service,
         mock_chain_tip_sender,
     )
+}
+
+/// The concrete [`ChainSync`] type produced by [`setup_for_stall`].
+///
+/// All four services are mocks, so the stall-detection tests can drive the real
+/// pause loop directly without spinning up the production network/state stack.
+type MockChainSync = ChainSync<
+    MockService<zebra_network::Request, zebra_network::Response, PanicAssertion>,
+    MockService<zebra_state::Request, zebra_state::Response, PanicAssertion>,
+    MockService<zebra_consensus::Request, block::Hash, PanicAssertion>,
+    MockChainTip,
+>;
+
+/// Builds a [`ChainSync`] wired to mock services, and returns the struct itself
+/// (rather than its `sync()` future) along with the handles a stall test needs.
+///
+/// Unlike [`setup`], this:
+/// - returns the [`ChainSync`] struct, so tests can call its private
+///   `try_to_sync_once` / `is_gap_stalled` methods and observe the
+///   [`super::super::SyncError::Stalled`] return directly,
+/// - keeps the checkpoint-gap sender alive and returns it, so the test can drive
+///   the verifier gap signal, and
+/// - lets the caller override [`crate::components::sync::Config::stall_restart_timeout`]
+///   so paused-time tests can use a short deadline.
+///
+/// `max_checkpoint_height` is `Height(0)`, so the syncer runs in full-verify
+/// phase and the saturation threshold is `full_verify_concurrency_limit / 2`.
+fn setup_for_stall(
+    stall_restart_timeout: Duration,
+) -> (
+    MockChainSync,
+    // Drives the verifier contiguity-gap signal.
+    tokio::sync::watch::Sender<Option<block::Height>>,
+    // BlockVerifierRouter
+    MockService<zebra_consensus::Request, block::Hash, PanicAssertion>,
+    // PeerSet
+    MockService<zebra_network::Request, zebra_network::Response, PanicAssertion>,
+    // StateService
+    MockService<zebra_state::Request, zebra_state::Response, PanicAssertion>,
+    // Drives the (frozen) chain tip.
+    MockChainTipSender,
+) {
+    let _init_guard = zebra_test::init();
+
+    let mut config = ZebradConfig {
+        consensus: ConsensusConfig::default(),
+        state: StateConfig::ephemeral(),
+        ..Default::default()
+    };
+    config.sync.stall_restart_timeout = stall_restart_timeout;
+
+    let peer_set = MockService::build()
+        .with_max_request_delay(MAX_SERVICE_REQUEST_DELAY)
+        .for_unit_tests();
+
+    let block_verifier_router = MockService::build()
+        .with_max_request_delay(MAX_SERVICE_REQUEST_DELAY)
+        .for_unit_tests();
+
+    let state_service = MockService::build()
+        .with_max_request_delay(MAX_SERVICE_REQUEST_DELAY)
+        .for_unit_tests();
+
+    let (mock_chain_tip, mock_chain_tip_sender) = MockChainTip::new();
+
+    let (misbehavior_tx, _misbehavior_rx) = tokio::sync::mpsc::channel(1);
+    let (checkpoint_gap_sender, checkpoint_gap_receiver) = tokio::sync::watch::channel(None);
+
+    let (chain_sync, _sync_status) = ChainSync::new(
+        &config,
+        Height(0),
+        peer_set.clone(),
+        block_verifier_router.clone(),
+        state_service.clone(),
+        mock_chain_tip,
+        misbehavior_tx,
+        checkpoint_gap_receiver,
+    );
+
+    (
+        chain_sync,
+        checkpoint_gap_sender,
+        block_verifier_router,
+        peer_set,
+        state_service,
+        mock_chain_tip_sender,
+    )
+}
+
+/// Saturates the syncer's in-flight download queue with `count` distinct fake
+/// hashes, without completing any of them.
+///
+/// Each `download_and_verify` call spawns a task that immediately blocks on the
+/// peer-set `BlocksByHash` request. Because the test never responds to those
+/// requests, the tasks stay pending forever, so `downloads.in_flight()` reaches
+/// `count` and the `try_to_sync_once` pause loop is entered. The blocks are
+/// never delivered to the verifier, so the mock chain tip can be kept frozen.
+async fn saturate_in_flight(chain_sync: &mut MockChainSync, count: usize) {
+    for i in 0..count {
+        // Distinct, deterministic fake hashes so the downloader's duplicate
+        // check never rejects them. The bytes don't matter: these downloads
+        // intentionally never resolve.
+        let mut bytes = [0u8; 32];
+        bytes[0..8].copy_from_slice(&(i as u64).to_le_bytes());
+        let hash = block::Hash(bytes);
+
+        chain_sync
+            .downloads
+            .download_and_verify(hash)
+            .await
+            .expect("queuing a distinct fake hash for download succeeds");
+    }
+
+    assert_eq!(
+        chain_sync.downloads.in_flight(),
+        count,
+        "all queued downloads should be in-flight (none have been answered)",
+    );
+}
+
+/// Integration test for the #5709 fast-restart wiring.
+///
+/// This exercises the *async* pause-loop in `try_to_sync_once` end to end: the
+/// `in_flight >= lookahead_limit` saturation gate, the
+/// `timeout_at(last_tip_advance + stall_restart_timeout, downloads.next())`
+/// race, the `is_gap_stalled` decision, and the `Err(SyncError::Stalled)`
+/// propagation. Only the pure `detect_gap_stall` decision function had test
+/// coverage before; this closes the gap flagged by all three reviews.
+///
+/// Setup mirrors a real stall: the download queue is saturated, the verifier
+/// reports a persistent contiguity gap, and the state tip never advances. The
+/// deadline fires (well before the 8-minute block-verify backstop) and the loop
+/// returns `Stalled`.
+#[tokio::test(start_paused = true)]
+async fn syncer_fast_restarts_on_persistent_gap_stall() {
+    // Short, non-zero timeout so the paused clock reaches the deadline quickly.
+    let stall_restart_timeout = Duration::from_secs(10);
+
+    let (mut chain_sync, gap_sender, mut block_verifier_router, _peer_set, _state, _tip_sender) =
+        setup_for_stall(stall_restart_timeout);
+
+    // The verifier is wedged on a persistent contiguity gap. The tip is left
+    // frozen at genesis (`best_tip_height == None`), so it never advances.
+    gap_sender
+        .send(Some(Height(1_000)))
+        .expect("gap receiver is held by the syncer");
+
+    // Saturate the in-flight queue. In full-verify phase the lookahead limit is
+    // `full_verify_concurrency_limit` (20 by default), so 20 in-flight downloads
+    // satisfy `in_flight >= lookahead_limit` and enter the pause loop.
+    let lookahead_limit = ZebradConfig::default().sync.full_verify_concurrency_limit;
+    saturate_in_flight(&mut chain_sync, lookahead_limit).await;
+
+    // `try_to_sync_once` resets `last_tip_advance` only in `try_to_sync`, not
+    // here, so the deadline is armed relative to construction time. Advancing the
+    // paused clock past the timeout lets the deadline fire on the first wait.
+    //
+    // We drive the loop on a spawned task so we can advance time around it.
+    let stall_task = tokio::spawn(async move {
+        let result = chain_sync.try_to_sync_once(IndexSet::new()).await;
+        // Return whether we got the stall signal; `SyncError` isn't `Debug`.
+        matches!(result, Err(super::super::SyncError::Stalled))
+    });
+
+    // Let the loop reach the `timeout_at` await, then advance past the deadline
+    // (plus `MIN_STALL_RESTART_INTERVAL`, so `not_thrashing` also holds relative
+    // to the construction-time `last_stall_restart`).
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_secs(60)).await;
+
+    // The verifier must NOT make progress: the peer-set and verifier receive no
+    // completions, the gap stays `Some(1_000)`, and the tip stays frozen, so the
+    // loop must declare a stall rather than waiting out the verify backstop.
+    let stalled = stall_task
+        .await
+        .expect("stall detection task should not panic");
+
+    assert!(
+        stalled,
+        "a saturated queue with a frozen tip and a persistent gap must return SyncError::Stalled",
+    );
+
+    // The pause loop returned without ever completing a download, so the
+    // verifier was never asked to commit a block. (The peer-set *was* asked for
+    // `BlocksByHash` by `saturate_in_flight` — that's how the queue stays
+    // saturated — so only the verifier is checked here.)
+    block_verifier_router.expect_no_requests().await;
+}
+
+/// Regression for the "gap changed once, then persistent" narrative (Codex's
+/// suggestion): a verifier that made progress during a window must NOT trip the
+/// stall, but once the gap becomes persistent the same inputs must.
+///
+/// This drives the pure decision function across the two phases explicitly. The
+/// individual halves are covered in `tests::stall`; this asserts the transition
+/// as one story so a future refactor can't silently break the re-arm behavior.
+#[test]
+fn gap_changed_then_persistent_only_stalls_once_persistent() {
+    use tokio::time::Instant;
+
+    let now = Instant::now();
+    let timeout = Duration::from_secs(90);
+
+    // Common "would stall" inputs: frozen tip, saturated queue, not thrashing.
+    let last_tip_advance = now - Duration::from_secs(90);
+    let last_stall_restart = now - Duration::from_secs(600);
+    let in_flight = 999;
+    let saturation_threshold = 500;
+
+    // Phase 1: the verifier advanced its gap since the deadline was armed
+    // (`gap_now != gap_snapshot`). The loop must re-arm, not declare a stall.
+    let changed = super::super::detect_gap_stall(
+        timeout,
+        now,
+        last_tip_advance,
+        last_stall_restart,
+        in_flight,
+        saturation_threshold,
+        Some(Height(1_001)), // gap_now advanced
+        Some(Height(1_000)), // gap_snapshot
+    );
+    assert!(
+        !changed,
+        "a gap that changed during the window means progress: must not stall yet",
+    );
+
+    // Phase 2: the gap is now persistent (`gap_now == gap_snapshot`) with all
+    // other conditions unchanged. The same inputs must now stall.
+    let persistent = super::super::detect_gap_stall(
+        timeout,
+        now,
+        last_tip_advance,
+        last_stall_restart,
+        in_flight,
+        saturation_threshold,
+        Some(Height(1_001)), // gap_now unchanged this window
+        Some(Height(1_001)), // gap_snapshot matches
+    );
+    assert!(
+        persistent,
+        "once the gap is persistent across the window, the syncer must stall",
+    );
 }
