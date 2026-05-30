@@ -1021,6 +1021,30 @@ async fn should_restart_sync_returns_false() {
     );
 }
 
+/// EXPERIMENTAL (#5709): a single block's `DownloadFailed` (e.g. a transient peer
+/// `ConnectionClosed`, not just `NotFound`) drops that block and continues,
+/// instead of restarting the whole syncer and discarding the queued checkpoint
+/// range. Previously only `NotFound`-matching download failures continued.
+#[tokio::test]
+async fn download_failed_does_not_restart_sync() {
+    let err = BlockDownloadVerifyError::DownloadFailed {
+        // A non-`NotFound` error string: previously hit the catch-all restart arm.
+        error: "peer connection closed".into(),
+        hash: block::Hash::from([0xCC; 32]),
+    };
+
+    let restart = ChainSync::<
+        MockService<zn::Request, zn::Response, PanicAssertion>,
+        MockService<zs::Request, zs::Response, PanicAssertion>,
+        MockService<zebra_consensus::Request, block::Hash, PanicAssertion>,
+        MockChainTip,
+    >::should_restart_sync(&err);
+    assert!(
+        !restart,
+        "a single block download failure should drop the block and continue, not restart sync"
+    );
+}
+
 /// Verifies fix for GHSA-gvjc-3w7c-92jx: `AboveLookaheadHeightLimit` now has
 /// an explicit match arm in `should_restart_sync` that returns `false`.
 #[tokio::test]

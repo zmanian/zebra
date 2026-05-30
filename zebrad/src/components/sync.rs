@@ -1498,16 +1498,23 @@ where
                 false
             }
 
-            BlockDownloadVerifyError::DownloadFailed { ref error, .. }
-                if format!("{error:?}").contains("NotFound") =>
-            {
-                // Covers these errors:
-                // - NotFoundResponse
-                // - NotFoundRegistry
+            BlockDownloadVerifyError::DownloadFailed { .. } => {
+                // EXPERIMENTAL (#5709): a single block's download failure (peer
+                // `ConnectionClosed`, request timeout, `NotFound`, etc.) drops that
+                // one block and continues, instead of restarting the whole syncer
+                // and discarding the entire queued checkpoint range via `cancel_all`.
                 //
-                // TODO: improve this by checking the type (#2908)
-                //       restart after a certain number of NotFound errors?
-                debug!(error = ?e, "block was not found, possibly from a peer that doesn't have the block yet, continuing");
+                // Restarting on a single transient per-peer error creates a
+                // doom-loop in dense block regions: a contiguous checkpoint range
+                // takes long enough to assemble that a transient `ConnectionClosed`
+                // almost always interrupts it first, so the node never commits.
+                // A genuinely missing low block instead resurfaces as the saturated
+                // gap-park, which the stall detector re-walks from the state tip.
+                //
+                // Note: `NetworkServiceError`/`VerifierServiceError` (systemic
+                // service failures) are separate variants and still restart below.
+                // cf. TODO #2908 (handle this by error type rather than by string).
+                debug!(error = ?e, "block download failed; dropping the block and continuing sync");
                 false
             }
 
