@@ -814,3 +814,157 @@ async fn hard_coded_mainnet() -> Result<(), Report> {
 
     Ok(())
 }
+
+/// Test that `CheckpointVerifier` publishes the correct contiguity-gap signal.
+///
+/// Submits a contiguous prefix of blocks then a block past a gap, and asserts
+/// the gap signal becomes `Some(contiguous_height)`.  After filling the gap the
+/// signal must no longer be `Some(contiguous_height)`.
+#[tokio::test(flavor = "multi_thread")]
+async fn checkpoint_gap_signal_reports_contiguous_height() {
+    let _init_guard = zebra_test::init();
+
+    // Build a continuous blockchain from the Mainnet test vectors.
+    let blockchain: Vec<_> = Mainnet
+        .blockchain_iter()
+        .map(|(height, b)| {
+            let block = Arc::<Block>::zcash_deserialize(*b).unwrap();
+            let hash = block.hash();
+            let coinbase_height = block.coinbase_height().unwrap();
+            assert_eq!(*height, coinbase_height.0);
+            (block, coinbase_height, hash)
+        })
+        .collect();
+
+    // We need at least 5 blocks: genesis + 1 + 2 (gap) + 4.
+    assert!(
+        blockchain.len() >= 5,
+        "need at least 5 continuous blocks for this test"
+    );
+
+    // Build a checkpoint list: genesis (required) and block 4 as the target checkpoint.
+    // We observe the gap signal while waiting for blocks 0..=4 with block 3 missing.
+    let genesis_height = block::Height(0);
+    let genesis_hash = blockchain[0].2;
+    let checkpoint_height = block::Height(4);
+    let checkpoint_hash = blockchain[4].2;
+    let checkpoint_list: BTreeMap<block::Height, block::Hash> = [
+        (genesis_height, genesis_hash),
+        (checkpoint_height, checkpoint_hash),
+    ]
+    .into_iter()
+    .collect();
+
+    let state_service = zebra_state::init_test(&Mainnet).await;
+    let mut checkpoint_verifier =
+        CheckpointVerifier::from_list(checkpoint_list, &Mainnet, None, state_service)
+            .map_err(|e| panic!("could not build verifier: {e}"))
+            .unwrap();
+
+    // Subscribe to the gap channel before submitting any blocks.
+    let gap_rx = checkpoint_verifier.gap_receiver();
+
+    // Initially there is no gap signal (nothing queued yet).
+    assert_eq!(
+        *gap_rx.borrow(),
+        None,
+        "gap signal should be None before any blocks are submitted"
+    );
+
+    // Submit and await genesis (height 0) so the verifier advances past the genesis checkpoint.
+    {
+        let ready_svc = checkpoint_verifier
+            .ready()
+            .await
+            .expect("verifier should be ready");
+        timeout(
+            Duration::from_secs(VERIFY_TIMEOUT_SECONDS),
+            ready_svc.call(blockchain[0].0.clone()),
+        )
+        .await
+        .expect("genesis verify should not timeout")
+        .expect("genesis block should verify");
+    }
+
+    // After genesis verifies the verifier is waiting for blocks above height 0
+    // to continue toward checkpoint 4, so the signal is Some(Height(0)).
+    assert_eq!(
+        *gap_rx.borrow(),
+        Some(block::Height(0)),
+        "gap signal should be Some(0) after genesis verifies — waiting for block 1"
+    );
+
+    // Submit block 1 — contiguous from the previous checkpoint (height 0).
+    {
+        let ready_svc = checkpoint_verifier
+            .ready()
+            .await
+            .expect("verifier should be ready");
+        tokio::spawn(
+            timeout(
+                Duration::from_secs(VERIFY_TIMEOUT_SECONDS),
+                ready_svc.call(blockchain[1].0.clone()),
+            )
+            .in_current_span(),
+        );
+    }
+
+    // Submit block 2 — contiguous up to height 2.
+    {
+        let ready_svc = checkpoint_verifier
+            .ready()
+            .await
+            .expect("verifier should be ready");
+        tokio::spawn(
+            timeout(
+                Duration::from_secs(VERIFY_TIMEOUT_SECONDS),
+                ready_svc.call(blockchain[2].0.clone()),
+            )
+            .in_current_span(),
+        );
+    }
+
+    // Now submit block 4 (skipping block 3) — creates a gap after height 2.
+    {
+        let ready_svc = checkpoint_verifier
+            .ready()
+            .await
+            .expect("verifier should be ready");
+        tokio::spawn(
+            timeout(
+                Duration::from_secs(VERIFY_TIMEOUT_SECONDS),
+                ready_svc.call(blockchain[4].0.clone()),
+            )
+            .in_current_span(),
+        );
+    }
+
+    // After queuing block 4 with a gap at 3, the signal should be Some(Height(2)).
+    assert_eq!(
+        *gap_rx.borrow(),
+        Some(block::Height(2)),
+        "gap signal should report the highest contiguous height (2) while waiting for block 3"
+    );
+
+    // Now fill the gap by submitting block 3.
+    {
+        let ready_svc = checkpoint_verifier
+            .ready()
+            .await
+            .expect("verifier should be ready");
+        tokio::spawn(
+            timeout(
+                Duration::from_secs(VERIFY_TIMEOUT_SECONDS),
+                ready_svc.call(blockchain[3].0.clone()),
+            )
+            .in_current_span(),
+        );
+    }
+
+    // The gap is now filled; the signal should no longer be Some(Height(2)).
+    assert_ne!(
+        *gap_rx.borrow(),
+        Some(block::Height(2)),
+        "gap signal should change after block 3 fills the gap"
+    );
+}

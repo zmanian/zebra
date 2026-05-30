@@ -23,7 +23,7 @@ use std::{
 
 use futures::{Future, FutureExt, TryFutureExt};
 use thiserror::Error;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 use tower::{Service, ServiceExt};
 use tracing::instrument;
 
@@ -157,6 +157,12 @@ where
     /// passing the tip of the state.
     reset_sender: mpsc::Sender<Option<(block::Height, block::Hash)>>,
 
+    /// Publishes the highest contiguous queued height while the verifier is
+    /// waiting on a gap below the next checkpoint (`Some`), or `None` when
+    /// there is no gap. Used by the syncer to detect contiguity stalls.
+    /// Observability only — does not affect verification.
+    gap_sender: watch::Sender<Option<block::Height>>,
+
     /// Queued block height progress transmitter.
     #[cfg(feature = "progress-bar")]
     queued_blocks_bar: howudoin::Tx,
@@ -267,6 +273,8 @@ where
 
         let (sender, receiver) = mpsc::channel();
 
+        let (gap_sender, _gap_receiver) = watch::channel(None);
+
         #[cfg(feature = "progress-bar")]
         let queued_blocks_bar = howudoin::new_root().label("Checkpoint Queue Height");
 
@@ -283,6 +291,7 @@ where
             verifier_progress,
             reset_receiver: receiver,
             reset_sender: sender,
+            gap_sender,
             #[cfg(feature = "progress-bar")]
             queued_blocks_bar,
             #[cfg(feature = "progress-bar")]
@@ -296,6 +305,15 @@ where
         }
 
         verifier
+    }
+
+    /// Returns a receiver for the verifier's contiguity-gap signal.
+    ///
+    /// `Some(height)` means the verifier is waiting for the block at
+    /// `height + 1` to extend a contiguous range toward the next checkpoint;
+    /// `None` means no gap.
+    pub(crate) fn gap_receiver(&self) -> watch::Receiver<Option<block::Height>> {
+        self.gap_sender.subscribe()
     }
 
     /// Update diagnostics for queued blocks.
@@ -413,11 +431,15 @@ where
             BeforeGenesis if !self.queued.contains_key(&block::Height(0)) => {
                 tracing::trace!("Waiting for genesis block");
                 metrics::counter!("checkpoint.waiting.count").increment(1);
+                let _ = self.gap_sender.send(Some(block::Height(0)));
                 return WaitingForBlocks;
             }
             BeforeGenesis => block::Height(0),
             InitialTip(height) | PreviousCheckpoint(height) => height,
-            FinalCheckpoint => return FinishedVerifying,
+            FinalCheckpoint => {
+                let _ = self.gap_sender.send(None);
+                return FinishedVerifying;
+            }
         };
 
         // Find the end of the continuous sequence of blocks, starting at the
@@ -473,9 +495,18 @@ where
             metrics::counter!("checkpoint.waiting.count").increment(1);
         }
 
-        target_checkpoint
-            .map(Checkpoint)
-            .unwrap_or(WaitingForBlocks)
+        match target_checkpoint {
+            Some(height) => {
+                // A checkpoint range is ready to verify: no contiguity gap.
+                let _ = self.gap_sender.send(None);
+                Checkpoint(height)
+            }
+            None => {
+                // Waiting for more blocks above `pending_height`: report the gap.
+                let _ = self.gap_sender.send(Some(pending_height));
+                WaitingForBlocks
+            }
+        }
     }
 
     /// Return the most recently verified checkpoint's hash.
