@@ -22,7 +22,7 @@ use std::{
 
 use futures::{FutureExt, TryFutureExt};
 use thiserror::Error;
-use tokio::{sync::oneshot, task::JoinHandle};
+use tokio::{sync::{oneshot, watch}, task::JoinHandle};
 use tower::{buffer::Buffer, util::BoxService, Service, ServiceExt};
 use tracing::{instrument, Instrument, Span};
 
@@ -221,7 +221,8 @@ where
 ///
 /// Returns a block verifier, transaction verifier,
 /// a [`BackgroundTaskHandles`] with the state checkpoint verify task,
-/// and the maximum configured checkpoint verification height.
+/// the maximum configured checkpoint verification height,
+/// and a [`watch::Receiver`] for the checkpoint verifier's contiguity-gap signal.
 ///
 /// The consensus configuration is specified by `config`, and the Zcash network
 /// to verify blocks for is specified by `network`.
@@ -256,6 +257,7 @@ pub async fn init<S, Mempool>(
     >,
     BackgroundTaskHandles,
     Height,
+    watch::Receiver<Option<block::Height>>,
 )
 where
     S: Service<zs::Request, Response = zs::Response, Error = BoxError> + Send + Clone + 'static,
@@ -376,6 +378,7 @@ where
 
     let block = SemanticBlockVerifier::new(network, state_service.clone(), transaction.clone());
     let checkpoint = CheckpointVerifier::from_checkpoint_list(list, network, tip, state_service);
+    let checkpoint_gap_receiver = checkpoint.gap_receiver();
     let router = BlockVerifierRouter {
         checkpoint,
         max_checkpoint_height,
@@ -388,7 +391,7 @@ where
         state_checkpoint_verify_handle,
     };
 
-    (router, transaction, task_handles, max_checkpoint_height)
+    (router, transaction, task_handles, max_checkpoint_height, checkpoint_gap_receiver)
 }
 
 /// Parses the checkpoint list for `network` and `config`.
@@ -437,14 +440,16 @@ where
     S: Service<zs::Request, Response = zs::Response, Error = BoxError> + Send + Clone + 'static,
     S::Future: Send + 'static,
 {
-    init(
-        config.clone(),
-        network,
-        state_service.clone(),
-        oneshot::channel::<
-            Buffer<BoxService<mempool::Request, mempool::Response, BoxError>, mempool::Request>,
-        >()
-        .1,
-    )
-    .await
+    let (router, transaction, task_handles, max_checkpoint_height, _checkpoint_gap_receiver) =
+        init(
+            config.clone(),
+            network,
+            state_service.clone(),
+            oneshot::channel::<
+                Buffer<BoxService<mempool::Request, mempool::Response, BoxError>, mempool::Request>,
+            >()
+            .1,
+        )
+        .await;
+    (router, transaction, task_handles, max_checkpoint_height)
 }

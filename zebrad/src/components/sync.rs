@@ -388,6 +388,12 @@ where
     /// This is based on the downloaded block height and the state tip height.
     past_lookahead_limit_receiver: zs::WatchReceiver<bool>,
 
+    /// Signal from the checkpoint verifier: `Some(height)` while it waits on a
+    /// contiguity gap. Used to distinguish a gap stall from slow verification.
+    // TODO(#5709): consumed by stall detection in a later task
+    #[allow(dead_code)]
+    checkpoint_gap_receiver: watch::Receiver<Option<block::Height>>,
+
     /// Sender for reporting peer addresses that advertised unexpectedly invalid transactions.
     misbehavior_sender: mpsc::Sender<(PeerSocketAddr, u32)>,
 }
@@ -436,6 +442,7 @@ where
         state: ZS,
         latest_chain_tip: ZSTip,
         misbehavior_sender: mpsc::Sender<(PeerSocketAddr, u32)>,
+        checkpoint_gap_receiver: watch::Receiver<Option<block::Height>>,
     ) -> (Self, SyncStatus) {
         let mut download_concurrency_limit = config.sync.download_concurrency_limit;
         let mut checkpoint_verify_concurrency_limit =
@@ -525,6 +532,7 @@ where
             prospective_tips: HashSet::new(),
             recent_syncs,
             past_lookahead_limit_receiver,
+            checkpoint_gap_receiver,
             misbehavior_sender,
         };
 
