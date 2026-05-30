@@ -232,7 +232,6 @@ const STALL_RESTART_DELAY: Duration = Duration::from_secs(5);
 
 /// Minimum interval between successive stall restarts, to avoid thrashing
 /// when a region genuinely has no peer serving the missing block.
-#[allow(dead_code)] // TODO(#5709): used by stall detection/restart in a later task
 const MIN_STALL_RESTART_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Default value for [`Config::stall_restart_timeout`].
@@ -248,6 +247,42 @@ fn clamp_stall_restart_timeout(configured: Duration) -> Duration {
     } else {
         configured
     }
+}
+
+/// Pure decision: is the syncer wedged on a persistent checkpoint-contiguity gap?
+///
+/// Returns false if fast restart is disabled (`timeout == ZERO`).
+///
+/// A stall is only reported when all of these hold:
+///   - fast restart is enabled,
+///   - the download queue is saturated (no download progress to wait on),
+///   - the state tip has not advanced for at least `timeout` (`tip_frozen`),
+///   - we have not restarted too recently (`not_thrashing`), and
+///   - the checkpoint verifier still reports the SAME gap it did when the
+///     deadline was armed, i.e. it made no progress (`persistent_gap`).
+#[allow(clippy::too_many_arguments)]
+fn detect_gap_stall(
+    timeout: Duration,
+    now: tokio::time::Instant,
+    last_tip_advance: tokio::time::Instant,
+    last_stall_restart: tokio::time::Instant,
+    in_flight: usize,
+    saturation_threshold: usize,
+    gap_now: Option<block::Height>,
+    gap_snapshot: Option<block::Height>,
+) -> bool {
+    if timeout.is_zero() {
+        return false;
+    }
+
+    let saturated = in_flight >= saturation_threshold;
+    let tip_frozen = now.duration_since(last_tip_advance) >= timeout;
+    let not_thrashing = now.duration_since(last_stall_restart) >= MIN_STALL_RESTART_INTERVAL;
+    // A persistent gap: the verifier still reports the SAME gap it did when we
+    // armed the deadline (it made no progress), not merely any gap.
+    let persistent_gap = gap_now.is_some() && gap_now == gap_snapshot;
+
+    saturated && tip_frozen && not_thrashing && persistent_gap
 }
 
 /// Sync configuration section.
@@ -387,7 +422,6 @@ where
 
     /// The configured stall restart timeout, clamped below the block verify timeout.
     /// `Duration::ZERO` disables fast restart.
-    #[allow(dead_code)] // TODO(#5709): consumed by stall detection in a later task
     stall_restart_timeout: Duration,
 
     /// Whether the node is running on regtest. Used to apply a shorter sync restart delay.
@@ -433,15 +467,12 @@ where
 
     /// Signal from the checkpoint verifier: `Some(height)` while it waits on a
     /// contiguity gap. Used to distinguish a gap stall from slow verification.
-    // TODO(#5709): consumed by stall detection in a later task
-    #[allow(dead_code)]
     checkpoint_gap_receiver: watch::Receiver<Option<block::Height>>,
 
     /// Sender for reporting peer addresses that advertised unexpectedly invalid transactions.
     misbehavior_sender: mpsc::Sender<(PeerSocketAddr, u32)>,
 
     /// When the state tip last advanced, used for stall detection.
-    #[allow(dead_code)] // TODO(#5709): used by stall detection in the next task
     last_tip_advance: tokio::time::Instant,
 
     /// When the syncer last performed a stall restart, used to throttle restarts.
@@ -453,8 +484,6 @@ where
 enum SyncError {
     /// A persistent checkpoint-contiguity gap was detected while saturated.
     /// Restart immediately from the current tip.
-    // TODO(#5709): constructed by stall detection in the next task
-    #[allow(dead_code)]
     Stalled,
     /// Any other error. Restart after the normal delay.
     Other(color_eyre::Report),
@@ -514,6 +543,7 @@ where
     ///  - latest_chain_tip: the latest chain tip from `state`
     ///
     /// Also returns a [`SyncStatus`] to check if the syncer has likely reached the chain tip.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: &ZebradConfig,
         max_checkpoint_height: Height,
@@ -692,6 +722,10 @@ where
     async fn try_to_sync(&mut self) -> Result<(), SyncError> {
         self.prospective_tips = HashSet::new();
 
+        // Start the stall clock fresh for this run, so a long-running previous
+        // run doesn't immediately trip the stall deadline on the first wait.
+        self.last_tip_advance = tokio::time::Instant::now();
+
         info!(
             state_tip = ?self.latest_chain_tip.best_tip_height(),
             "starting sync, obtaining new tips"
@@ -761,9 +795,50 @@ where
                 "waiting for pending blocks",
             );
 
-            let response = self.downloads.next().await.expect("downloads is nonempty");
+            let timeout = self.stall_restart_timeout;
+            let response = if !timeout.is_zero() {
+                // Snapshot the gap before waiting, so we can later tell whether
+                // the verifier made progress (gap changed) or stayed wedged on
+                // the same gap (a persistent stall). The borrow guard must drop
+                // before any `&mut self` call below.
+                let gap_snapshot = *self.checkpoint_gap_receiver.borrow();
+                let deadline = self.last_tip_advance + timeout;
 
+                match tokio::time::timeout_at(deadline, self.downloads.next()).await {
+                    Ok(response) => response.expect("downloads is nonempty"),
+                    Err(_elapsed) => {
+                        let now = tokio::time::Instant::now();
+                        if self.is_gap_stalled(extra_hashes.len(), gap_snapshot, now) {
+                            warn!(
+                                gap_height = ?self
+                                    .checkpoint_gap_receiver
+                                    .borrow()
+                                    .map(|h| (h + 1).expect("gap height + 1 is valid")),
+                                state_tip = ?self.latest_chain_tip.best_tip_height(),
+                                in_flight = self.downloads.in_flight(),
+                                lookahead_limit = self.lookahead_limit(extra_hashes.len()),
+                                "syncer stalled on checkpoint gap; restarting from tip",
+                            );
+                            return Err(SyncError::Stalled);
+                        }
+
+                        // Not a gap stall (the verifier is progressing, or a
+                        // complete range is verifying slowly): treat the elapsed
+                        // deadline as a liveness tick and re-arm it for the next
+                        // wait, then keep waiting for pending blocks.
+                        self.last_tip_advance = now;
+                        continue;
+                    }
+                }
+            } else {
+                self.downloads.next().await.expect("downloads is nonempty")
+            };
+
+            let before = self.latest_chain_tip.best_tip_height();
             self.handle_block_response(response)?;
+            if self.latest_chain_tip.best_tip_height() > before {
+                self.last_tip_advance = tokio::time::Instant::now();
+            }
             self.update_metrics();
         }
 
@@ -798,6 +873,30 @@ where
         self.update_metrics();
 
         Ok(extra_hashes)
+    }
+
+    /// Reads the current syncer state and decides whether it is wedged on a
+    /// persistent checkpoint-contiguity gap.
+    ///
+    /// Delegates to the pure [`detect_gap_stall`] function. The saturation
+    /// threshold is half the current lookahead limit, matching the
+    /// past-lookahead-limit pause condition in [`Self::try_to_sync_once`].
+    fn is_gap_stalled(
+        &mut self,
+        extra_hashes_len: usize,
+        gap_snapshot: Option<block::Height>,
+        now: tokio::time::Instant,
+    ) -> bool {
+        detect_gap_stall(
+            self.stall_restart_timeout,
+            now,
+            self.last_tip_advance,
+            self.last_stall_restart,
+            self.downloads.in_flight(),
+            self.lookahead_limit(extra_hashes_len) / 2,
+            *self.checkpoint_gap_receiver.borrow(),
+            gap_snapshot,
+        )
     }
 
     /// Given a block_locator list fan out request for subsequent hashes to

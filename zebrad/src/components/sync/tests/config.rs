@@ -23,10 +23,7 @@ fn stall_restart_timeout_round_trips() {
     let _init_guard = zebra_test::init();
 
     let c: super::super::Config = toml::from_str("stall_restart_timeout = \"120s\"").unwrap();
-    assert_eq!(
-        c.stall_restart_timeout,
-        std::time::Duration::from_secs(120)
-    );
+    assert_eq!(c.stall_restart_timeout, std::time::Duration::from_secs(120));
 }
 
 #[test]
