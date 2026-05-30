@@ -271,9 +271,23 @@ fn clamp_stall_restart_timeout(configured: Duration) -> Duration {
 ///   - fast restart is enabled,
 ///   - the download queue is saturated (no download progress to wait on),
 ///   - the state tip has not advanced for at least `timeout` (`tip_frozen`),
-///   - we have not restarted too recently (`not_thrashing`), and
+///   - we have not restarted too recently (`not_thrashing`),
 ///   - the checkpoint verifier still reports the SAME gap it did when the
-///     deadline was armed, i.e. it made no progress (`persistent_gap`).
+///     deadline was armed (`persistent_gap`), and
+///   - the verifier made no progress of any kind since the deadline was armed
+///     (`verifier_inert`).
+///
+/// The `verifier_inert` condition is what separates a genuine wedge from a
+/// busy-but-slow verifier. In the sandblasting era a single checkpoint range
+/// can take minutes to download and verify, so the contiguity frontier (the
+/// gap) stays static for far longer than `timeout` while the verifier is still
+/// doing useful work. The verifier publishes a monotonic liveness counter that
+/// ticks whenever it queues a block (`queue_block`) or verifies one
+/// (`process_checkpoint_range`); if that counter advanced, restarting would
+/// only cancel in-progress work and doom-loop, so we do not treat it as a stall.
+/// The original wedge (a block made un-routable by inventory poisoning) leaves
+/// the verifier genuinely inert at ~0% CPU, so the counter stays put and the
+/// stall is still detected.
 #[allow(clippy::too_many_arguments)]
 fn detect_gap_stall(
     timeout: Duration,
@@ -284,6 +298,8 @@ fn detect_gap_stall(
     saturation_threshold: usize,
     gap_now: Option<block::Height>,
     gap_snapshot: Option<block::Height>,
+    verifier_liveness_now: u64,
+    verifier_liveness_snapshot: u64,
 ) -> bool {
     if timeout.is_zero() {
         return false;
@@ -295,8 +311,12 @@ fn detect_gap_stall(
     // A persistent gap: the verifier still reports the SAME gap it did when we
     // armed the deadline (it made no progress), not merely any gap.
     let persistent_gap = gap_now.is_some() && gap_now == gap_snapshot;
+    // The verifier did no work (queued or verified no blocks) since the deadline
+    // was armed. A busy-but-slow verifier advances this counter even while the
+    // frontier is static, so restarting it would doom-loop.
+    let verifier_inert = verifier_liveness_now == verifier_liveness_snapshot;
 
-    saturated && tip_frozen && not_thrashing && persistent_gap
+    saturated && tip_frozen && not_thrashing && persistent_gap && verifier_inert
 }
 
 /// Sync configuration section.
@@ -481,7 +501,7 @@ where
 
     /// Signal from the checkpoint verifier: `Some(height)` while it waits on a
     /// contiguity gap. Used to distinguish a gap stall from slow verification.
-    checkpoint_gap_receiver: watch::Receiver<Option<block::Height>>,
+    checkpoint_gap_receiver: watch::Receiver<(Option<block::Height>, u64)>,
 
     /// Sender for reporting peer addresses that advertised unexpectedly invalid transactions.
     misbehavior_sender: mpsc::Sender<(PeerSocketAddr, u32)>,
@@ -566,7 +586,7 @@ where
         state: ZS,
         latest_chain_tip: ZSTip,
         misbehavior_sender: mpsc::Sender<(PeerSocketAddr, u32)>,
-        checkpoint_gap_receiver: watch::Receiver<Option<block::Height>>,
+        checkpoint_gap_receiver: watch::Receiver<(Option<block::Height>, u64)>,
     ) -> (Self, SyncStatus) {
         let mut download_concurrency_limit = config.sync.download_concurrency_limit;
         let mut checkpoint_verify_concurrency_limit =
@@ -820,24 +840,31 @@ where
 
             let timeout = self.stall_restart_timeout;
             let response = if !timeout.is_zero() {
-                // Snapshot the gap before waiting, so we can later tell whether
-                // the verifier made progress (gap changed) or stayed wedged on
-                // the same gap (a persistent stall). The borrow guard must drop
-                // before any `&mut self` call below.
-                let gap_snapshot = *self.checkpoint_gap_receiver.borrow();
+                // Snapshot the gap AND the verifier-liveness counter before
+                // waiting, so we can later tell whether the verifier made
+                // progress (gap changed, or it queued/verified blocks) or stayed
+                // genuinely wedged (a persistent stall). The borrow guard must
+                // drop before any `&mut self` call below.
+                let (gap_snapshot, liveness_snapshot) = *self.checkpoint_gap_receiver.borrow();
                 let deadline = self.last_tip_advance + timeout;
 
                 match tokio::time::timeout_at(deadline, self.downloads.next()).await {
                     Ok(response) => response.expect("downloads is nonempty"),
                     Err(_elapsed) => {
                         let now = tokio::time::Instant::now();
-                        if self.is_gap_stalled(extra_hashes.len(), gap_snapshot, now) {
+                        if self.is_gap_stalled(
+                            extra_hashes.len(),
+                            gap_snapshot,
+                            liveness_snapshot,
+                            now,
+                        ) {
                             // The verifier reports the height it last has; the
                             // missing block is the next one. Use the raw number
                             // (not Height + 1, which can be None at Height::MAX)
                             // so this logging-only path never panics. Read the
                             // borrow into a local so its guard drops first.
-                            let gap_height = self.checkpoint_gap_receiver.borrow().map(|h| h.0 + 1);
+                            let gap_height =
+                                self.checkpoint_gap_receiver.borrow().0.map(|h| h.0 + 1);
                             warn!(
                                 ?gap_height,
                                 state_tip = ?self.latest_chain_tip.best_tip_height(),
@@ -911,8 +938,10 @@ where
         &mut self,
         extra_hashes_len: usize,
         gap_snapshot: Option<block::Height>,
+        liveness_snapshot: u64,
         now: tokio::time::Instant,
     ) -> bool {
+        let (gap_now, liveness_now) = *self.checkpoint_gap_receiver.borrow();
         detect_gap_stall(
             self.stall_restart_timeout,
             now,
@@ -920,8 +949,10 @@ where
             self.last_stall_restart,
             self.downloads.in_flight(),
             self.lookahead_limit(extra_hashes_len) / 2,
-            *self.checkpoint_gap_receiver.borrow(),
+            gap_now,
             gap_snapshot,
+            liveness_now,
+            liveness_snapshot,
         )
     }
 

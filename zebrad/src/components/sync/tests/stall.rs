@@ -5,8 +5,9 @@ use std::time::Duration;
 use tokio::time::Instant;
 use zebra_chain::block::Height;
 
-/// All conditions true: frozen tip, saturated queue, not thrashing, and a
-/// persistent (unchanged) gap. This must be detected as a stall.
+/// All conditions true: frozen tip, saturated queue, not thrashing, a
+/// persistent (unchanged) gap, and an inert verifier. This must be detected as
+/// a stall.
 #[test]
 fn gap_stall_detected_when_frozen_saturated_gap_unchanged() {
     let now = Instant::now();
@@ -21,6 +22,8 @@ fn gap_stall_detected_when_frozen_saturated_gap_unchanged() {
         500,                           // saturation_threshold
         Some(Height(1000)),            // gap_now
         Some(Height(1000)),            // gap_snapshot (unchanged)
+        7,                             // verifier_liveness_now
+        7,                             // verifier_liveness_snapshot (inert: unchanged)
     );
 
     assert!(
@@ -44,6 +47,8 @@ fn no_stall_when_disabled() {
         500,
         Some(Height(1000)),
         Some(Height(1000)),
+        7,
+        7,
     );
 
     assert!(!detected, "ZERO timeout disables fast restart");
@@ -65,6 +70,8 @@ fn no_stall_when_no_gap() {
         500,
         None, // gap_now
         None, // gap_snapshot
+        7,
+        7,
     );
 
     assert!(!detected, "no gap means no gap stall");
@@ -86,6 +93,8 @@ fn no_stall_when_gap_changed() {
         500,
         Some(Height(1001)), // gap_now (advanced)
         Some(Height(1000)), // gap_snapshot
+        7,
+        7,
     );
 
     assert!(!detected, "a changed gap means the verifier made progress");
@@ -107,6 +116,8 @@ fn no_stall_when_not_saturated() {
         500, // saturation_threshold
         Some(Height(1000)),
         Some(Height(1000)),
+        7,
+        7,
     );
 
     assert!(!detected, "an unsaturated queue is not a stall");
@@ -128,6 +139,8 @@ fn no_stall_when_thrashing() {
         500,
         Some(Height(1000)),
         Some(Height(1000)),
+        7,
+        7,
     );
 
     assert!(!detected, "a recent restart should throttle the next one");
@@ -149,7 +162,44 @@ fn no_stall_when_tip_recently_advanced() {
         500,
         Some(Height(1000)),
         Some(Height(1000)),
+        7,
+        7,
     );
 
     assert!(!detected, "a recently advanced tip is not a stall");
+}
+
+/// EXPERIMENTAL (#5709): a busy-but-slow verifier must NOT be restarted.
+///
+/// This is the sandblasting doom-loop regression. Every time-based condition
+/// reads like a stall — the tip is frozen past the timeout, the queue is
+/// saturated, we are not thrashing, and the contiguity frontier (the gap) is
+/// unchanged — because a single sandblasting-era checkpoint range can take
+/// minutes to download and verify. But the verifier-liveness counter advanced
+/// (it queued/verified blocks in the meantime), so the verifier is busy, not
+/// wedged. Restarting here would cancel the in-progress work and doom-loop
+/// (observed as ~4,199 wholesale download cancellations on a live node), so this
+/// must NOT be detected as a stall.
+#[test]
+fn no_stall_when_verifier_made_progress() {
+    let now = Instant::now();
+    let timeout = Duration::from_secs(90);
+
+    let detected = super::super::detect_gap_stall(
+        timeout,
+        now,
+        now - Duration::from_secs(90),  // tip frozen past timeout
+        now - Duration::from_secs(600), // not thrashing
+        999,                            // saturated
+        500,
+        Some(Height(1000)), // gap_now
+        Some(Height(1000)), // gap_snapshot (frontier static)
+        42,                 // verifier_liveness_now
+        7,                  // verifier_liveness_snapshot (advanced => busy)
+    );
+
+    assert!(
+        !detected,
+        "a verifier that advanced its liveness counter is busy, not wedged",
+    );
 }

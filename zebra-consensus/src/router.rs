@@ -22,7 +22,10 @@ use std::{
 
 use futures::{FutureExt, TryFutureExt};
 use thiserror::Error;
-use tokio::{sync::{oneshot, watch}, task::JoinHandle};
+use tokio::{
+    sync::{oneshot, watch},
+    task::JoinHandle,
+};
 use tower::{buffer::Buffer, util::BoxService, Service, ServiceExt};
 use tracing::{instrument, Instrument, Span};
 
@@ -257,7 +260,7 @@ pub async fn init<S, Mempool>(
     >,
     BackgroundTaskHandles,
     Height,
-    watch::Receiver<Option<block::Height>>,
+    watch::Receiver<(Option<block::Height>, u64)>,
 )
 where
     S: Service<zs::Request, Response = zs::Response, Error = BoxError> + Send + Clone + 'static,
@@ -391,7 +394,13 @@ where
         state_checkpoint_verify_handle,
     };
 
-    (router, transaction, task_handles, max_checkpoint_height, checkpoint_gap_receiver)
+    (
+        router,
+        transaction,
+        task_handles,
+        max_checkpoint_height,
+        checkpoint_gap_receiver,
+    )
 }
 
 /// Parses the checkpoint list for `network` and `config`.

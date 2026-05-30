@@ -863,9 +863,10 @@ async fn checkpoint_gap_signal_reports_contiguous_height() {
     // Subscribe to the gap channel before submitting any blocks.
     let mut gap_rx = checkpoint_verifier.gap_receiver();
 
-    // Initially there is no gap signal (nothing queued yet).
+    // Initially there is no gap signal (nothing queued yet). `.0` is the gap;
+    // `.1` is the verifier-liveness counter, which we ignore here.
     assert_eq!(
-        *gap_rx.borrow(),
+        gap_rx.borrow().0,
         None,
         "gap signal should be None before any blocks are submitted"
     );
@@ -888,7 +889,7 @@ async fn checkpoint_gap_signal_reports_contiguous_height() {
     // After genesis verifies the verifier is waiting for blocks above height 0
     // to continue toward checkpoint 4, so the signal is Some(Height(0)).
     assert_eq!(
-        *gap_rx.borrow(),
+        gap_rx.borrow().0,
         Some(block::Height(0)),
         "gap signal should be Some(0) after genesis verifies — waiting for block 1"
     );
@@ -945,7 +946,7 @@ async fn checkpoint_gap_signal_reports_contiguous_height() {
     // wait for the signal value instead of reading it synchronously.
     timeout(
         Duration::from_secs(VERIFY_TIMEOUT_SECONDS),
-        gap_rx.wait_for(|v| *v == Some(block::Height(2))),
+        gap_rx.wait_for(|v| v.0 == Some(block::Height(2))),
     )
     .await
     .expect("gap signal should reach Some(2)")
@@ -971,7 +972,7 @@ async fn checkpoint_gap_signal_reports_contiguous_height() {
     // no longer a gap and the signal becomes None.
     timeout(
         Duration::from_secs(VERIFY_TIMEOUT_SECONDS),
-        gap_rx.wait_for(|v| v.is_none()),
+        gap_rx.wait_for(|v| v.0.is_none()),
     )
     .await
     .expect("gap signal should become None once the 0..=4 range completes")
