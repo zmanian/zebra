@@ -166,7 +166,14 @@ where
     /// As a special case during initial bootstrap, `Some(Height(0))` means
     /// genesis (height 0) itself has not been queued yet. `None` means there
     /// is no gap.
-    gap_sender: watch::Sender<Option<block::Height>>,
+    ///
+    /// The second tuple element is a monotonic liveness counter that ticks
+    /// whenever the verifier does work — queues a block (`queue_block`) or
+    /// verifies one (`process_checkpoint_range`). The syncer uses it to tell a
+    /// busy-but-slow verifier (a static frontier while it grinds through
+    /// expensive sandblasting-era blocks) apart from a genuine wedge, so it
+    /// doesn't restart and doom-loop a verifier that is still making progress.
+    gap_sender: watch::Sender<(Option<block::Height>, u64)>,
 
     /// Queued block height progress transmitter.
     #[cfg(feature = "progress-bar")]
@@ -278,7 +285,7 @@ where
 
         let (sender, receiver) = mpsc::channel();
 
-        let (gap_sender, _gap_receiver) = watch::channel(None);
+        let (gap_sender, _gap_receiver) = watch::channel((None, 0));
 
         #[cfg(feature = "progress-bar")]
         let queued_blocks_bar = howudoin::new_root().label("Checkpoint Queue Height");
@@ -314,13 +321,25 @@ where
 
     /// Returns a receiver for the verifier's contiguity-gap signal.
     ///
-    /// `Some(height)` means the verifier has a contiguous run up to `height`
-    /// and is waiting for `height + 1` to extend toward the next checkpoint.
-    /// As a special case during initial bootstrap, `Some(Height(0))` means
-    /// genesis (height 0) itself has not been queued yet. `None` means there
-    /// is no gap.
-    pub(crate) fn gap_receiver(&self) -> watch::Receiver<Option<block::Height>> {
+    /// The first tuple element is the gap: `Some(height)` means the verifier has
+    /// a contiguous run up to `height` and is waiting for `height + 1` to extend
+    /// toward the next checkpoint. As a special case during initial bootstrap,
+    /// `Some(Height(0))` means genesis (height 0) itself has not been queued yet.
+    /// `None` means there is no gap.
+    ///
+    /// The second tuple element is a monotonic verifier-liveness counter (see
+    /// the `gap_sender` field docs).
+    pub(crate) fn gap_receiver(&self) -> watch::Receiver<(Option<block::Height>, u64)> {
         self.gap_sender.subscribe()
+    }
+
+    /// Ticks the verifier-liveness counter, leaving the gap unchanged.
+    ///
+    /// Called wherever the verifier does work — queues or verifies a block — so
+    /// the syncer can tell a busy-but-slow verifier apart from a wedge.
+    fn tick_liveness(&self) {
+        self.gap_sender
+            .send_modify(|(_gap, liveness)| *liveness = liveness.wrapping_add(1));
     }
 
     /// Update diagnostics for queued blocks.
@@ -439,13 +458,14 @@ where
                 tracing::trace!("Waiting for genesis block");
                 metrics::counter!("checkpoint.waiting.count").increment(1);
                 // waiting for genesis (height 0) itself
-                let _ = self.gap_sender.send(Some(block::Height(0)));
+                self.gap_sender
+                    .send_modify(|(gap, _)| *gap = Some(block::Height(0)));
                 return WaitingForBlocks;
             }
             BeforeGenesis => block::Height(0),
             InitialTip(height) | PreviousCheckpoint(height) => height,
             FinalCheckpoint => {
-                let _ = self.gap_sender.send(None);
+                self.gap_sender.send_modify(|(gap, _)| *gap = None);
                 return FinishedVerifying;
             }
         };
@@ -506,12 +526,13 @@ where
         match target_checkpoint {
             Some(height) => {
                 // A checkpoint range is ready to verify: no contiguity gap.
-                let _ = self.gap_sender.send(None);
+                self.gap_sender.send_modify(|(gap, _)| *gap = None);
                 Checkpoint(height)
             }
             None => {
                 // Waiting for more blocks above `pending_height`: report the gap.
-                let _ = self.gap_sender.send(Some(pending_height));
+                self.gap_sender
+                    .send_modify(|(gap, _)| *gap = Some(pending_height));
                 WaitingForBlocks
             }
         }
@@ -740,6 +761,11 @@ where
 
         self.queued_block_diagnostics(height, hash);
 
+        // Verifier liveness: a freshly downloaded, deserialized, and checked
+        // block reached the queue. This tick lets the syncer see download/parse
+        // progress even while the contiguity frontier is static (#5709).
+        self.tick_liveness();
+
         Ok(req_block)
     }
 
@@ -932,6 +958,12 @@ where
             // Sending can fail, but there's nothing we can do about it.
             let _ = qblock.tx.send(Ok(qblock.block.hash));
         }
+
+        // Verifier liveness: a whole checkpoint range committed. Tick once per
+        // verified block so the syncer sees verify-side progress, not only the
+        // download/queue progress from `queue_block` (#5709).
+        self.gap_sender
+            .send_modify(|(_gap, liveness)| *liveness = liveness.wrapping_add(block_count as u64));
 
         // Finally, update the checkpoint bounds
         self.update_progress(target_checkpoint_height);

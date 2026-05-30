@@ -168,7 +168,7 @@ fn request_genesis_is_rate_limited() {
 
     // start the sync
     let (misbehavior_tx, _misbehavior_rx) = tokio::sync::mpsc::channel(1);
-    let (_checkpoint_gap_sender, checkpoint_gap_receiver) = tokio::sync::watch::channel(None);
+    let (_checkpoint_gap_sender, checkpoint_gap_receiver) = tokio::sync::watch::channel((None, 0));
     let (mut chain_sync, _) = ChainSync::new(
         &ZebradConfig::default(),
         Height(0),

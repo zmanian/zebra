@@ -1206,7 +1206,7 @@ fn setup() -> (
     let (mock_chain_tip, mock_chain_tip_sender) = MockChainTip::new();
 
     let (misbehavior_tx, _misbehavior_rx) = tokio::sync::mpsc::channel(1);
-    let (_checkpoint_gap_sender, checkpoint_gap_receiver) = tokio::sync::watch::channel(None);
+    let (_checkpoint_gap_sender, checkpoint_gap_receiver) = tokio::sync::watch::channel((None, 0));
     let (chain_sync, sync_status) = ChainSync::new(
         &config,
         Height(0),
@@ -1260,7 +1260,7 @@ fn setup_for_stall(
 ) -> (
     MockChainSync,
     // Drives the verifier contiguity-gap signal.
-    tokio::sync::watch::Sender<Option<block::Height>>,
+    tokio::sync::watch::Sender<(Option<block::Height>, u64)>,
     // BlockVerifierRouter
     MockService<zebra_consensus::Request, block::Hash, PanicAssertion>,
     // PeerSet
@@ -1294,7 +1294,7 @@ fn setup_for_stall(
     let (mock_chain_tip, mock_chain_tip_sender) = MockChainTip::new();
 
     let (misbehavior_tx, _misbehavior_rx) = tokio::sync::mpsc::channel(1);
-    let (checkpoint_gap_sender, checkpoint_gap_receiver) = tokio::sync::watch::channel(None);
+    let (checkpoint_gap_sender, checkpoint_gap_receiver) = tokio::sync::watch::channel((None, 0));
 
     let (chain_sync, _sync_status) = ChainSync::new(
         &config,
@@ -1372,7 +1372,7 @@ async fn syncer_fast_restarts_on_persistent_gap_stall() {
     // The verifier is wedged on a persistent contiguity gap. The tip is left
     // frozen at genesis (`best_tip_height == None`), so it never advances.
     gap_sender
-        .send(Some(Height(1_000)))
+        .send((Some(Height(1_000)), 0))
         .expect("gap receiver is held by the syncer");
 
     // Saturate the in-flight queue. In full-verify phase the lookahead limit is
@@ -1417,6 +1417,60 @@ async fn syncer_fast_restarts_on_persistent_gap_stall() {
     block_verifier_router.expect_no_requests().await;
 }
 
+/// EXPERIMENTAL (#5709): the sandblasting doom-loop, end to end.
+///
+/// Mirror of [`syncer_fast_restarts_on_persistent_gap_stall`], except the
+/// verifier ticks its liveness counter during the wait — exactly what a verifier
+/// grinding through expensive sandblasting-era blocks does while the contiguity
+/// frontier stays static. The deadline still fires, but `is_gap_stalled` sees the
+/// advanced liveness counter, so the loop must NOT return `Stalled`: it re-arms
+/// and keeps waiting instead of cancelling the in-progress work and doom-looping
+/// (the failure observed on a live node as ~4,199 wholesale cancellations).
+#[tokio::test(start_paused = true)]
+async fn syncer_does_not_restart_when_verifier_is_busy() {
+    let stall_restart_timeout = Duration::from_secs(10);
+
+    let (mut chain_sync, gap_sender, _block_verifier_router, _peer_set, _state, _tip_sender) =
+        setup_for_stall(stall_restart_timeout);
+
+    // Same wedge surface as the stall test: a persistent gap and a frozen tip.
+    gap_sender
+        .send((Some(Height(1_000)), 0))
+        .expect("gap receiver is held by the syncer");
+
+    let lookahead_limit = ZebradConfig::default().sync.full_verify_concurrency_limit;
+    saturate_in_flight(&mut chain_sync, lookahead_limit).await;
+
+    let stall_task = tokio::spawn(async move {
+        matches!(
+            chain_sync.try_to_sync_once(IndexSet::new()).await,
+            Err(super::super::SyncError::Stalled)
+        )
+    });
+
+    // Let the loop reach the `timeout_at` await and snapshot (gap, liveness).
+    tokio::task::yield_now().await;
+
+    // The verifier does work mid-wait: tick the liveness counter. The gap is
+    // left unchanged, so the frontier is still static — exactly the sandblasting
+    // case where progress is happening below the contiguity frontier.
+    gap_sender.send_modify(|(_gap, liveness)| *liveness += 1);
+
+    // Advance past the deadline. The timeout fires, but the advanced liveness
+    // counter means the verifier is busy, not wedged, so the loop re-arms and
+    // keeps waiting rather than returning `Stalled`.
+    tokio::time::advance(Duration::from_secs(60)).await;
+    tokio::task::yield_now().await;
+    tokio::task::yield_now().await;
+
+    assert!(
+        !stall_task.is_finished(),
+        "a verifier that advanced its liveness counter must not be restarted (no doom-loop)",
+    );
+
+    stall_task.abort();
+}
+
 /// Regression for the "gap changed once, then persistent" narrative (Codex's
 /// suggestion): a verifier that made progress during a window must NOT trip the
 /// stall, but once the gap becomes persistent the same inputs must.
@@ -1448,6 +1502,8 @@ fn gap_changed_then_persistent_only_stalls_once_persistent() {
         saturation_threshold,
         Some(Height(1_001)), // gap_now advanced
         Some(Height(1_000)), // gap_snapshot
+        0,                   // verifier_liveness_now
+        0,                   // verifier_liveness_snapshot (inert: isolate the gap logic)
     );
     assert!(
         !changed,
@@ -1465,6 +1521,8 @@ fn gap_changed_then_persistent_only_stalls_once_persistent() {
         saturation_threshold,
         Some(Height(1_001)), // gap_now unchanged this window
         Some(Height(1_001)), // gap_snapshot matches
+        5,                   // verifier_liveness_now
+        5,                   // verifier_liveness_snapshot (inert: verifier made no progress)
     );
     assert!(
         persistent,
