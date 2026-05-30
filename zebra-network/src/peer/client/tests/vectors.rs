@@ -261,3 +261,63 @@ fn missing_inv_collector_ignores_local_registry_errors() {
     let recv_result = inv_receiver.try_recv();
     assert_eq!(recv_result, Err(broadcast::error::TryRecvError::Empty));
 }
+
+/// EXPERIMENTAL (#5709): MissingInventoryCollector must NOT record missing
+/// inventory for a dropped connection. `ConnectionClosed` is transient and is not
+/// evidence the peer lacks the block; recording it poisons inventory routing
+/// (`route_inv` avoids peers marked missing) and can make a block un-routable
+/// across all peers, permanently stalling checkpoint sync.
+#[test]
+fn missing_inv_collector_ignores_connection_closed() {
+    let _init_guard = zebra_test::init();
+
+    let block_hash = block::Hash([0; 32]);
+    let request = Request::BlocksByHash(iter::once(block_hash).collect());
+    let response = Err(SharedPeerError::from(PeerError::ConnectionClosed));
+
+    let (inv_collector, mut inv_receiver) = broadcast::channel(1);
+    let transient_addr = "0.0.0.0:0".parse().unwrap();
+    let _inv_channel_guard = inv_collector.clone();
+
+    let missing_inv =
+        MissingInventoryCollector::new(&request, Some(inv_collector), Some(transient_addr))
+            .expect("unexpected invalid collector: arguments should be valid");
+
+    missing_inv.send(&response);
+
+    let recv_result = inv_receiver.try_recv();
+    assert_eq!(
+        recv_result,
+        Err(broadcast::error::TryRecvError::Empty),
+        "ConnectionClosed must not record missing inventory"
+    );
+}
+
+/// A genuine `NotFoundResponse` (the peer told us it doesn't have the block) still
+/// records missing inventory — preserved by the transient-error carve-out above.
+#[test]
+fn missing_inv_collector_records_notfound_response() {
+    let _init_guard = zebra_test::init();
+
+    let block_hash = block::Hash([0; 32]);
+    let request = Request::BlocksByHash(iter::once(block_hash).collect());
+    let response = Err(SharedPeerError::from(PeerError::NotFoundResponse(vec![
+        InventoryHash::from(block_hash),
+    ])));
+
+    let (inv_collector, mut inv_receiver) = broadcast::channel(1);
+    let transient_addr = "0.0.0.0:0".parse().unwrap();
+    let _inv_channel_guard = inv_collector.clone();
+
+    let missing_inv =
+        MissingInventoryCollector::new(&request, Some(inv_collector), Some(transient_addr))
+            .expect("unexpected invalid collector: arguments should be valid");
+
+    missing_inv.send(&response);
+
+    let recv_result = inv_receiver.try_recv();
+    assert!(
+        recv_result.is_ok(),
+        "NotFoundResponse should still record missing inventory"
+    );
+}
