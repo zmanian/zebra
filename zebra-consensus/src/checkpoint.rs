@@ -469,11 +469,11 @@ where
                 pending_height = height;
             } else {
                 let gap = height.0 - pending_height.0;
-                // Try to log a useful message when checkpointing has issues
-                tracing::trace!(contiguous_height = ?pending_height,
+                tracing::info!(target: "dbg5709",
+                                contiguous_height = ?pending_height,
                                 next_height = ?height,
                                 ?gap,
-                                "Waiting for more checkpoint blocks");
+                                "VERIFIER waiting: next needed height is contiguous_height + 1");
                 break;
             }
         }

@@ -334,7 +334,9 @@ where
         &mut self,
         hash: block::Hash,
     ) -> Result<(), BlockDownloadVerifyError> {
+        tracing::info!(target: "dbg5709", %hash, "REQUEST: download_and_verify called");
         if self.cancel_handles.contains_key(&hash) {
+            tracing::info!(target: "dbg5709", %hash, "REQUEST: skipped (already in-flight duplicate)");
             metrics::counter!("sync.already.queued.dropped.block.hash.count").increment(1);
             return Err(BlockDownloadVerifyError::DuplicateBlockQueuedForDownload { hash });
         }
@@ -377,6 +379,7 @@ where
                         metrics::counter!("sync.cancelled.download.count").increment(1);
                         metrics::histogram!("sync.block.download.duration_seconds", "result" => "cancelled")
                             .record(download_start.elapsed().as_secs_f64());
+                        tracing::info!(target: "dbg5709", %hash, "REQUEST: cancelled during download");
                         return Err(BlockDownloadVerifyError::CancelledDuringDownload { hash })
                     }
                     rsp = block_req => rsp.map_err(|error| BlockDownloadVerifyError::DownloadFailed { error, hash})?,
@@ -400,6 +403,7 @@ where
                 metrics::counter!("sync.downloaded.block.count").increment(1);
                 metrics::histogram!("sync.block.download.duration_seconds", "result" => "success")
                     .record(download_start.elapsed().as_secs_f64());
+                tracing::info!(target: "dbg5709", height = ?block.coinbase_height(), %hash, "downloaded");
 
                 // Security & Performance: reject blocks that are too far ahead of our tip.
                 // Avoids denial of service attacks, and reduces wasted work on high blocks
