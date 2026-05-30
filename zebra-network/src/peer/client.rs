@@ -393,8 +393,16 @@ impl MissingInventoryCollector {
             // due to TracedError.
             (_, Err(e)) if e.inner_debug().contains("NotFoundRegistry") => iter::empty().collect(),
 
-            // Missing inventory from other errors, including NotFoundResponse, timeouts,
-            // and dropped connections.
+            // EXPERIMENTAL (#5709): a dropped connection is a transient failure, not
+            // evidence the peer lacks the inventory. Recording missing inventory here
+            // poisons inventory routing for that hash — `route_inv` avoids peers marked
+            // missing, so a handful of transient `ConnectionClosed`s can make a single
+            // block un-routable across every peer and permanently stall checkpoint sync.
+            // Timeouts and `NotFoundResponse` still record missing inventory below, to
+            // keep tracking missing blocks for peers that don't send `notfound`.
+            (_, Err(e)) if e.inner_debug().contains("ConnectionClosed") => iter::empty().collect(),
+
+            // Missing inventory from other errors, including NotFoundResponse and timeouts.
             (request, Err(_)) => {
                 // The request either contains blocks or transactions,
                 // but this is a convenient way to collect them both.
