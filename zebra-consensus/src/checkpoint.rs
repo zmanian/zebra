@@ -469,11 +469,11 @@ where
                 pending_height = height;
             } else {
                 let gap = height.0 - pending_height.0;
-                // Try to log a useful message when checkpointing has issues
-                tracing::trace!(contiguous_height = ?pending_height,
+                tracing::info!(target: "dbg5709",
+                                contiguous_height = ?pending_height,
                                 next_height = ?height,
                                 ?gap,
-                                "Waiting for more checkpoint blocks");
+                                "verifier waiting: gap above contiguous frontier");
                 break;
             }
         }
@@ -687,9 +687,16 @@ where
         let (tx, rx) = oneshot::channel();
 
         // Check that the height and Merkle roots are valid.
-        let block = self.check_block(block)?;
+        let block = match self.check_block(block) {
+            Ok(block) => block,
+            Err(e) => {
+                tracing::info!(target: "dbg5709", ?e, "queue_block: check_block rejected");
+                return Err(e);
+            }
+        };
         let height = block.height;
         let hash = block.hash;
+        tracing::info!(target: "dbg5709", height = height.0, ?hash, "queue_block: accepted");
 
         let new_qblock = QueuedBlock {
             block: block.clone(),

@@ -400,6 +400,7 @@ where
                 metrics::counter!("sync.downloaded.block.count").increment(1);
                 metrics::histogram!("sync.block.download.duration_seconds", "result" => "success")
                     .record(download_start.elapsed().as_secs_f64());
+                tracing::info!(target: "dbg5709", height = ?block.coinbase_height(), ?hash, "downloaded");
 
                 // Security & Performance: reject blocks that are too far ahead of our tip.
                 // Avoids denial of service attacks, and reduces wasted work on high blocks
@@ -558,6 +559,7 @@ where
                 let verify_result = if verification.is_ok() { "success" } else { "failure" };
                 metrics::histogram!("sync.block.verify.duration_seconds", "result" => verify_result)
                     .record(verify_start.elapsed().as_secs_f64());
+                tracing::info!(target: "dbg5709", height = block_height.0, ok = verification.is_ok(), "verify-returned");
 
                 if verification.is_ok() {
                     metrics::counter!("sync.verified.block.count").increment(1);
