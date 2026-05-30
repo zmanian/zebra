@@ -239,6 +239,18 @@ const MIN_STALL_RESTART_INTERVAL: Duration = Duration::from_secs(30);
 /// Default value for [`Config::stall_restart_timeout`].
 const DEFAULT_STALL_RESTART_TIMEOUT: Duration = Duration::from_secs(90);
 
+/// Clamps a configured stall-restart timeout so it always fires before the
+/// block-verify-timeout backstop. `Duration::ZERO` (disabled) passes through.
+fn clamp_stall_restart_timeout(configured: Duration) -> Duration {
+    if !configured.is_zero() && configured >= BLOCK_VERIFY_TIMEOUT {
+        // Clamp well below the verify-timeout backstop so stall detection
+        // reliably fires before the verifier itself times out.
+        BLOCK_VERIFY_TIMEOUT / 2
+    } else {
+        configured
+    }
+}
+
 /// Sync configuration section.
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
@@ -508,18 +520,16 @@ where
             full_verify_concurrency_limit = MIN_CONCURRENCY_LIMIT;
         }
 
-        let stall_restart_timeout = if !config.sync.stall_restart_timeout.is_zero()
-            && config.sync.stall_restart_timeout >= BLOCK_VERIFY_TIMEOUT
-        {
+        let stall_restart_timeout = clamp_stall_restart_timeout(config.sync.stall_restart_timeout);
+        if stall_restart_timeout != config.sync.stall_restart_timeout {
             warn!(
                 configured = ?config.sync.stall_restart_timeout,
-                clamped_to = ?(BLOCK_VERIFY_TIMEOUT / 2),
-                "sync.stall_restart_timeout must be shorter than the block verify timeout; clamping",
+                block_verify_timeout = ?BLOCK_VERIFY_TIMEOUT,
+                clamped_to = ?stall_restart_timeout,
+                "sync.stall_restart_timeout was >= the block verify timeout and has been clamped; \
+                 set it to a shorter duration, or to \"0s\" to disable fast restart instead",
             );
-            BLOCK_VERIFY_TIMEOUT / 2
-        } else {
-            config.sync.stall_restart_timeout
-        };
+        }
 
         let tip_network = Timeout::new(peers.clone(), TIPS_RESPONSE_TIMEOUT);
 
