@@ -157,10 +157,15 @@ where
     /// passing the tip of the state.
     reset_sender: mpsc::Sender<Option<(block::Height, block::Hash)>>,
 
-    /// Publishes the highest contiguous queued height while the verifier is
-    /// waiting on a gap below the next checkpoint (`Some`), or `None` when
-    /// there is no gap. Used by the syncer to detect contiguity stalls.
-    /// Observability only — does not affect verification.
+    /// Publishes the verifier's contiguity-gap signal. Used by the syncer to
+    /// detect contiguity stalls. Observability only — does not affect
+    /// verification.
+    ///
+    /// `Some(height)` means the verifier has a contiguous run up to `height`
+    /// and is waiting for `height + 1` to extend toward the next checkpoint.
+    /// As a special case during initial bootstrap, `Some(Height(0))` means
+    /// genesis (height 0) itself has not been queued yet. `None` means there
+    /// is no gap.
     gap_sender: watch::Sender<Option<block::Height>>,
 
     /// Queued block height progress transmitter.
@@ -309,9 +314,11 @@ where
 
     /// Returns a receiver for the verifier's contiguity-gap signal.
     ///
-    /// `Some(height)` means the verifier is waiting for the block at
-    /// `height + 1` to extend a contiguous range toward the next checkpoint;
-    /// `None` means no gap.
+    /// `Some(height)` means the verifier has a contiguous run up to `height`
+    /// and is waiting for `height + 1` to extend toward the next checkpoint.
+    /// As a special case during initial bootstrap, `Some(Height(0))` means
+    /// genesis (height 0) itself has not been queued yet. `None` means there
+    /// is no gap.
     pub(crate) fn gap_receiver(&self) -> watch::Receiver<Option<block::Height>> {
         self.gap_sender.subscribe()
     }
@@ -431,6 +438,7 @@ where
             BeforeGenesis if !self.queued.contains_key(&block::Height(0)) => {
                 tracing::trace!("Waiting for genesis block");
                 metrics::counter!("checkpoint.waiting.count").increment(1);
+                // waiting for genesis (height 0) itself
                 let _ = self.gap_sender.send(Some(block::Height(0)));
                 return WaitingForBlocks;
             }
