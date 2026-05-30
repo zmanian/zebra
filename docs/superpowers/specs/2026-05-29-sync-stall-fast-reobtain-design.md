@@ -70,9 +70,13 @@ Semantics of the published value:
   above a gap and is stalled; `contiguous_height + 1` is the next needed height.
 - `None` — no gap (either idle, or a complete range is verifying/committing).
 
-It is updated wherever `target_checkpoint_height()` currently computes `pending_height` and
-the `checkpoint.queued.continuous.height` metric / `WaitingForBlocks` result (checkpoint.rs
-~435-478), and reset to `None` when a range commits and progress advances.
+It is updated from `process_checkpoint_range()` (`&mut self`, checkpoint.rs ~774) on every
+pass, including the early `WaitingForBlocks` return (checkpoint.rs ~800-802) — that early
+return is exactly the gap case and **must** publish `Some(contiguous_height)`. It is reset to
+`None` when a range commits and progress advances. (Publishing only needs `&watch::Sender`,
+so a `&self` site such as `target_checkpoint_height()` at checkpoint.rs ~435-478, which
+computes `pending_height` and sets the `checkpoint.queued.continuous.height` gauge at line
+450, is also a valid place to publish if preferred.)
 
 Exposure: `CheckpointVerifier::subscribe_gap() -> watch::Receiver<Option<block::Height>>`.
 The consensus init path (`zebra_consensus::router::init` and the block-verifier
@@ -116,7 +120,9 @@ tokio::select! {
 - state tip has not advanced for `stall_restart_timeout`,
 - `in_flight` is still at/over the pause threshold,
 - the verifier `gap_signal` is `Some(_)` and has not advanced over the window (a real,
-  persistent contiguity gap — not a slowly-committing complete range),
+  persistent contiguity gap — not a slowly-committing complete range). "Has not advanced" is
+  tracked by snapshotting the `gap_signal` value when the stall deadline is (re)armed and
+  comparing it at fire time; any change resets the deadline,
 - we did not already stall-restart within `MIN_STALL_RESTART_INTERVAL` (~30s; thrash guard).
 
 **Recovery.** `try_to_sync` propagates `SyncError::Stalled`; the `sync()` loop handles it
@@ -161,7 +167,10 @@ pub stall_restart_timeout: Option<Duration>,   // default Some(90s)
 ```
 
 Constraint (validated at startup, clamp + warn): `stall_restart_timeout < BLOCK_VERIFY_TIMEOUT`.
-Settable via `ZEBRA_SYNC__STALL_RESTART_TIMEOUT` (scalar/humantime — env-var safe).
+Settable via `ZEBRA_SYNC__STALL_RESTART_TIMEOUT` (scalar/humantime — env-var safe; the plan
+must confirm the `SYNC` env segment matches how zebrad derives env names for the `config.sync`
+section). The field lives in the sync `Config` struct (sync.rs ~229-274), which uses
+`#[serde(deny_unknown_fields, default)]`; adding a field there is forward-compatible.
 
 New constants in sync.rs: `STALL_RESTART_DELAY` (~5s), `MIN_STALL_RESTART_INTERVAL` (~30s).
 
@@ -186,9 +195,11 @@ Write failing tests first:
    re-enters `obtain_tips` within ~`stall_restart_timeout` (use paused tokio time), not 8 min.
 2. **No false trigger on slow-but-progressing verify:** tip advancing (or gap_signal `None`)
    → no `Stalled`.
-3. **Verifier gap signal** (`zebra-consensus`): feed a contiguous prefix then a gap; assert
-   the watch publishes `Some(contiguous_height)`; feed the missing block; assert it returns
-   to `None` and the range commits.
+3. **Verifier gap signal** (`zebra-consensus`): drive `CheckpointVerifier` directly via
+   `Service::call` (constructed with `new`/`from_checkpoint_list`, no router/Buffer stack
+   needed); feed a contiguous prefix then a gap; assert the watch publishes
+   `Some(contiguous_height)`; feed the missing block; assert it returns to `None` and the
+   range commits.
 4. **Disabled path:** `stall_restart_timeout = None` reproduces current behavior.
 5. Full existing sync + consensus suites stay green (no `--workspace`; per-crate `--lib`).
 
