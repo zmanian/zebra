@@ -225,6 +225,20 @@ const REGTEST_SYNC_RESTART_DELAY: Duration = Duration::from_secs(2);
 /// network requests. If there are a lot of them, it could overwhelm the network.
 const GENESIS_TIMEOUT_RETRY: Duration = Duration::from_secs(10);
 
+/// Delay before re-obtaining tips after a detected contiguity stall.
+/// Much shorter than [`SYNC_RESTART_DELAY`] because a stall restart is a
+/// deliberate, immediate recovery, not a backoff after an error.
+#[allow(dead_code)] // TODO(#5709): used by stall detection/restart in a later task
+const STALL_RESTART_DELAY: Duration = Duration::from_secs(5);
+
+/// Minimum interval between successive stall restarts, to avoid thrashing
+/// when a region genuinely has no peer serving the missing block.
+#[allow(dead_code)] // TODO(#5709): used by stall detection/restart in a later task
+const MIN_STALL_RESTART_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Default value for [`Config::stall_restart_timeout`].
+const DEFAULT_STALL_RESTART_TIMEOUT: Duration = Duration::from_secs(90);
+
 /// Sync configuration section.
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
@@ -271,6 +285,17 @@ pub struct Config {
     /// If the number of logical cores can't be detected, Zebra uses one thread.
     /// For details, see [the `rayon` documentation](https://docs.rs/rayon/latest/rayon/struct.ThreadPoolBuilder.html#method.num_threads).
     pub parallel_cpu_threads: usize,
+
+    /// How long the syncer waits for the state tip to advance while the download
+    /// queue is saturated and the checkpoint verifier reports a contiguity gap,
+    /// before restarting sync from the current tip.
+    ///
+    /// This recovers from initial-sync stalls (see issue #5709) in seconds
+    /// instead of waiting for the multi-minute block verify timeout. It is clamped
+    /// to be shorter than the internal block verify timeout. Set to `"0s"` to
+    /// disable fast restart and fall back to the legacy timeout-only recovery.
+    #[serde(with = "humantime_serde")]
+    pub stall_restart_timeout: Duration,
 }
 
 impl Default for Config {
@@ -299,6 +324,8 @@ impl Default for Config {
             // If this causes tokio executor starvation, move CPU-intensive tasks to rayon threads,
             // or reserve a few cores for tokio threads, based on `num_cpus()`.
             parallel_cpu_threads: 0,
+
+            stall_restart_timeout: DEFAULT_STALL_RESTART_TIMEOUT,
         }
     }
 }
@@ -346,6 +373,11 @@ where
 
     /// The configured full verification concurrency limit, after applying the minimum limit.
     full_verify_concurrency_limit: usize,
+
+    /// The configured stall restart timeout, clamped below the block verify timeout.
+    /// `Duration::ZERO` disables fast restart.
+    #[allow(dead_code)] // TODO(#5709): consumed by stall detection in a later task
+    stall_restart_timeout: Duration,
 
     /// Whether the node is running on regtest. Used to apply a shorter sync restart delay.
     is_regtest: bool,
@@ -476,6 +508,19 @@ where
             full_verify_concurrency_limit = MIN_CONCURRENCY_LIMIT;
         }
 
+        let stall_restart_timeout = if !config.sync.stall_restart_timeout.is_zero()
+            && config.sync.stall_restart_timeout >= BLOCK_VERIFY_TIMEOUT
+        {
+            warn!(
+                configured = ?config.sync.stall_restart_timeout,
+                clamped_to = ?(BLOCK_VERIFY_TIMEOUT / 2),
+                "sync.stall_restart_timeout must be shorter than the block verify timeout; clamping",
+            );
+            BLOCK_VERIFY_TIMEOUT / 2
+        } else {
+            config.sync.stall_restart_timeout
+        };
+
         let tip_network = Timeout::new(peers.clone(), TIPS_RESPONSE_TIMEOUT);
 
         // The Hedge middleware is the outermost layer, hedging requests
@@ -524,6 +569,7 @@ where
             max_checkpoint_height,
             checkpoint_verify_concurrency_limit,
             full_verify_concurrency_limit,
+            stall_restart_timeout,
             is_regtest: config.network.network.is_regtest(),
             tip_network,
             downloads,
