@@ -1041,6 +1041,39 @@ where
             return fut.map_err(Into::into).boxed();
         }
 
+        // EXPERIMENTAL (#5709): retry-on-exhaustion for block inventory.
+        //
+        // We only reach here when every ready peer is marked "missing" this hash
+        // in the inventory registry. For BLOCK requests during sync that mark is
+        // almost always stale: the block provably exists on the canonical chain,
+        // the original NotFound was transient (peer load, lag, or a dropped
+        // connection), and the registry holds the mark for up to
+        // ~2x INVENTORY_ROTATION_INTERVAL (~106s). Failing instantly here freezes
+        // contiguous checkpoint verification at a single block for that whole
+        // window, which is the core symptom of issue #5709. Instead, retry one
+        // ready peer anyway — the block is needed and the mark is likely stale.
+        //
+        // Transaction inventory still falls through to the NotFoundRegistry error
+        // below, preserving DoS protection: a peer can't make us re-query forever
+        // for inventory that genuinely does not exist.
+        if matches!(hash, InventoryHash::Block(_)) {
+            let ready_peer_list: HashSet<PeerSocketAddr> =
+                self.ready_services.keys().copied().collect();
+            let peer = self.select_p2c_peer_from_list(&ready_peer_list);
+
+            if let Some(mut svc) = peer.and_then(|key| self.take_ready_service(&key)) {
+                let peer = peer.expect("just checked peer is Some");
+                tracing::debug!(
+                    ?hash,
+                    ?peer,
+                    "all ready peers marked missing this block; retrying one anyway (#5709)"
+                );
+                let fut = svc.call(req);
+                self.push_unready(peer, svc);
+                return fut.map_err(Into::into).boxed();
+            }
+        }
+
         tracing::debug!(
             ?hash,
             "all ready peers are missing inventory, failing request"
