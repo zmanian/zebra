@@ -17,10 +17,12 @@
 ## File Structure
 
 - `zebra-consensus/src/checkpoint.rs` — add `gap_sender` field + `gap_receiver()` accessor; publish gap state in `target_checkpoint_height`. (verifier signal)
-- `zebra-consensus/src/router.rs` — `init` returns the gap receiver as a new tuple element. (plumbing)
+- `zebra-consensus/src/router.rs` — `init` returns the gap receiver as a new tuple element; `init_test` absorbs it internally so its callers are unaffected. (plumbing)
 - `zebrad/src/commands/start.rs` — destructure the new receiver, pass to `ChainSync::new`. (plumbing)
 - `zebrad/src/components/sync.rs` — new constants, `SyncError` enum, `Config.stall_restart_timeout`, `ChainSync` fields, stall detection in the pause loop, fast-restart in `sync()`. (syncer)
-- Tests colocated: `zebra-consensus/src/checkpoint/tests/*` and `zebrad/src/components/sync/tests/*`.
+- Tests colocated: `zebra-consensus/src/checkpoint/tests.rs` (single file) and `zebrad/src/components/sync/tests/vectors.rs`.
+
+**Config representation decision (refines the spec):** the spec described `Option<Duration>` with `None` to disable, but an `Option<Duration>` field with `#[serde(default)]` + a `Some(90s)` default cannot express "disabled" via TOML omission, and there is no in-repo precedent for `Option` + `humantime_serde`. So this plan uses a plain `Duration` field defaulting to 90s, where **`Duration::ZERO` (`"0s"`) disables** fast restart. Env-var safe (`ZEBRA_SYNC__STALL_RESTART_TIMEOUT=0s`), round-trippable, and avoids the `Option` serde problem. Behavior is identical to the spec's intent.
 
 ---
 
@@ -182,7 +184,16 @@ Update the final return (~391):
 (router, transaction, task_handles, max_checkpoint_height, checkpoint_gap_receiver)
 ```
 
-Update the doc comment / any other callers of `init` (e.g. `init_test`, tests) to destructure the extra element (use `_` where unused).
+**Important — `init_test` must absorb the new element internally so its ~14 callers across crates (zebra-rpc tests, zebrad acceptance/`fake_peer_set` tests, consensus `router/tests.rs`) do NOT change.** `init_test` (router.rs ~423-450) keeps its existing **4-tuple** return type and drops `init`'s 5th element:
+
+```rust
+// inside init_test, where it currently does `init(...).await`:
+let (router, transaction, task_handles, max_checkpoint_height, _gap_receiver) =
+    init(config, network, state_service, mempool).await;
+(router, transaction, task_handles, max_checkpoint_height)
+```
+
+Only `init`'s own callers (just `start.rs` for the real path) destructure the 5-tuple. Do NOT change `init_test`'s return type, and do NOT touch the `init_test` call sites.
 
 - [ ] **Step 2: `start.rs` destructures and forwards it**
 
@@ -211,7 +222,7 @@ Add `use tokio::sync::watch;` if absent. Add the parameter to `new(...)` and set
 
 - [ ] **Step 4: Compile both crates**
 
-Run: `cargo build -p zebra-consensus -p zebrad`
+Run: `cargo build -p zebra-consensus -p zebrad --tests` (the `--tests` build compiles `router/tests.rs` and the `init_test` callers, confirming the absorb-internally approach left them untouched).
 Expected: builds clean (warnings about the unused field are acceptable until Task 5; add `#[allow(dead_code)]` on the field temporarily if `-D warnings` blocks the build, removed in Task 5).
 
 - [ ] **Step 5: Commit**
@@ -235,20 +246,23 @@ git commit -m "feat(sync): thread checkpoint gap signal from router into ChainSy
 #[test]
 fn stall_restart_timeout_default_is_90s() {
     let config = super::Config::default();
-    assert_eq!(config.stall_restart_timeout, Some(Duration::from_secs(90)));
+    assert_eq!(config.stall_restart_timeout, Duration::from_secs(90));
 }
 
 #[test]
-fn stall_restart_timeout_can_be_disabled_via_toml() {
-    let toml = "stall_restart_timeout = false"; // serde humantime_serde Option → None when absent;
-    // Implementer: pick the representation that matches Zebra's Option<Duration> serde convention
-    // used elsewhere (see other Option<Duration> config fields). Assert None round-trips.
-    let config: super::Config = toml::from_str(toml).unwrap_or_default();
-    let _ = config; // adjust assertion to the chosen disable representation
+fn stall_restart_timeout_disabled_with_zero() {
+    let config: super::Config = toml::from_str("stall_restart_timeout = \"0s\"").unwrap();
+    assert!(config.stall_restart_timeout.is_zero()); // zero == fast restart disabled
+}
+
+#[test]
+fn stall_restart_timeout_round_trips() {
+    let config: super::Config = toml::from_str("stall_restart_timeout = \"120s\"").unwrap();
+    assert_eq!(config.stall_restart_timeout, Duration::from_secs(120));
 }
 ```
 
-> Implementer: search the codebase for an existing `Option<Duration>` config field with `humantime_serde` to copy the exact serde attribute and disable representation, so this matches Zebra conventions. If none exists, use `#[serde(default, with = "humantime_serde")]` on `Option<Duration>` (humantime_serde supports `Option`).
+> Representation: a plain `Duration` (not `Option`), using `#[serde(with = "humantime_serde")]` exactly like the existing zebrad uses in `mempool/config.rs:32` and `health/config.rs:26`. `Duration::ZERO` means "fast restart disabled". This avoids the `Option` + `humantime_serde` gap (no in-repo precedent, and a defaulted `Some` can't be disabled by omission).
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -282,20 +296,38 @@ In `Config` (~273, after `parallel_cpu_threads` or grouped with sync timing):
 /// before restarting sync from the current tip.
 ///
 /// This recovers from initial-sync stalls (see issue #5709) in seconds
-/// instead of waiting for the multi-minute block verify timeout. Must be
-/// shorter than the internal block verify timeout. Set to `None` to disable
-/// fast restart and fall back to the legacy timeout-only recovery.
-#[serde(default, with = "humantime_serde")]
-pub stall_restart_timeout: Option<Duration>,
+/// instead of waiting for the multi-minute block verify timeout. It is clamped
+/// to be shorter than the internal block verify timeout. Set to `"0s"` to
+/// disable fast restart and fall back to the legacy timeout-only recovery.
+#[serde(with = "humantime_serde")]
+pub stall_restart_timeout: Duration,
 ```
-In `Default` (~278): `stall_restart_timeout: Some(DEFAULT_STALL_RESTART_TIMEOUT),`
+In `Default` (~278): `stall_restart_timeout: DEFAULT_STALL_RESTART_TIMEOUT,`
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [ ] **Step 5: Add the startup clamp (spec constraint)**
+
+In `ChainSync::new`, after reading the config value and before storing it, clamp it below `BLOCK_VERIFY_TIMEOUT` (a non-zero timeout `>= BLOCK_VERIFY_TIMEOUT` would never fire before the backstop). Leave `ZERO` untouched (disabled):
+```rust
+let stall_restart_timeout = if !config.sync.stall_restart_timeout.is_zero()
+    && config.sync.stall_restart_timeout >= BLOCK_VERIFY_TIMEOUT
+{
+    warn!(
+        configured = ?config.sync.stall_restart_timeout,
+        clamped_to = ?(BLOCK_VERIFY_TIMEOUT / 2),
+        "sync.stall_restart_timeout must be shorter than the block verify timeout; clamping",
+    );
+    BLOCK_VERIFY_TIMEOUT / 2
+} else {
+    config.sync.stall_restart_timeout
+};
+```
+
+- [ ] **Step 6: Run tests to verify they pass**
 
 Run: `cargo test -p zebrad --lib stall_restart_timeout`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add zebrad/src/components/sync.rs
@@ -330,24 +362,48 @@ impl From<color_eyre::Report> for SyncError {
         SyncError::Other(error)
     }
 }
+
+// REQUIRED: `try_to_sync_once` uses `?` on `handle_block_response` /
+// `handle_hash_response` at sync.rs:624, 647, 663, which return
+// `Result<_, BlockDownloadVerifyError>` (NOT `Report`). Without this impl the
+// `?` will fail to compile after the return-type change.
+impl From<BlockDownloadVerifyError> for SyncError {
+    fn from(error: BlockDownloadVerifyError) -> Self {
+        SyncError::Other(color_eyre::Report::new(error))
+    }
+}
 ```
 
 - [ ] **Step 2: Add timing fields to `ChainSync`**
 
-Near the internal sync state fields (~389):
+Near the internal sync state fields (~389), using **`tokio::time::Instant`** (required for `timeout_at` and paused-time tests in Task 5):
 ```rust
 /// When the state tip last advanced, used for stall detection.
-last_tip_advance: std::time::Instant,
+last_tip_advance: tokio::time::Instant,
 /// When the syncer last performed a stall restart, used to throttle restarts.
-last_stall_restart: std::time::Instant,
+last_stall_restart: tokio::time::Instant,
 ```
-Initialize both in `new(...)` to `Instant::now()`.
-
-> Note: `Instant::now()` in `new` is fine. In tests that use Tokio paused time, the detector compares against `tokio::time::Instant`; the implementer should use `tokio::time::Instant` for the stall deadline math (Task 5) so paused-time tests work, and keep these fields as `tokio::time::Instant`.
+Initialize both in `new(...)` to `tokio::time::Instant::now()`. Also store the
+clamped `stall_restart_timeout: Duration` field here (from Task 3 Step 5).
 
 - [ ] **Step 3: Change `try_to_sync` / `try_to_sync_once` return types**
 
-`try_to_sync` → `Result<(), SyncError>`; `try_to_sync_once` → `Result<IndexSet<block::Hash>, SyncError>`. The inner `?` operators on `Report`-returning calls (`obtain_tips`, `extend_tips`, `request_blocks`, `handle_block_response`) work via `From<Report>`. At the `timeout(BLOCK_VERIFY_TIMEOUT, self.try_to_sync_once(...))` site (~595), the `Elapsed` → error conversion must map into `SyncError::Other` (wrap the elapsed as a `Report` as today, then `.into()`).
+`try_to_sync` → `Result<(), SyncError>`; `try_to_sync_once` → `Result<IndexSet<block::Hash>, SyncError>`. The inner `?` operators compose via the two `From` impls from Step 1: `obtain_tips`/`extend_tips`/`request_blocks` return `Report` (→ `From<Report>`); `handle_block_response`/`handle_hash_response` return `BlockDownloadVerifyError` (→ `From<BlockDownloadVerifyError>`).
+
+The `timeout(...)` flatten at sync.rs **595-599** will NOT compile unchanged. Currently:
+```rust
+extra_hashes = timeout(BLOCK_VERIFY_TIMEOUT, self.try_to_sync_once(extra_hashes))
+    .await
+    .map_err(Into::into)              // Elapsed -> Report (old)
+    .and_then(convert::identity)?;   // needs inner & outer error types to match
+```
+After the change the inner error is `SyncError`, so `and_then(convert::identity)` requires the outer (`Elapsed`) error to also be `SyncError`. There is no `From<Elapsed> for SyncError`, so **edit line 597** to wrap explicitly:
+```rust
+extra_hashes = timeout(BLOCK_VERIFY_TIMEOUT, self.try_to_sync_once(extra_hashes))
+    .await
+    .map_err(|elapsed| SyncError::Other(color_eyre::Report::new(elapsed)))
+    .and_then(convert::identity)?;
+```
 
 - [ ] **Step 4: Rewrite the `sync()` loop body**
 
@@ -433,9 +489,20 @@ Expected: FAIL (no detection; would hang/timeout or never return `Stalled`).
 /// Returns true if the syncer appears wedged on a checkpoint-contiguity gap:
 /// the state tip is frozen, the download queue is saturated, the verifier is
 /// reporting an unchanged gap, and we have not just restarted.
-fn is_gap_stalled(&mut self, gap_snapshot: Option<block::Height>, now: tokio::time::Instant) -> bool {
-    let Some(timeout) = self.stall_restart_timeout else { return false; };
-    let saturated = self.downloads.in_flight() >= self.lookahead_limit(0) / 2;
+///
+/// `extra_hashes_len` must be the same value the pause loop used to arm, so the
+/// saturation threshold here matches the loop that called this.
+fn is_gap_stalled(
+    &mut self,
+    extra_hashes_len: usize,
+    gap_snapshot: Option<block::Height>,
+    now: tokio::time::Instant,
+) -> bool {
+    let timeout = self.stall_restart_timeout;
+    if timeout.is_zero() {
+        return false; // fast restart disabled
+    }
+    let saturated = self.downloads.in_flight() >= self.lookahead_limit(extra_hashes_len) / 2;
     let gap_now = *self.checkpoint_gap_receiver.borrow();
     let tip_frozen = now.duration_since(self.last_tip_advance) >= timeout;
     let not_thrashing = now.duration_since(self.last_stall_restart) >= MIN_STALL_RESTART_INTERVAL;
@@ -443,7 +510,7 @@ fn is_gap_stalled(&mut self, gap_snapshot: Option<block::Height>, now: tokio::ti
 }
 ```
 
-Add the `stall_restart_timeout: Option<Duration>` field to `ChainSync` (copied from config in `new`).
+The `stall_restart_timeout: Duration` field on `ChainSync` is the clamped value from Task 3 Step 5 (already added in Task 4 Step 2).
 
 - [ ] **Step 4: Rewrite the pause loop with a stall deadline**
 
@@ -454,14 +521,15 @@ while self.downloads.in_flight() >= self.lookahead_limit(extra_hashes.len())
     || (self.downloads.in_flight() >= self.lookahead_limit(extra_hashes.len()) / 2
         && self.past_lookahead_limit_receiver.cloned_watch_data())
 {
-    let response = if let Some(timeout) = self.stall_restart_timeout {
+    let timeout = self.stall_restart_timeout;
+    let response = if !timeout.is_zero() {
         let gap_snapshot = *self.checkpoint_gap_receiver.borrow();
         let deadline = self.last_tip_advance + timeout;
         match tokio::time::timeout_at(deadline, self.downloads.next()).await {
             Ok(response) => response.expect("downloads is nonempty"),
             Err(_elapsed) => {
                 let now = tokio::time::Instant::now();
-                if self.is_gap_stalled(gap_snapshot, now) {
+                if self.is_gap_stalled(extra_hashes.len(), gap_snapshot, now) {
                     warn!(
                         gap_height = ?self.checkpoint_gap_receiver.borrow().map(|h| h + 1),
                         state_tip = ?self.latest_chain_tip.best_tip_height(),
