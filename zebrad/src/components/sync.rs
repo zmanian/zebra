@@ -138,6 +138,20 @@ pub const PEER_GOSSIP_DELAY: Duration = Duration::from_secs(7);
 /// We set the timeout so that it requires under 1 Mbps bandwidth for a full 2 MB block.
 pub(super) const BLOCK_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// Bounds the TOTAL time a single block download can take, INCLUDING the wait
+/// for a download-concurrency permit.
+///
+/// EXPERIMENTAL (#5709). [`BLOCK_DOWNLOAD_TIMEOUT`] sits *inside* the
+/// `concurrency_limit` layer, so it only covers the time *after* a permit is
+/// acquired. Without an outer bound, a request can wait unboundedly for a permit
+/// while every retry/re-request for that hash is skipped as an in-flight
+/// duplicate — permanently starving one specific block and stalling checkpoint
+/// sync at a contiguity gap. This outer timeout makes a permit-starved request
+/// eventually fail (and be re-requested fresh) instead of hanging forever. It
+/// must be larger than the inner timeout times the retry limit, so it only fires
+/// on genuine permit starvation, not on normal slow-but-progressing downloads.
+const BLOCK_DOWNLOAD_QUEUE_TIMEOUT: Duration = Duration::from_secs(90);
+
 /// Controls how long we wait for a block verify request to complete.
 ///
 /// This timeout makes sure that the syncer doesn't hang when:
@@ -440,7 +454,7 @@ where
     downloads: Pin<
         Box<
             Downloads<
-                Hedge<ConcurrencyLimit<Retry<zn::RetryLimit, Timeout<ZN>>>, AlwaysHedge>,
+                Timeout<Hedge<ConcurrencyLimit<Retry<zn::RetryLimit, Timeout<ZN>>>, AlwaysHedge>>,
                 Timeout<ZV>,
                 ZSTip,
             >,
@@ -608,16 +622,25 @@ where
         // abstracts away spurious failures from individual peers
         // making a less-fallible network service, and the Hedge layer
         // tries to reduce latency of that less-fallible service.
-        let block_network = Hedge::new(
-            ServiceBuilder::new()
-                .concurrency_limit(download_concurrency_limit)
-                .retry(zn::RetryLimit::new(BLOCK_DOWNLOAD_RETRY_LIMIT))
-                .timeout(BLOCK_DOWNLOAD_TIMEOUT)
-                .service(peers),
-            AlwaysHedge,
-            20,
-            0.95,
-            2 * SYNC_RESTART_DELAY,
+        // EXPERIMENTAL (#5709): wrap the whole download stack in an OUTER timeout
+        // so the total time — including the wait for a `concurrency_limit` permit —
+        // is bounded. The inner `.timeout(BLOCK_DOWNLOAD_TIMEOUT)` is inside the
+        // concurrency limit and so does not cover permit-acquisition time; without
+        // this outer bound a request can wait forever for a permit while re-requests
+        // bounce off the in-flight-duplicate guard, permanently starving one block.
+        let block_network = Timeout::new(
+            Hedge::new(
+                ServiceBuilder::new()
+                    .concurrency_limit(download_concurrency_limit)
+                    .retry(zn::RetryLimit::new(BLOCK_DOWNLOAD_RETRY_LIMIT))
+                    .timeout(BLOCK_DOWNLOAD_TIMEOUT)
+                    .service(peers),
+                AlwaysHedge,
+                20,
+                0.95,
+                2 * SYNC_RESTART_DELAY,
+            ),
+            BLOCK_DOWNLOAD_QUEUE_TIMEOUT,
         );
 
         // We apply a timeout to the verifier to avoid hangs due to missing earlier blocks.
