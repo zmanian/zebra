@@ -8,6 +8,7 @@ use tower::{Service, ServiceExt};
 use zebra_chain::{
     block,
     parameters::{Network, NetworkUpgrade},
+    transaction::{self, UnminedTxId},
 };
 
 use crate::{
@@ -607,11 +608,16 @@ fn peer_set_route_inv_missing_registry_order(missing_first: bool) {
     });
 }
 
-/// Check that a peer set fails inventory requests if all peers are missing that inventory.
+/// Check that a peer set still fails *transaction* inventory requests when all
+/// ready peers are missing that inventory.
+///
+/// This preserves DoS protection: a peer can't make us re-query forever for a
+/// transaction that genuinely does not exist. The block path is deliberately
+/// different — see [`peer_set_route_inv_all_missing_block_retries`].
 #[test]
-fn peer_set_route_inv_all_missing_fail() {
-    let test_hash = block::Hash([0; 32]);
-    let test_inv = InventoryHash::Block(test_hash);
+fn peer_set_route_inv_all_missing_tx_fails() {
+    let test_tx_id = UnminedTxId::from_legacy_id(transaction::Hash([0; 32]));
+    let test_inv = InventoryHash::from(test_tx_id);
 
     // Hard-code the fixed test address created by mock_peer_discovery
     // TODO: add peer test addresses to ClientTestHarness
@@ -670,7 +676,7 @@ fn peer_set_route_inv_all_missing_fail() {
         assert_eq!(peer_ready.ready_services.len(), 1);
 
         // Send an inventory-based request
-        let sent_request = Request::BlocksByHash(iter::once(test_hash).collect());
+        let sent_request = Request::TransactionsById(iter::once(test_tx_id).collect());
         let response_fut = peer_ready.call(sent_request.clone());
 
         // Check that the client missing the inventory did not receive the request
@@ -678,20 +684,114 @@ fn peer_set_route_inv_all_missing_fail() {
 
         assert!(
             missing_handle
-                    .try_to_receive_outbound_client_request()
-                    .request().is_none(),
+                .try_to_receive_outbound_client_request()
+                .request()
+                .is_none(),
             "request routed to missing peer",
         );
 
-        // Check that the response is a synthetic error
+        // Check that the response is a synthetic NotFoundRegistry error
         let response = response_fut.await;
-        assert_eq!(
+        assert!(
             response
                 .expect_err("peer set should return an error (not a Response)")
                 .downcast_ref::<SharedPeerError>()
                 .expect("peer set should return a boxed SharedPeerError")
-                .inner_debug(),
-            "NotFoundRegistry([Block(block::Hash(\"0000000000000000000000000000000000000000000000000000000000000000\"))])"
+                .inner_debug()
+                .contains("NotFoundRegistry"),
+            "transaction request should fail with NotFoundRegistry when all peers are missing it",
         );
+    });
+}
+
+/// EXPERIMENTAL (#5709): check that a *block* request is retried to a ready peer
+/// even when every ready peer is marked missing that block, rather than failing
+/// instantly with `NotFoundRegistry`.
+///
+/// During checkpoint sync the block provably exists on the canonical chain, so a
+/// "missing" mark is almost always stale (a transient NotFound from peer load,
+/// lag, or a dropped connection). Failing instantly freezes contiguous
+/// verification at that single block for up to ~2x the inventory rotation
+/// interval. See the retry-on-exhaustion carve-out in `route_inv`.
+#[test]
+fn peer_set_route_inv_all_missing_block_retries() {
+    let test_hash = block::Hash([0; 32]);
+    let test_inv = InventoryHash::Block(test_hash);
+
+    // Hard-code the fixed test address created by mock_peer_discovery
+    // TODO: add peer test addresses to ClientTestHarness
+    let test_peer = "127.0.0.1:1"
+        .parse()
+        .expect("unexpected invalid peer address");
+
+    let test_change = InventoryStatus::new_missing(test_inv, test_peer);
+
+    // Use one peer
+    let peer_version = Version::min_specified_for_upgrade(&Network::Mainnet, NetworkUpgrade::Nu6);
+    let peer_versions = PeerVersions {
+        peer_versions: vec![peer_version],
+    };
+
+    // Start the runtime
+    let (runtime, _init_guard) = zebra_test::init_async();
+    let _guard = runtime.enter();
+
+    // Pause the runtime's timer so that it advances automatically.
+    //
+    // CORRECTNESS: This test does not depend on external resources that could really timeout, like
+    // real network connections.
+    tokio::time::pause();
+
+    // Get the peer and its client handle
+    let (discovered_peers, mut handles) = peer_versions.mock_peer_discovery();
+    let (minimum_peer_version, _best_tip_height) =
+        MinimumPeerVersion::with_mock_chain_tip(&Network::Mainnet);
+
+    // Make sure we have the right number of peers
+    assert_eq!(handles.len(), 1);
+
+    runtime.block_on(async move {
+        // Build a peerset
+        let (mut peer_set, mut peer_set_guard) = PeerSetBuilder::new()
+            .with_discover(discovered_peers)
+            .with_minimum_peer_version(minimum_peer_version.clone())
+            .build();
+
+        // Mark the block as missing for the only peer
+        peer_set_guard
+            .inventory_sender()
+            .as_mut()
+            .expect("unexpected missing inv sender")
+            .send(test_change)
+            .expect("unexpected dropped receiver");
+
+        // Get peerset ready
+        let peer_ready = peer_set
+            .ready()
+            .await
+            .expect("peer set service is always ready");
+
+        // Check we have the right amount of ready services
+        assert_eq!(peer_ready.ready_services.len(), 1);
+
+        // Send a block request that every ready peer is marked missing
+        let sent_request = Request::BlocksByHash(iter::once(test_hash).collect());
+        let _response_fut = peer_ready.call(sent_request.clone());
+
+        // EXPERIMENTAL (#5709): the request is retried to the peer marked missing,
+        // instead of failing with NotFoundRegistry.
+        let retried_handle = &mut handles[0];
+
+        if let Some(ClientRequest { request, .. }) = retried_handle
+            .try_to_receive_outbound_client_request()
+            .request()
+        {
+            assert_eq!(
+                sent_request, request,
+                "block request should be retried to the peer marked missing (#5709 relief)",
+            );
+        } else {
+            panic!("block request should be retried to the peer marked missing (#5709 relief)");
+        }
     });
 }
