@@ -225,14 +225,19 @@ impl StartCmd {
 
         info!("initializing verifiers");
         let (tx_verifier_setup_tx, tx_verifier_setup_rx) = oneshot::channel();
-        let (block_verifier_router, tx_verifier, consensus_task_handles, max_checkpoint_height) =
-            zebra_consensus::router::init(
-                config.consensus.clone(),
-                &config.network.network,
-                state.clone(),
-                tx_verifier_setup_rx,
-            )
-            .await;
+        let (
+            block_verifier_router,
+            tx_verifier,
+            consensus_task_handles,
+            max_checkpoint_height,
+            checkpoint_gap_receiver,
+        ) = zebra_consensus::router::init(
+            config.consensus.clone(),
+            &config.network.network,
+            state.clone(),
+            tx_verifier_setup_rx,
+        )
+        .await;
 
         info!("initializing syncer");
         let (mut syncer, sync_status) = ChainSync::new(
@@ -243,6 +248,7 @@ impl StartCmd {
             state.clone(),
             latest_chain_tip.clone(),
             misbehavior_sender.clone(),
+            checkpoint_gap_receiver,
         );
 
         info!("initializing mempool");
