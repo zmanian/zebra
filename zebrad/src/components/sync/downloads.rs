@@ -348,12 +348,15 @@ where
         // if we waited for readiness and did the service call in the spawned
         // tasks, all of the spawned tasks would race each other waiting for the
         // network to become ready.
-        let block_req = self
+        tracing::info!(target: "dbg5709", %hash, "REQUEST: awaiting network readiness (concurrency permit + peer-set poll_ready)");
+        let ready_network = self
             .network
             .ready()
             .await
-            .map_err(|error| BlockDownloadVerifyError::NetworkServiceError { error })?
-            .call(zn::Request::BlocksByHash(std::iter::once(hash).collect()));
+            .map_err(|error| BlockDownloadVerifyError::NetworkServiceError { error })?;
+        tracing::info!(target: "dbg5709", %hash, "REQUEST: network ready, issuing call");
+        let block_req =
+            ready_network.call(zn::Request::BlocksByHash(std::iter::once(hash).collect()));
 
         // This oneshot is used to signal cancellation to the download task.
         let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
