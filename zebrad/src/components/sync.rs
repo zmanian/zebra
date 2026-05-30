@@ -809,11 +809,14 @@ where
                     Err(_elapsed) => {
                         let now = tokio::time::Instant::now();
                         if self.is_gap_stalled(extra_hashes.len(), gap_snapshot, now) {
+                            // The verifier reports the height it last has; the
+                            // missing block is the next one. Use the raw number
+                            // (not Height + 1, which can be None at Height::MAX)
+                            // so this logging-only path never panics. Read the
+                            // borrow into a local so its guard drops first.
+                            let gap_height = self.checkpoint_gap_receiver.borrow().map(|h| h.0 + 1);
                             warn!(
-                                gap_height = ?self
-                                    .checkpoint_gap_receiver
-                                    .borrow()
-                                    .map(|h| (h + 1).expect("gap height + 1 is valid")),
+                                ?gap_height,
                                 state_tip = ?self.latest_chain_tip.best_tip_height(),
                                 in_flight = self.downloads.in_flight(),
                                 lookahead_limit = self.lookahead_limit(extra_hashes.len()),
