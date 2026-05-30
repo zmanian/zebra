@@ -471,6 +471,9 @@ impl From<color_eyre::Report> for SyncError {
 // so without this impl those `?` will not compile after the return-type change.
 impl From<BlockDownloadVerifyError> for SyncError {
     fn from(error: BlockDownloadVerifyError) -> Self {
+        // Boxes the error into a Report; the BlockDownloadVerifyError variant structure is not
+        // preserved. Detection logic that needs the variant must inspect it before this ?
+        // conversion.
         SyncError::Other(color_eyre::Report::new(error))
     }
 }
@@ -695,6 +698,7 @@ where
         );
         let mut extra_hashes = timeout(SYNC_RESTART_DELAY, self.obtain_tips())
             .await
+            // obtain_tips returns Report, so Elapsed -> Report here (Into::into); the final ? converts Report -> SyncError.
             .map_err(Into::into)
             // TODO: replace with flatten() when it stabilises (#70142)
             .and_then(convert::identity)
@@ -708,6 +712,7 @@ where
             // Avoid hangs due to service readiness or other internal operations
             extra_hashes = timeout(BLOCK_VERIFY_TIMEOUT, self.try_to_sync_once(extra_hashes))
                 .await
+                // try_to_sync_once returns SyncError; Elapsed is not Into<SyncError>, so wrap it via Report::new explicitly.
                 .map_err(|elapsed| SyncError::Other(color_eyre::Report::new(elapsed)))
                 // TODO: replace with flatten() when it stabilises (#70142)
                 .and_then(convert::identity)?;
