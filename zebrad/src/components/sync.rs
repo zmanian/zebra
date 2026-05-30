@@ -228,7 +228,6 @@ const GENESIS_TIMEOUT_RETRY: Duration = Duration::from_secs(10);
 /// Delay before re-obtaining tips after a detected contiguity stall.
 /// Much shorter than [`SYNC_RESTART_DELAY`] because a stall restart is a
 /// deliberate, immediate recovery, not a backoff after an error.
-#[allow(dead_code)] // TODO(#5709): used by stall detection/restart in a later task
 const STALL_RESTART_DELAY: Duration = Duration::from_secs(5);
 
 /// Minimum interval between successive stall restarts, to avoid thrashing
@@ -440,6 +439,40 @@ where
 
     /// Sender for reporting peer addresses that advertised unexpectedly invalid transactions.
     misbehavior_sender: mpsc::Sender<(PeerSocketAddr, u32)>,
+
+    /// When the state tip last advanced, used for stall detection.
+    #[allow(dead_code)] // TODO(#5709): used by stall detection in the next task
+    last_tip_advance: tokio::time::Instant,
+
+    /// When the syncer last performed a stall restart, used to throttle restarts.
+    last_stall_restart: tokio::time::Instant,
+}
+
+/// Outcome of a failed sync run, distinguishing a recoverable contiguity
+/// stall (fast restart) from any other error (normal backoff restart).
+enum SyncError {
+    /// A persistent checkpoint-contiguity gap was detected while saturated.
+    /// Restart immediately from the current tip.
+    // TODO(#5709): constructed by stall detection in the next task
+    #[allow(dead_code)]
+    Stalled,
+    /// Any other error. Restart after the normal delay.
+    Other(color_eyre::Report),
+}
+
+impl From<color_eyre::Report> for SyncError {
+    fn from(error: color_eyre::Report) -> Self {
+        SyncError::Other(error)
+    }
+}
+
+// REQUIRED: `try_to_sync_once` uses `?` on `handle_block_response` /
+// `handle_hash_response` (which return `Result<_, BlockDownloadVerifyError>`),
+// so without this impl those `?` will not compile after the return-type change.
+impl From<BlockDownloadVerifyError> for SyncError {
+    fn from(error: BlockDownloadVerifyError) -> Self {
+        SyncError::Other(color_eyre::Report::new(error))
+    }
 }
 
 /// Polls the network to determine whether further blocks are available and
@@ -590,6 +623,8 @@ where
             past_lookahead_limit_receiver,
             checkpoint_gap_receiver,
             misbehavior_sender,
+            last_tip_advance: tokio::time::Instant::now(),
+            last_stall_restart: tokio::time::Instant::now(),
         };
 
         (new_syncer, sync_status)
@@ -603,8 +638,23 @@ where
         self.request_genesis().await?;
 
         loop {
-            if self.try_to_sync().await.is_err() {
-                self.downloads.cancel_all();
+            match self.try_to_sync().await {
+                Ok(()) => {}
+                Err(SyncError::Stalled) => {
+                    self.downloads.cancel_all();
+                    self.last_stall_restart = tokio::time::Instant::now();
+                    self.update_metrics();
+                    info!(
+                        state_tip = ?self.latest_chain_tip.best_tip_height(),
+                        "restarting sync after contiguity stall",
+                    );
+                    sleep(STALL_RESTART_DELAY).await;
+                    continue;
+                }
+                Err(SyncError::Other(error)) => {
+                    warn!(?error, "sync error, restarting");
+                    self.downloads.cancel_all();
+                }
             }
 
             self.update_metrics();
@@ -636,7 +686,7 @@ where
     /// necessary. This includes outer timeouts, where an entire syncing step takes an extremely
     /// long time. (These usually indicate hangs.)
     #[instrument(skip(self))]
-    async fn try_to_sync(&mut self) -> Result<(), Report> {
+    async fn try_to_sync(&mut self) -> Result<(), SyncError> {
         self.prospective_tips = HashSet::new();
 
         info!(
@@ -658,7 +708,7 @@ where
             // Avoid hangs due to service readiness or other internal operations
             extra_hashes = timeout(BLOCK_VERIFY_TIMEOUT, self.try_to_sync_once(extra_hashes))
                 .await
-                .map_err(Into::into)
+                .map_err(|elapsed| SyncError::Other(color_eyre::Report::new(elapsed)))
                 // TODO: replace with flatten() when it stabilises (#70142)
                 .and_then(convert::identity)?;
         }
@@ -679,7 +729,7 @@ where
     async fn try_to_sync_once(
         &mut self,
         mut extra_hashes: IndexSet<block::Hash>,
-    ) -> Result<IndexSet<block::Hash>, Report> {
+    ) -> Result<IndexSet<block::Hash>, SyncError> {
         // Check whether any block tasks are currently ready.
         while let Poll::Ready(Some(rsp)) = futures::poll!(self.downloads.next()) {
             // Some temporary errors are ignored, and syncing continues with other blocks.
