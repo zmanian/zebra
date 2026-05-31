@@ -273,6 +273,7 @@ where
 
     let checkpoint_state_service = state_service.clone();
     let checkpoint_sync = config.checkpoint_sync;
+    let halo2_accel_config = config.halo2_accel.clone();
     let checkpoint_network = network.clone();
 
     let state_checkpoint_verify_handle = tokio::task::spawn(
@@ -351,7 +352,12 @@ where
 
     // transaction verification
 
-    let transaction = transaction::Verifier::new(network, state_service.clone(), mempool);
+    let transaction = transaction::Verifier::new_with_config(
+        network,
+        state_service.clone(),
+        mempool,
+        halo2_accel_config,
+    );
     let transaction = Buffer::new(BoxService::new(transaction), VERIFIER_BUFFER_BOUND);
 
     // block verification

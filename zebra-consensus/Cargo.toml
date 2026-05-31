@@ -24,6 +24,9 @@ default = []
 
 # Production features that activate extra dependencies, or extra features in dependencies
 
+halo2-accel-verify = ["halo2/pasta-accel", "dep:zcash-pasta-accel"]
+experimental-verifier-accept = ["halo2-accel-verify"]
+
 progress-bar = [
     "howudoin",
     "zebra-state/progress-bar",
@@ -39,6 +42,7 @@ blake2b_simd = { workspace = true }
 bellman = { workspace = true }
 bls12_381 = { workspace = true }
 halo2 = { package = "halo2_proofs", version = "0.3" }
+zcash-pasta-accel = { path = "../../../crates/zcash-pasta-accel", optional = true }
 jubjub = { workspace = true }
 rand = { workspace = true }
 rayon = { workspace = true }
@@ -92,6 +96,7 @@ num-integer = { workspace = true }
 proptest = { workspace = true }
 proptest-derive = { workspace = true }
 spandoc = { workspace = true }
+toml = { workspace = true }
 
 tokio = { workspace = true, features = ["full", "tracing", "test-util"] }
 tracing-error = { workspace = true }
@@ -109,6 +114,10 @@ harness = false
 
 [[bench]]
 name = "halo2"
+harness = false
+
+[[bench]]
+name = "halo2_sandblast_replay"
 harness = false
 
 [[bench]]

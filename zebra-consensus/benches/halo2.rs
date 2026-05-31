@@ -29,66 +29,14 @@
 
 mod common;
 
-use std::sync::Arc;
-
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-
-use zebra_chain::{
-    block::Block, parameters::NetworkUpgrade, serialization::ZcashDeserializeInto, transparent,
-};
 
 use tower_batch_control::RequestWeight;
 use zebra_consensus::halo2::{Item, VERIFYING_KEY};
 
-/// Extracts valid Halo2 items (Orchard bundles + sighashes) from NU5+ mainnet
-/// test blocks.
-///
-/// Transactions with transparent inputs are skipped because computing their
-/// sighash requires the previous outputs they spend, which are not available
-/// in the test vectors. Orchard-only and Sapling-to-Orchard transactions
-/// work with an empty previous outputs set.
-fn extract_halo2_items_from_blocks() -> Vec<Item> {
-    let mut items = Vec::new();
-
-    for bytes in zebra_test::vectors::MAINNET_BLOCKS.values() {
-        let block: Block = bytes.zcash_deserialize_into().expect("valid block");
-
-        for tx in &block.transactions {
-            if tx.orchard_shielded_data().is_none() {
-                continue;
-            }
-
-            if !tx.inputs().is_empty() {
-                continue;
-            }
-
-            let all_previous_outputs: Arc<Vec<transparent::Output>> = Arc::new(Vec::new());
-
-            let Ok(sighasher) = tx.sighasher(NetworkUpgrade::Nu5, all_previous_outputs) else {
-                continue;
-            };
-
-            let Some(bundle) = sighasher.orchard_bundle() else {
-                continue;
-            };
-
-            let sighash = sighasher.sighash(zebra_chain::transaction::HashType::ALL, None);
-
-            items.push(Item::new(bundle, sighash));
-        }
-    }
-
-    assert!(
-        !items.is_empty(),
-        "NU5+ test blocks must contain Orchard transactions without transparent inputs"
-    );
-
-    items
-}
-
 fn bench_halo2_verify(c: &mut Criterion) {
     let vk = &*VERIFYING_KEY;
-    let source_items = extract_halo2_items_from_blocks();
+    let source_items = common::extract_halo2_items_from_blocks();
 
     let mut group = c.benchmark_group("halo2");
 

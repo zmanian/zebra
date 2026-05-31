@@ -15,7 +15,10 @@ use rand::thread_rng;
 use zcash_protocol::value::ZatBalance;
 use zebra_chain::transaction::SigHash;
 
-use crate::BoxError;
+use crate::{
+    config::{Halo2AccelConfig, Halo2AccelMode},
+    BoxError,
+};
 use thiserror::Error;
 use tokio::sync::watch;
 use tower::{util::ServiceFn, Service};
@@ -59,6 +62,7 @@ lazy_static::lazy_static! {
 pub struct Item {
     bundle: orchard::bundle::Bundle<orchard::bundle::Authorized, ZatBalance>,
     sighash: SigHash,
+    halo2_accel_config: Halo2AccelConfig,
 }
 
 impl RequestWeight for Item {
@@ -73,7 +77,20 @@ impl Item {
         bundle: orchard::bundle::Bundle<orchard::bundle::Authorized, ZatBalance>,
         sighash: SigHash,
     ) -> Self {
-        Self { bundle, sighash }
+        Self::new_with_accel_config(bundle, sighash, Halo2AccelConfig::default())
+    }
+
+    /// Creates a new [`Item`] from a bundle, sighash, and Halo2 acceleration config.
+    pub fn new_with_accel_config(
+        bundle: orchard::bundle::Bundle<orchard::bundle::Authorized, ZatBalance>,
+        sighash: SigHash,
+        halo2_accel_config: Halo2AccelConfig,
+    ) -> Self {
+        Self {
+            bundle,
+            sighash,
+            halo2_accel_config,
+        }
     }
 
     /// Perform non-batched verification of this [`Item`].
@@ -87,12 +104,256 @@ impl Item {
     }
 }
 
+/// Acceleration metadata accumulated for one Halo2 verifier batch.
+#[derive(Clone, Debug, Default)]
+struct Halo2BatchAccelContext {
+    batch_actions: usize,
+    candidate_items: usize,
+    config: Halo2AccelConfig,
+}
+
+/// Result metadata for one accelerated verifier batch attempt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Halo2VerifyOutcome {
+    accepted: bool,
+    crosscheck_mismatch: bool,
+    accelerated_result: Option<bool>,
+    cpu_result: Option<bool>,
+    dispatch_stats: Halo2DispatchStats,
+}
+
+/// Acceleration facade stats captured for one verifier batch.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct Halo2DispatchStats {
+    msm_candidate_points: u64,
+    msm_fallbacks: u64,
+}
+
+impl Halo2BatchAccelContext {
+    fn observe_item(&mut self, item: &Item) {
+        self.observe_actions(item.request_weight(), &item.halo2_accel_config);
+    }
+
+    fn observe_actions(&mut self, action_count: usize, config: &Halo2AccelConfig) {
+        self.batch_actions += action_count;
+        if config.should_try_accel(action_count) {
+            self.candidate_items += 1;
+        }
+        self.config = config.clone();
+    }
+
+    fn enabled_label(&self) -> &'static str {
+        if self.config.enabled {
+            "true"
+        } else {
+            "false"
+        }
+    }
+
+    fn candidate_label(&self) -> &'static str {
+        if self.candidate_items > 0 {
+            "true"
+        } else {
+            "false"
+        }
+    }
+
+    fn compiled_label(&self) -> &'static str {
+        if cfg!(feature = "halo2-accel-verify") {
+            "true"
+        } else {
+            "false"
+        }
+    }
+
+    fn backend_label(&self) -> &'static str {
+        self.config.backend.as_metric_label()
+    }
+
+    fn mode_label(&self) -> &'static str {
+        self.config.mode.as_metric_label()
+    }
+
+    fn has_accel_candidate(&self) -> bool {
+        self.candidate_items > 0
+    }
+
+    fn should_crosscheck(&self) -> bool {
+        self.has_accel_candidate()
+            && cfg!(feature = "halo2-accel-verify")
+            && (self.config.mode == Halo2AccelMode::Crosscheck
+                || (self.config.mode == Halo2AccelMode::ExperimentalAccept
+                    && !self.should_experimental_accept()))
+    }
+
+    fn should_experimental_accept(&self) -> bool {
+        self.has_accel_candidate()
+            && cfg!(feature = "halo2-accel-verify")
+            && cfg!(feature = "experimental-verifier-accept")
+            && self.config.mode == Halo2AccelMode::ExperimentalAccept
+            && self.accelerated_backend_self_test_passed()
+    }
+
+    #[cfg(feature = "halo2-accel-verify")]
+    fn requested_backend(&self) -> zcash_pasta_accel::Backend {
+        match self.config.backend {
+            crate::config::Halo2AccelBackend::Auto => zcash_pasta_accel::Backend::Auto,
+            crate::config::Halo2AccelBackend::Cuda => zcash_pasta_accel::Backend::Cuda,
+            crate::config::Halo2AccelBackend::Avx512 => zcash_pasta_accel::Backend::Avx512,
+        }
+    }
+
+    fn accelerated_backend_self_test_passed(&self) -> bool {
+        #[cfg(feature = "halo2-accel-verify")]
+        {
+            self.has_accel_candidate()
+                && zcash_pasta_accel::accelerated_backend_self_test(self.requested_backend())
+        }
+
+        #[cfg(not(feature = "halo2-accel-verify"))]
+        {
+            false
+        }
+    }
+
+    #[cfg(feature = "halo2-accel-verify")]
+    fn dispatch_config(&self) -> zcash_pasta_accel::DispatchConfig {
+        let backend = if self.has_accel_candidate() && self.config.mode != Halo2AccelMode::Cpu {
+            self.requested_backend()
+        } else {
+            zcash_pasta_accel::Backend::Cpu
+        };
+
+        zcash_pasta_accel::DispatchConfig {
+            backend,
+            min_msm_size: self.config.min_msm_size,
+        }
+    }
+
+    #[cfg(feature = "halo2-accel-verify")]
+    fn cpu_dispatch_config(&self) -> zcash_pasta_accel::DispatchConfig {
+        zcash_pasta_accel::DispatchConfig {
+            backend: zcash_pasta_accel::Backend::Cpu,
+            min_msm_size: self.config.min_msm_size,
+        }
+    }
+
+    fn resolve_result_without_crosscheck(&self, accelerated_result: bool) -> Halo2VerifyOutcome {
+        Halo2VerifyOutcome {
+            accepted: accelerated_result,
+            crosscheck_mismatch: false,
+            accelerated_result: Some(accelerated_result),
+            cpu_result: None,
+            dispatch_stats: Halo2DispatchStats::default(),
+        }
+    }
+
+    fn resolve_result_after_crosscheck(
+        &self,
+        accelerated_result: bool,
+        cpu_result: bool,
+    ) -> Halo2VerifyOutcome {
+        let crosscheck_mismatch = accelerated_result != cpu_result;
+        let accepted = if self.should_experimental_accept() {
+            accelerated_result
+        } else {
+            cpu_result
+        };
+
+        Halo2VerifyOutcome {
+            accepted,
+            crosscheck_mismatch,
+            accelerated_result: Some(accelerated_result),
+            cpu_result: Some(cpu_result),
+            dispatch_stats: Halo2DispatchStats::default(),
+        }
+    }
+
+    fn record_flush_metrics(&self, duration: f64, result_label: &'static str) {
+        metrics::histogram!(
+            "zebra.consensus.halo2.accel.batch_actions",
+            "backend" => self.backend_label(),
+            "candidate" => self.candidate_label(),
+            "compiled" => self.compiled_label(),
+            "enabled" => self.enabled_label(),
+            "mode" => self.mode_label(),
+        )
+        .record(self.batch_actions as f64);
+
+        metrics::histogram!(
+            "zebra.consensus.halo2.accel.duration_seconds",
+            "backend" => self.backend_label(),
+            "candidate" => self.candidate_label(),
+            "compiled" => self.compiled_label(),
+            "enabled" => self.enabled_label(),
+            "mode" => self.mode_label(),
+            "result" => result_label,
+        )
+        .record(duration);
+    }
+
+    fn record_crosscheck_metrics(&self, outcome: &Halo2VerifyOutcome) {
+        if outcome.cpu_result.is_none() {
+            return;
+        }
+
+        let mismatch_label = if outcome.crosscheck_mismatch {
+            "true"
+        } else {
+            "false"
+        };
+
+        metrics::counter!(
+            "zebra.consensus.halo2.accel.crosscheck_mismatches",
+            "backend" => self.backend_label(),
+            "compiled" => self.compiled_label(),
+            "enabled" => self.enabled_label(),
+            "mismatch" => mismatch_label,
+            "mode" => self.mode_label(),
+        )
+        .increment(usize::from(outcome.crosscheck_mismatch) as u64);
+    }
+
+    fn record_dispatch_stats(&self, stats: Halo2DispatchStats) {
+        if !self.has_accel_candidate() {
+            return;
+        }
+
+        if stats.msm_candidate_points > 0 {
+            metrics::histogram!(
+                "zebra.consensus.halo2.accel.msm_points",
+                "backend" => self.backend_label(),
+                "compiled" => self.compiled_label(),
+                "enabled" => self.enabled_label(),
+                "mode" => self.mode_label(),
+            )
+            .record(stats.msm_candidate_points as f64);
+        }
+
+        if stats.msm_fallbacks > 0 {
+            metrics::counter!(
+                "zebra.consensus.halo2.accel.fallbacks",
+                "backend" => self.backend_label(),
+                "compiled" => self.compiled_label(),
+                "enabled" => self.enabled_label(),
+                "mode" => self.mode_label(),
+            )
+            .increment(stats.msm_fallbacks);
+        }
+    }
+}
+
 trait QueueBatchVerify {
     fn queue(&mut self, item: Item);
 }
 
 impl QueueBatchVerify for BatchValidator {
-    fn queue(&mut self, Item { bundle, sighash }: Item) {
+    fn queue(
+        &mut self,
+        Item {
+            bundle, sighash, ..
+        }: Item,
+    ) {
         self.add_bundle(&bundle, sighash.0);
     }
 }
@@ -168,6 +429,9 @@ pub struct Verifier {
     /// The synchronous Halo2 batch validator.
     batch: BatchValidator,
 
+    /// A CPU-only copy of the batch for crosscheck mode.
+    cpu_crosscheck_batch: BatchValidator,
+
     /// The halo2 proof verification key.
     ///
     /// Making this 'static makes managing lifetimes much easier.
@@ -178,55 +442,111 @@ pub struct Verifier {
     /// Each batch gets a newly created channel, so there is only ever one result sent per channel.
     /// Tokio doesn't have a oneshot multi-consumer channel, so we use a watch channel.
     tx: Sender,
+
+    /// Acceleration metadata for the currently accumulating batch.
+    halo2_accel_context: Halo2BatchAccelContext,
 }
 
 impl Verifier {
     fn new(vk: &'static ItemVerifyingKey) -> Self {
         let batch = BatchValidator::default();
         let (tx, _) = watch::channel(None);
-        Self { batch, vk, tx }
+        Self {
+            batch,
+            cpu_crosscheck_batch: BatchValidator::default(),
+            vk,
+            tx,
+            halo2_accel_context: Halo2BatchAccelContext::default(),
+        }
     }
 
     /// Returns the batch verifier and channel sender from `self`,
     /// replacing them with a new empty batch.
-    fn take(&mut self) -> (BatchValidator, &'static BatchVerifyingKey, Sender) {
+    fn take(
+        &mut self,
+    ) -> (
+        BatchValidator,
+        BatchValidator,
+        &'static BatchVerifyingKey,
+        Sender,
+        Halo2BatchAccelContext,
+    ) {
         // Use a new verifier and channel for each batch.
         let batch = mem::take(&mut self.batch);
+        let cpu_crosscheck_batch = mem::take(&mut self.cpu_crosscheck_batch);
+        let halo2_accel_context = mem::take(&mut self.halo2_accel_context);
 
         let (tx, _) = watch::channel(None);
         let tx = mem::replace(&mut self.tx, tx);
 
-        (batch, self.vk, tx)
+        (
+            batch,
+            cpu_crosscheck_batch,
+            self.vk,
+            tx,
+            halo2_accel_context,
+        )
     }
 
     /// Synchronously process the batch, and send the result using the channel sender.
     /// This function blocks until the batch is completed.
-    fn verify(batch: BatchValidator, vk: &'static BatchVerifyingKey, tx: Sender) {
-        let result = batch.validate(vk, thread_rng());
-        let _ = tx.send(Some(result));
+    fn verify(
+        batch: BatchValidator,
+        cpu_crosscheck_batch: BatchValidator,
+        vk: &'static BatchVerifyingKey,
+        tx: Sender,
+        halo2_accel_context: Halo2BatchAccelContext,
+    ) {
+        let start = std::time::Instant::now();
+        let outcome =
+            Self::verify_batch_pair(batch, cpu_crosscheck_batch, vk, &halo2_accel_context);
+        let duration = start.elapsed().as_secs_f64();
+        let result_label = if outcome.accepted {
+            "success"
+        } else {
+            "failure"
+        };
+        halo2_accel_context.record_flush_metrics(duration, result_label);
+        halo2_accel_context.record_crosscheck_metrics(&outcome);
+        halo2_accel_context.record_dispatch_stats(outcome.dispatch_stats);
+        let _ = tx.send(Some(outcome.accepted));
     }
 
     /// Flush the batch using a thread pool, and return the result via the channel.
     /// This returns immediately, usually before the batch is completed.
     fn flush_blocking(&mut self) {
-        let (batch, vk, tx) = self.take();
+        let (batch, cpu_crosscheck_batch, vk, tx, halo2_accel_context) = self.take();
 
         // Correctness: Do CPU-intensive work on a dedicated thread, to avoid blocking other futures.
         //
         // We don't care about execution order here, because this method is only called on drop.
-        tokio::task::block_in_place(|| rayon::spawn_fifo(|| Self::verify(batch, vk, tx)));
+        tokio::task::block_in_place(|| {
+            rayon::spawn_fifo(|| {
+                Self::verify(batch, cpu_crosscheck_batch, vk, tx, halo2_accel_context)
+            })
+        });
     }
 
     /// Flush the batch using a thread pool, and return the result via the channel.
     /// This function returns a future that becomes ready when the batch is completed.
-    async fn flush_spawning(batch: BatchValidator, vk: &'static BatchVerifyingKey, tx: Sender) {
+    async fn flush_spawning(
+        batch: BatchValidator,
+        cpu_crosscheck_batch: BatchValidator,
+        vk: &'static BatchVerifyingKey,
+        tx: Sender,
+        halo2_accel_context: Halo2BatchAccelContext,
+    ) {
         // Correctness: Do CPU-intensive work on a dedicated thread, to avoid blocking other futures.
         let start = std::time::Instant::now();
-        let result = spawn_fifo(move || batch.validate(vk, thread_rng())).await;
+        let metrics_context = halo2_accel_context.clone();
+        let result = spawn_fifo(move || {
+            Self::verify_batch_pair(batch, cpu_crosscheck_batch, vk, &halo2_accel_context)
+        })
+        .await;
         let duration = start.elapsed().as_secs_f64();
 
         let result_label = match &result {
-            Ok(true) => "success",
+            Ok(outcome) if outcome.accepted => "success",
             _ => "failure",
         };
         metrics::histogram!(
@@ -235,8 +555,93 @@ impl Verifier {
             "result" => result_label
         )
         .record(duration);
+        metrics_context.record_flush_metrics(duration, result_label);
+        if let Ok(outcome) = &result {
+            metrics_context.record_crosscheck_metrics(outcome);
+            metrics_context.record_dispatch_stats(outcome.dispatch_stats);
+        }
 
-        let _ = tx.send(result.ok());
+        let _ = tx.send(result.ok().map(|outcome| outcome.accepted));
+    }
+
+    fn verify_batch_pair(
+        batch: BatchValidator,
+        cpu_crosscheck_batch: BatchValidator,
+        vk: &'static BatchVerifyingKey,
+        halo2_accel_context: &Halo2BatchAccelContext,
+    ) -> Halo2VerifyOutcome {
+        let accelerated_result = Self::validate_accel_batch(batch, vk, halo2_accel_context);
+        let dispatch_stats = Self::take_dispatch_stats();
+
+        let mut outcome = if halo2_accel_context.should_crosscheck() {
+            let cpu_result =
+                Self::validate_cpu_batch(cpu_crosscheck_batch, vk, halo2_accel_context);
+            halo2_accel_context.resolve_result_after_crosscheck(accelerated_result, cpu_result)
+        } else {
+            halo2_accel_context.resolve_result_without_crosscheck(accelerated_result)
+        };
+
+        outcome.dispatch_stats = dispatch_stats;
+        outcome
+    }
+
+    #[cfg(feature = "halo2-accel-verify")]
+    fn validate_accel_batch(
+        batch: BatchValidator,
+        vk: &'static BatchVerifyingKey,
+        halo2_accel_context: &Halo2BatchAccelContext,
+    ) -> bool {
+        zcash_pasta_accel::reset_dispatch_stats();
+        zcash_pasta_accel::with_dispatch_config(halo2_accel_context.dispatch_config(), || {
+            batch.validate(vk, thread_rng())
+        })
+    }
+
+    #[cfg(not(feature = "halo2-accel-verify"))]
+    fn validate_accel_batch(
+        batch: BatchValidator,
+        vk: &'static BatchVerifyingKey,
+        _halo2_accel_context: &Halo2BatchAccelContext,
+    ) -> bool {
+        batch.validate(vk, thread_rng())
+    }
+
+    #[cfg(feature = "halo2-accel-verify")]
+    fn take_dispatch_stats() -> Halo2DispatchStats {
+        let stats = zcash_pasta_accel::take_dispatch_stats();
+        Halo2DispatchStats {
+            msm_candidate_points: stats.msm_candidate_points,
+            msm_fallbacks: stats.msm_fallbacks,
+        }
+    }
+
+    #[cfg(not(feature = "halo2-accel-verify"))]
+    fn take_dispatch_stats() -> Halo2DispatchStats {
+        Halo2DispatchStats::default()
+    }
+
+    #[cfg(feature = "halo2-accel-verify")]
+    fn validate_cpu_batch(
+        batch: BatchValidator,
+        vk: &'static BatchVerifyingKey,
+        halo2_accel_context: &Halo2BatchAccelContext,
+    ) -> bool {
+        zcash_pasta_accel::reset_dispatch_stats();
+        let result = zcash_pasta_accel::with_dispatch_config(
+            halo2_accel_context.cpu_dispatch_config(),
+            || batch.validate(vk, thread_rng()),
+        );
+        let _ = zcash_pasta_accel::take_dispatch_stats();
+        result
+    }
+
+    #[cfg(not(feature = "halo2-accel-verify"))]
+    fn validate_cpu_batch(
+        batch: BatchValidator,
+        vk: &'static BatchVerifyingKey,
+        _halo2_accel_context: &Halo2BatchAccelContext,
+    ) -> bool {
+        batch.validate(vk, thread_rng())
     }
 
     /// Verify a single item using a thread pool, and return the result.
@@ -278,6 +683,8 @@ impl Service<BatchControl<Item>> for Verifier {
         match req {
             BatchControl::Item(item) => {
                 tracing::trace!("got item");
+                self.halo2_accel_context.observe_item(&item);
+                self.cpu_crosscheck_batch.queue(item.clone());
                 self.batch.queue(item);
                 let mut rx = self.tx.subscribe();
                 Box::pin(async move {
@@ -308,9 +715,12 @@ impl Service<BatchControl<Item>> for Verifier {
             BatchControl::Flush => {
                 tracing::trace!("got halo2 flush command");
 
-                let (batch, vk, tx) = self.take();
+                let (batch, cpu_crosscheck_batch, vk, tx, halo2_accel_context) = self.take();
 
-                Box::pin(Self::flush_spawning(batch, vk, tx).map(Ok))
+                Box::pin(
+                    Self::flush_spawning(batch, cpu_crosscheck_batch, vk, tx, halo2_accel_context)
+                        .map(Ok),
+                )
             }
         }
     }
@@ -321,5 +731,150 @@ impl Drop for Verifier {
         // We need to flush the current batch in case there are still any pending futures.
         // This returns immediately, usually before the batch is completed.
         self.flush_blocking()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::config::{Halo2AccelBackend, Halo2AccelConfig, Halo2AccelMode};
+
+    use super::Halo2BatchAccelContext;
+
+    #[test]
+    fn halo2_batch_accel_context_tracks_candidate_actions() {
+        let mut config = Halo2AccelConfig {
+            enabled: true,
+            backend: Halo2AccelBackend::Cuda,
+            mode: Halo2AccelMode::Crosscheck,
+            min_batch_actions: 2,
+            min_msm_size: 4096,
+        };
+        let mut context = Halo2BatchAccelContext::default();
+
+        context.observe_actions(1, &config);
+        assert_eq!(context.batch_actions, 1);
+        assert_eq!(context.candidate_items, 0);
+        assert_eq!(context.candidate_label(), "false");
+
+        context.observe_actions(3, &config);
+        assert_eq!(context.batch_actions, 4);
+        assert_eq!(context.candidate_items, 1);
+        assert_eq!(context.candidate_label(), "true");
+        assert_eq!(context.backend_label(), "cuda");
+        assert_eq!(context.mode_label(), "crosscheck");
+
+        config.enabled = false;
+        context.observe_actions(10, &config);
+        assert_eq!(context.batch_actions, 14);
+        assert_eq!(context.candidate_items, 1);
+        assert_eq!(context.enabled_label(), "false");
+    }
+
+    #[cfg(feature = "halo2-accel-verify")]
+    #[test]
+    fn halo2_batch_accel_context_uses_scoped_dispatch_and_cpu_crosscheck_acceptance() {
+        let config = Halo2AccelConfig {
+            enabled: true,
+            backend: Halo2AccelBackend::Cuda,
+            mode: Halo2AccelMode::Crosscheck,
+            min_batch_actions: 2,
+            min_msm_size: 8192,
+        };
+        let mut context = Halo2BatchAccelContext::default();
+
+        context.observe_actions(3, &config);
+
+        assert!(context.should_crosscheck());
+        assert_eq!(
+            context.dispatch_config(),
+            zcash_pasta_accel::DispatchConfig {
+                backend: zcash_pasta_accel::Backend::Cuda,
+                min_msm_size: 8192,
+            }
+        );
+
+        let outcome = context.resolve_result_after_crosscheck(false, true);
+        assert!(outcome.accepted);
+        assert!(outcome.crosscheck_mismatch);
+        assert_eq!(outcome.accelerated_result, Some(false));
+        assert_eq!(outcome.cpu_result, Some(true));
+    }
+
+    #[cfg(feature = "halo2-accel-verify")]
+    #[test]
+    fn halo2_batch_accel_takes_facade_dispatch_stats() {
+        use super::{Halo2DispatchStats, Verifier};
+
+        zcash_pasta_accel::reset_dispatch_stats();
+        zcash_pasta_accel::record_msm_candidate(7);
+        zcash_pasta_accel::record_msm_candidate(11);
+        zcash_pasta_accel::record_msm_fallback();
+
+        assert_eq!(
+            Verifier::take_dispatch_stats(),
+            Halo2DispatchStats {
+                msm_candidate_points: 18,
+                msm_fallbacks: 1,
+            }
+        );
+        assert_eq!(
+            Verifier::take_dispatch_stats(),
+            Halo2DispatchStats::default()
+        );
+    }
+
+    #[cfg(feature = "halo2-accel-verify")]
+    #[test]
+    fn halo2_batch_accel_experimental_accept_requires_build_feature() {
+        let config = Halo2AccelConfig {
+            enabled: true,
+            backend: Halo2AccelBackend::Cuda,
+            mode: Halo2AccelMode::ExperimentalAccept,
+            min_batch_actions: 2,
+            min_msm_size: 8192,
+        };
+        let mut context = Halo2BatchAccelContext::default();
+
+        context.observe_actions(3, &config);
+
+        if cfg!(feature = "experimental-verifier-accept")
+            && zcash_pasta_accel::accelerated_backend_self_test(zcash_pasta_accel::Backend::Cuda)
+        {
+            assert!(context.should_experimental_accept());
+            assert!(!context.should_crosscheck());
+            assert!(context.resolve_result_without_crosscheck(true).accepted);
+        } else {
+            assert!(!context.should_experimental_accept());
+            assert!(context.should_crosscheck());
+            let outcome = context.resolve_result_after_crosscheck(false, true);
+            assert!(outcome.accepted);
+            assert!(outcome.crosscheck_mismatch);
+        }
+    }
+
+    #[cfg(all(
+        feature = "halo2-accel-verify",
+        feature = "experimental-verifier-accept"
+    ))]
+    #[test]
+    fn halo2_batch_accel_experimental_accept_requires_backend_self_test() {
+        let config = Halo2AccelConfig {
+            enabled: true,
+            backend: Halo2AccelBackend::Cuda,
+            mode: Halo2AccelMode::ExperimentalAccept,
+            min_batch_actions: 2,
+            min_msm_size: 8192,
+        };
+        let mut context = Halo2BatchAccelContext::default();
+
+        context.observe_actions(3, &config);
+
+        if !zcash_pasta_accel::accelerated_backend_self_test(zcash_pasta_accel::Backend::Cuda) {
+            assert!(!context.should_experimental_accept());
+            assert!(context.should_crosscheck());
+            let outcome = context.resolve_result_after_crosscheck(false, true);
+            assert!(outcome.accepted);
+            assert!(outcome.crosscheck_mismatch);
+        }
     }
 }

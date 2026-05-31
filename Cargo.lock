@@ -2048,8 +2048,6 @@ dependencies = [
 [[package]]
 name = "halo2_proofs"
 version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "05713f117155643ce10975e0bee44a274bcda2f4bb5ef29a999ad67c1fa8d4d3"
 dependencies = [
  "blake2b_simd",
  "ff",
@@ -2060,6 +2058,7 @@ dependencies = [
  "pasta_curves",
  "rand_core 0.6.4",
  "tracing",
+ "zcash-pasta-accel",
 ]
 
 [[package]]
@@ -7244,6 +7243,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "zcash-pasta-accel"
+version = "0.1.0"
+dependencies = [
+ "pasta_curves",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "zcash_address"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7541,6 +7548,7 @@ dependencies = [
  "spandoc",
  "thiserror 2.0.18",
  "tokio",
+ "toml 1.1.2+spec-1.1.0",
  "tower 0.4.13",
  "tower-batch-control",
  "tower-fallback",
@@ -7548,6 +7556,7 @@ dependencies = [
  "tracing-error",
  "tracing-futures",
  "tracing-subscriber",
+ "zcash-pasta-accel",
  "zcash_primitives",
  "zcash_proofs",
  "zcash_protocol",

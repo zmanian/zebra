@@ -143,10 +143,12 @@ static STATE_VERIFY_TRANSCRIPT_GENESIS: Lazy<
 async fn verify_checkpoint_test() -> Result<(), Report> {
     verify_checkpoint(Config {
         checkpoint_sync: true,
+        ..Default::default()
     })
     .await?;
     verify_checkpoint(Config {
         checkpoint_sync: false,
+        ..Default::default()
     })
     .await?;
 

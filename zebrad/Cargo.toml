@@ -59,6 +59,9 @@ default = ["default-release-binaries"]
 
 # Production features that activate extra dependencies, or extra features in dependencies
 
+halo2-accel-verify = ["zebra-consensus/halo2-accel-verify"]
+experimental-verifier-accept = ["halo2-accel-verify", "zebra-consensus/experimental-verifier-accept"]
+
 # Indexer support
 indexer = ["zebra-state/indexer"]
 

@@ -41,7 +41,7 @@ use zebra_node_services::mempool;
 use zebra_script::{CachedFfiTransaction, Sigops};
 use zebra_state as zs;
 
-use crate::{error::TransactionError, primitives, script, BoxError};
+use crate::{config::Halo2AccelConfig, error::TransactionError, primitives, script, BoxError};
 
 pub mod check;
 #[cfg(test)]
@@ -91,6 +91,7 @@ pub struct Verifier<ZS, Mempool> {
     // TODO: Use an enum so that this can either be Pending(oneshot::Receiver) or Initialized(MempoolService)
     mempool: Option<Timeout<Mempool>>,
     script_verifier: script::Verifier,
+    halo2_accel_config: Halo2AccelConfig,
     mempool_setup_rx: oneshot::Receiver<Mempool>,
 }
 
@@ -106,11 +107,27 @@ where
 {
     /// Create a new transaction verifier.
     pub fn new(network: &Network, state: ZS, mempool_setup_rx: oneshot::Receiver<Mempool>) -> Self {
+        Self::new_with_config(
+            network,
+            state,
+            mempool_setup_rx,
+            Halo2AccelConfig::default(),
+        )
+    }
+
+    /// Create a new transaction verifier using the supplied consensus config.
+    pub fn new_with_config(
+        network: &Network,
+        state: ZS,
+        mempool_setup_rx: oneshot::Receiver<Mempool>,
+        halo2_accel_config: Halo2AccelConfig,
+    ) -> Self {
         Self {
             network: network.clone(),
             state: Timeout::new(state, UTXO_LOOKUP_TIMEOUT),
             mempool: None,
             script_verifier: script::Verifier,
+            halo2_accel_config,
             mempool_setup_rx,
         }
     }
@@ -133,6 +150,7 @@ where
             state: Timeout::new(state, UTXO_LOOKUP_TIMEOUT),
             mempool: None,
             script_verifier: script::Verifier,
+            halo2_accel_config: Halo2AccelConfig::default(),
             mempool_setup_rx: oneshot::channel().1,
         }
     }
@@ -393,6 +411,7 @@ where
         let network = self.network.clone();
         let state = self.state.clone();
         let mempool = self.mempool.clone();
+        let halo2_accel_config = self.halo2_accel_config.clone();
 
         let tx = req.transaction();
         let tx_id = req.tx_id();
@@ -506,6 +525,7 @@ where
                     &network,
                     script_verifier,
                     cached_ffi_transaction.clone(),
+                    &halo2_accel_config,
                 )?,
                 #[cfg(all(zcash_unstable = "nu7", feature = "tx_v6"))]
                 Transaction::V6 {
@@ -515,6 +535,7 @@ where
                     &network,
                     script_verifier,
                     cached_ffi_transaction.clone(),
+                    &halo2_accel_config,
                 )?,
             };
 
@@ -914,6 +935,7 @@ where
         network: &Network,
         script_verifier: script::Verifier,
         cached_ffi_transaction: Arc<CachedFfiTransaction>,
+        halo2_accel_config: &Halo2AccelConfig,
     ) -> Result<AsyncChecks, TransactionError> {
         let transaction = request.transaction();
         let nu = request.upgrade(network);
@@ -933,7 +955,11 @@ where
             cached_ffi_transaction,
         )?
         .and(Self::verify_sapling_bundle(sapling_bundle, &sighash))
-        .and(Self::verify_orchard_bundle(orchard_bundle, &sighash)))
+        .and(Self::verify_orchard_bundle(
+            orchard_bundle,
+            &sighash,
+            halo2_accel_config,
+        )))
     }
 
     /// Verifies if a V5 `transaction` is supported by `network_upgrade`.
@@ -983,8 +1009,15 @@ where
         network: &Network,
         script_verifier: script::Verifier,
         cached_ffi_transaction: Arc<CachedFfiTransaction>,
+        halo2_accel_config: &Halo2AccelConfig,
     ) -> Result<AsyncChecks, TransactionError> {
-        Self::verify_v5_transaction(request, network, script_verifier, cached_ffi_transaction)
+        Self::verify_v5_transaction(
+            request,
+            network,
+            script_verifier,
+            cached_ffi_transaction,
+            halo2_accel_config,
+        )
     }
 
     /// Verifies if a transaction's transparent inputs are valid using the provided
@@ -1156,10 +1189,35 @@ where
     fn verify_orchard_bundle(
         bundle: Option<::orchard::bundle::Bundle<::orchard::bundle::Authorized, ZatBalance>>,
         sighash: &SigHash,
+        halo2_accel_config: &Halo2AccelConfig,
     ) -> AsyncChecks {
         let mut async_checks = AsyncChecks::new();
 
         if let Some(bundle) = bundle {
+            let action_count = bundle.actions().len();
+            let accel_candidate = halo2_accel_config.should_try_accel(action_count);
+            let enabled_label = if halo2_accel_config.enabled {
+                "true"
+            } else {
+                "false"
+            };
+            let candidate_label = if accel_candidate { "true" } else { "false" };
+            let compiled_label = if cfg!(feature = "halo2-accel-verify") {
+                "true"
+            } else {
+                "false"
+            };
+
+            metrics::counter!(
+                "zebra.consensus.halo2_accel.candidate_total",
+                "backend" => halo2_accel_config.backend.as_metric_label(),
+                "candidate" => candidate_label,
+                "compiled" => compiled_label,
+                "enabled" => enabled_label,
+                "mode" => halo2_accel_config.mode.as_metric_label(),
+            )
+            .increment(1);
+
             // # Consensus
             //
             // > The proof 𝜋 MUST be valid given a primary input (cv, rt^{Orchard},
@@ -1171,11 +1229,13 @@ where
             // aggregated Halo2 proof per transaction, even with multiple
             // Actions in one transaction. So we queue it for verification
             // only once instead of queuing it up for every Action description.
-            async_checks.push(
-                primitives::halo2::VERIFIER
-                    .clone()
-                    .oneshot(primitives::halo2::Item::new(bundle, *sighash)),
-            );
+            async_checks.push(primitives::halo2::VERIFIER.clone().oneshot(
+                primitives::halo2::Item::new_with_accel_config(
+                    bundle,
+                    *sighash,
+                    halo2_accel_config.clone(),
+                ),
+            ));
         }
 
         async_checks
