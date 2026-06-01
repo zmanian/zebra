@@ -18,19 +18,31 @@ fuzz_target!(|data: &[u8]| {
     }
 
     let source_index = usize::from(byte_at(data, 0)) % source_items.len();
-    let proof_index = usize::from(u16::from_le_bytes([byte_at(data, 1), byte_at(data, 2)]));
-    let proof_byte = byte_at(data, 3);
+    let byte_index = usize::from(u16::from_le_bytes([byte_at(data, 1), byte_at(data, 2)]));
+    let byte_value = byte_at(data, 3);
+    let action_index = usize::from(byte_at(data, 4));
+    let mutation = match byte_at(data, 5) % 3 {
+        0 => halo2::fuzz::AuthDataMutation::Proof { byte_index, byte_value },
+        1 => halo2::fuzz::AuthDataMutation::BindingSignature {
+            byte_index,
+            byte_value,
+        },
+        _ => halo2::fuzz::AuthDataMutation::SpendAuthSignature {
+            action_index,
+            byte_index,
+            byte_value,
+        },
+    };
 
-    let mutated_item = halo2::fuzz::clone_item_with_proof_byte_mutation(
+    let mutated_item = halo2::fuzz::clone_item_with_auth_data_mutation(
         &source_items[source_index],
-        proof_index,
-        proof_byte,
+        mutation,
     )
-    .expect("valid Orchard proofs are non-empty");
+    .expect("valid Orchard auth data is non-empty");
 
     assert!(
         !halo2::fuzz::verify_item(mutated_item),
-        "mutating a valid Orchard proof byte must make it invalid"
+        "mutating valid Orchard auth data must make the item invalid"
     );
 });
 

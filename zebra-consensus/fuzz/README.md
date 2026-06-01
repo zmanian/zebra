@@ -22,8 +22,9 @@ cargo +nightly fuzz check --fuzz-dir zebra-consensus/fuzz halo2_batch_items --fe
 ## Halo2 invalid proofs
 
 `halo2_invalid_proofs` extracts valid Orchard/Halo2 items from Zebra's local
-block test vectors, verifies the source item once, mutates one proof byte, and
-checks that the mutated proof is rejected by Zebra's Orchard verifying key.
+block test vectors, verifies the source item once, mutates a proof byte,
+binding-signature byte, or spend-authorization-signature byte, and checks that
+the mutated auth data is rejected by Zebra's Orchard verifying key.
 
 ```sh
 cargo +nightly fuzz check --fuzz-dir zebra-consensus/fuzz halo2_invalid_proofs

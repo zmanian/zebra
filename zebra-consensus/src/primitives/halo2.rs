@@ -371,7 +371,7 @@ impl Halo2BatchAccelContext {
 pub mod fuzz {
     //! Fuzz-only helpers for exercising Halo2 batch-item selection and proof-rejection logic.
 
-    use orchard::{bundle::Authorized, Proof};
+    use orchard::{bundle::Authorized, primitives::redpallas, Proof};
 
     use crate::config::Halo2AccelConfig;
 
@@ -405,6 +405,69 @@ pub mod fuzz {
         }
     }
 
+    /// A mutation to apply to the authorization data of a real Orchard/Halo2 item.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub enum AuthDataMutation {
+        /// Mutate one byte of the aggregate Orchard proof.
+        Proof {
+            /// Fuzz-selected byte index, wrapped to the proof length.
+            byte_index: usize,
+
+            /// Replacement byte. If this matches the existing byte, the helper flips it.
+            byte_value: u8,
+        },
+
+        /// Mutate one byte of the binding signature.
+        BindingSignature {
+            /// Fuzz-selected byte index, wrapped to the 64-byte signature length.
+            byte_index: usize,
+
+            /// Replacement byte. If this matches the existing byte, the helper flips it.
+            byte_value: u8,
+        },
+
+        /// Mutate one byte of one action's spend authorization signature.
+        SpendAuthSignature {
+            /// Fuzz-selected action index, wrapped to the bundle action count.
+            action_index: usize,
+
+            /// Fuzz-selected byte index, wrapped to the 64-byte signature length.
+            byte_index: usize,
+
+            /// Replacement byte. If this matches the existing byte, the helper flips it.
+            byte_value: u8,
+        },
+    }
+
+    /// Clone a real Halo2 item while mutating one piece of its Orchard auth data.
+    pub fn clone_item_with_auth_data_mutation(
+        item: &Item,
+        mutation: AuthDataMutation,
+    ) -> Option<Item> {
+        match mutation {
+            AuthDataMutation::Proof {
+                byte_index,
+                byte_value,
+            } => clone_item_with_proof_byte_mutation(item, byte_index, byte_value),
+            AuthDataMutation::BindingSignature {
+                byte_index,
+                byte_value,
+            } => Some(clone_item_with_binding_signature_mutation(
+                item, byte_index, byte_value,
+            )),
+            AuthDataMutation::SpendAuthSignature {
+                action_index,
+                byte_index,
+                byte_value,
+            } => clone_item_with_spend_auth_signature_mutation(
+                item,
+                action_index,
+                byte_index,
+                byte_value,
+            ),
+        }
+    }
+
     /// Clone a real Halo2 item while mutating one byte of its Orchard proof.
     pub fn clone_item_with_proof_byte_mutation(
         item: &Item,
@@ -417,12 +480,7 @@ pub mod fuzz {
             return None;
         }
 
-        let byte_index = byte_index % proof_bytes.len();
-        if proof_bytes[byte_index] == byte_value {
-            proof_bytes[byte_index] ^= 1;
-        } else {
-            proof_bytes[byte_index] = byte_value;
-        }
+        mutate_byte(&mut proof_bytes, byte_index, byte_value)?;
 
         let mut context = ();
         let bundle = item.bundle.clone().map_authorization(
@@ -441,6 +499,95 @@ pub mod fuzz {
             sighash: item.sighash.clone(),
             halo2_accel_config: item.halo2_accel_config.clone(),
         })
+    }
+
+    fn clone_item_with_binding_signature_mutation(
+        item: &Item,
+        byte_index: usize,
+        byte_value: u8,
+    ) -> Item {
+        let mut context = ();
+        let bundle = item.bundle.clone().map_authorization(
+            &mut context,
+            |_, _, spend_auth| spend_auth,
+            |_, authorization| {
+                Authorized::from_parts(
+                    authorization.proof().clone(),
+                    mutate_signature(
+                        authorization.binding_signature().clone(),
+                        byte_index,
+                        byte_value,
+                    ),
+                )
+            },
+        );
+
+        Item {
+            bundle,
+            sighash: item.sighash.clone(),
+            halo2_accel_config: item.halo2_accel_config.clone(),
+        }
+    }
+
+    fn clone_item_with_spend_auth_signature_mutation(
+        item: &Item,
+        action_index: usize,
+        byte_index: usize,
+        byte_value: u8,
+    ) -> Option<Item> {
+        if item.bundle.actions().is_empty() {
+            return None;
+        }
+
+        let target_action_index = action_index % item.bundle.actions().len();
+        let mut current_action_index = 0usize;
+        let mut context = ();
+        let bundle = item.bundle.clone().map_authorization(
+            &mut context,
+            |_, _, spend_auth| {
+                let action_index = current_action_index;
+                current_action_index += 1;
+
+                if action_index == target_action_index {
+                    mutate_signature(spend_auth, byte_index, byte_value)
+                } else {
+                    spend_auth
+                }
+            },
+            |_, authorization| authorization,
+        );
+
+        Some(Item {
+            bundle,
+            sighash: item.sighash.clone(),
+            halo2_accel_config: item.halo2_accel_config.clone(),
+        })
+    }
+
+    fn mutate_signature<T: redpallas::SigType>(
+        signature: redpallas::Signature<T>,
+        byte_index: usize,
+        byte_value: u8,
+    ) -> redpallas::Signature<T> {
+        let mut signature_bytes: [u8; 64] = (&signature).into();
+        mutate_byte(&mut signature_bytes, byte_index, byte_value)
+            .expect("RedPallas signatures are non-empty");
+        signature_bytes.into()
+    }
+
+    fn mutate_byte(bytes: &mut [u8], byte_index: usize, byte_value: u8) -> Option<()> {
+        if bytes.is_empty() {
+            return None;
+        }
+
+        let byte_index = byte_index % bytes.len();
+        if bytes[byte_index] == byte_value {
+            bytes[byte_index] ^= 1;
+        } else {
+            bytes[byte_index] = byte_value;
+        }
+
+        Some(())
     }
 
     /// Verify one Halo2 item against Zebra's Orchard verifying key.
