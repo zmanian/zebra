@@ -274,6 +274,7 @@ where
     let checkpoint_state_service = state_service.clone();
     let checkpoint_sync = config.checkpoint_sync;
     let halo2_accel_config = config.halo2_accel.clone();
+    halo2_accel_config.report_startup_status();
     let checkpoint_network = network.clone();
 
     let state_checkpoint_verify_handle = tokio::task::spawn(

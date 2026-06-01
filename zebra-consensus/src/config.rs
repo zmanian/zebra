@@ -94,6 +94,37 @@ pub struct Halo2AccelConfig {
     pub min_msm_size: usize,
 }
 
+/// Operator-facing startup status for Halo2 verifier acceleration.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Halo2AccelStartupStatus {
+    /// Whether the acceleration config is enabled.
+    pub enabled: bool,
+
+    /// Whether this build includes the acceleration verifier feature.
+    pub compiled: bool,
+
+    /// Configured backend selection.
+    pub backend: Halo2AccelBackend,
+
+    /// Configured verifier safety mode.
+    pub mode: Halo2AccelMode,
+
+    /// Minimum Orchard action batch size before acceleration is considered.
+    pub min_batch_actions: usize,
+
+    /// Minimum MSM size forwarded to the acceleration facade.
+    pub min_msm_size: usize,
+
+    /// Whether the requested backend is available to the acceleration facade.
+    pub backend_available: bool,
+
+    /// Whether a non-CPU accelerated backend passed facade self-tests.
+    pub accelerated_backend_self_test_passed: bool,
+
+    /// Whether experimental accept mode can use accelerated results directly.
+    pub experimental_accept_ready: bool,
+}
+
 /// Backend selection for experimental Halo2 verifier acceleration.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -128,6 +159,126 @@ impl Halo2AccelConfig {
     /// Returns true when a Halo2 Orchard action batch should be considered for acceleration.
     pub fn should_try_accel(&self, action_count: usize) -> bool {
         self.enabled && self.mode != Halo2AccelMode::Cpu && action_count >= self.min_batch_actions
+    }
+
+    /// Returns the acceleration startup status Zebra should report to operators.
+    pub fn startup_status(&self) -> Halo2AccelStartupStatus {
+        let compiled = cfg!(feature = "halo2-accel-verify");
+        let backend_available = self.backend_available();
+        let accelerated_backend_self_test_passed = self.accelerated_backend_self_test_passed();
+        let experimental_accept_ready = self.enabled
+            && compiled
+            && cfg!(feature = "experimental-verifier-accept")
+            && self.mode == Halo2AccelMode::ExperimentalAccept
+            && accelerated_backend_self_test_passed;
+
+        Halo2AccelStartupStatus {
+            enabled: self.enabled,
+            compiled,
+            backend: self.backend,
+            mode: self.mode,
+            min_batch_actions: self.min_batch_actions,
+            min_msm_size: self.min_msm_size,
+            backend_available,
+            accelerated_backend_self_test_passed,
+            experimental_accept_ready,
+        }
+    }
+
+    /// Logs startup acceleration status for node operators.
+    pub fn report_startup_status(&self) {
+        let status = self.startup_status();
+        let backend = status.backend.as_metric_label();
+        let mode = status.mode.as_metric_label();
+
+        if !status.enabled {
+            tracing::debug!(
+                backend,
+                mode,
+                compiled = status.compiled,
+                "Halo2 verifier acceleration is disabled; using CPU verifier behavior"
+            );
+            return;
+        }
+
+        if !status.compiled {
+            tracing::warn!(
+                backend,
+                mode,
+                min_batch_actions = status.min_batch_actions,
+                min_msm_size = status.min_msm_size,
+                "Halo2 verifier acceleration is configured but not compiled; using CPU verifier behavior"
+            );
+            return;
+        }
+
+        if status.experimental_accept_ready {
+            tracing::warn!(
+                backend,
+                mode,
+                backend_available = status.backend_available,
+                backend_self_test_passed = status.accelerated_backend_self_test_passed,
+                min_batch_actions = status.min_batch_actions,
+                min_msm_size = status.min_msm_size,
+                "experimental Halo2 verifier accept mode is enabled and backend self-tests passed"
+            );
+        } else if status.mode == Halo2AccelMode::ExperimentalAccept {
+            tracing::warn!(
+                backend,
+                mode,
+                backend_available = status.backend_available,
+                backend_self_test_passed = status.accelerated_backend_self_test_passed,
+                min_batch_actions = status.min_batch_actions,
+                min_msm_size = status.min_msm_size,
+                "experimental Halo2 verifier accept mode is configured but not ready; using CPU-protected crosscheck behavior"
+            );
+        } else if status.backend_available {
+            tracing::info!(
+                backend,
+                mode,
+                backend_self_test_passed = status.accelerated_backend_self_test_passed,
+                min_batch_actions = status.min_batch_actions,
+                min_msm_size = status.min_msm_size,
+                "Halo2 verifier acceleration startup status"
+            );
+        } else {
+            tracing::warn!(
+                backend,
+                mode,
+                min_batch_actions = status.min_batch_actions,
+                min_msm_size = status.min_msm_size,
+                "Halo2 verifier acceleration backend is unavailable; CPU fallback behavior remains active"
+            );
+        }
+    }
+
+    #[cfg(feature = "halo2-accel-verify")]
+    fn requested_backend(&self) -> zcash_pasta_accel::Backend {
+        match self.backend {
+            Halo2AccelBackend::Auto => zcash_pasta_accel::Backend::Auto,
+            Halo2AccelBackend::Cuda => zcash_pasta_accel::Backend::Cuda,
+            Halo2AccelBackend::Avx512 => zcash_pasta_accel::Backend::Avx512,
+        }
+    }
+
+    #[cfg(feature = "halo2-accel-verify")]
+    fn backend_available(&self) -> bool {
+        zcash_pasta_accel::backend_available(self.requested_backend())
+    }
+
+    #[cfg(not(feature = "halo2-accel-verify"))]
+    fn backend_available(&self) -> bool {
+        false
+    }
+
+    #[cfg(feature = "halo2-accel-verify")]
+    fn accelerated_backend_self_test_passed(&self) -> bool {
+        zcash_pasta_accel::accelerated_backend_self_test(self.requested_backend())
+    }
+
+    #[cfg(not(feature = "halo2-accel-verify"))]
+    fn accelerated_backend_self_test_passed(&self) -> bool {
+        false
     }
 }
 
@@ -207,6 +358,8 @@ impl Default for Halo2AccelConfig {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "halo2-accel-verify")]
+    use super::Halo2AccelConfig;
     use super::{Config, Halo2AccelBackend, Halo2AccelMode};
 
     #[test]
@@ -277,5 +430,26 @@ mod tests {
             Halo2AccelMode::ExperimentalAccept.as_metric_label(),
             "experimental-accept"
         );
+    }
+
+    #[cfg(feature = "halo2-accel-verify")]
+    #[test]
+    fn halo2_accel_startup_status_reports_failed_avx512_stub_self_test() {
+        let accel = Halo2AccelConfig {
+            enabled: true,
+            backend: Halo2AccelBackend::Avx512,
+            mode: Halo2AccelMode::ExperimentalAccept,
+            min_batch_actions: 2,
+            min_msm_size: 4096,
+        };
+
+        let status = accel.startup_status();
+
+        assert!(status.compiled);
+        assert_eq!(status.backend, Halo2AccelBackend::Avx512);
+        assert_eq!(status.mode, Halo2AccelMode::ExperimentalAccept);
+        assert!(!status.backend_available);
+        assert!(!status.accelerated_backend_self_test_passed);
+        assert!(!status.experimental_accept_ready);
     }
 }
