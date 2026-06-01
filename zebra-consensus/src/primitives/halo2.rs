@@ -269,7 +269,31 @@ impl Halo2BatchAccelContext {
         }
     }
 
+    fn record_selection_metrics(&self) {
+        metrics::gauge!(
+            "zebra.consensus.halo2.accel.backend",
+            "backend" => self.backend_label(),
+            "candidate" => self.candidate_label(),
+            "compiled" => self.compiled_label(),
+            "enabled" => self.enabled_label(),
+            "mode" => self.mode_label(),
+        )
+        .set(1.0);
+
+        metrics::gauge!(
+            "zebra.consensus.halo2.accel.mode",
+            "backend" => self.backend_label(),
+            "candidate" => self.candidate_label(),
+            "compiled" => self.compiled_label(),
+            "enabled" => self.enabled_label(),
+            "mode" => self.mode_label(),
+        )
+        .set(1.0);
+    }
+
     fn record_flush_metrics(&self, duration: f64, result_label: &'static str) {
+        self.record_selection_metrics();
+
         metrics::histogram!(
             "zebra.consensus.halo2.accel.batch_actions",
             "backend" => self.backend_label(),
@@ -739,6 +763,98 @@ mod tests {
     use crate::config::{Halo2AccelBackend, Halo2AccelConfig, Halo2AccelMode};
 
     use super::Halo2BatchAccelContext;
+    use metrics::{
+        Counter, CounterFn, Gauge, GaugeFn, Histogram, HistogramFn, Key, KeyName, Metadata,
+        Recorder, SharedString, Unit,
+    };
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone, Debug, PartialEq)]
+    struct RecordedGauge {
+        name: String,
+        labels: Vec<(String, String)>,
+        value: f64,
+    }
+
+    #[derive(Clone, Default)]
+    struct GaugeRecorder {
+        gauges: Arc<Mutex<Vec<RecordedGauge>>>,
+    }
+
+    impl GaugeRecorder {
+        fn gauges(&self) -> Vec<RecordedGauge> {
+            self.gauges.lock().expect("recorder lock succeeds").clone()
+        }
+    }
+
+    struct RecordingGauge {
+        name: String,
+        labels: Vec<(String, String)>,
+        gauges: Arc<Mutex<Vec<RecordedGauge>>>,
+    }
+
+    impl GaugeFn for RecordingGauge {
+        fn increment(&self, _value: f64) {}
+
+        fn decrement(&self, _value: f64) {}
+
+        fn set(&self, value: f64) {
+            self.gauges
+                .lock()
+                .expect("recorder lock succeeds")
+                .push(RecordedGauge {
+                    name: self.name.clone(),
+                    labels: self.labels.clone(),
+                    value,
+                });
+        }
+    }
+
+    impl CounterFn for RecordingGauge {
+        fn increment(&self, _value: u64) {}
+
+        fn absolute(&self, _value: u64) {}
+    }
+
+    impl HistogramFn for RecordingGauge {
+        fn record(&self, _value: f64) {}
+    }
+
+    impl Recorder for GaugeRecorder {
+        fn describe_counter(&self, _key: KeyName, _unit: Option<Unit>, _description: SharedString) {
+        }
+
+        fn describe_gauge(&self, _key: KeyName, _unit: Option<Unit>, _description: SharedString) {}
+
+        fn describe_histogram(
+            &self,
+            _key: KeyName,
+            _unit: Option<Unit>,
+            _description: SharedString,
+        ) {
+        }
+
+        fn register_counter(&self, _key: &Key, _metadata: &Metadata<'_>) -> Counter {
+            Counter::noop()
+        }
+
+        fn register_gauge(&self, key: &Key, _metadata: &Metadata<'_>) -> Gauge {
+            let gauge = RecordingGauge {
+                name: key.name().to_string(),
+                labels: key
+                    .labels()
+                    .map(|label| (label.key().to_string(), label.value().to_string()))
+                    .collect(),
+                gauges: self.gauges.clone(),
+            };
+
+            Gauge::from_arc(Arc::new(gauge))
+        }
+
+        fn register_histogram(&self, _key: &Key, _metadata: &Metadata<'_>) -> Histogram {
+            Histogram::noop()
+        }
+    }
 
     #[test]
     fn halo2_batch_accel_context_tracks_candidate_actions() {
@@ -768,6 +884,48 @@ mod tests {
         assert_eq!(context.batch_actions, 14);
         assert_eq!(context.candidate_items, 1);
         assert_eq!(context.enabled_label(), "false");
+    }
+
+    #[test]
+    fn halo2_batch_accel_records_backend_and_mode_selection_metrics() {
+        let config = Halo2AccelConfig {
+            enabled: true,
+            backend: Halo2AccelBackend::Avx512,
+            mode: Halo2AccelMode::Crosscheck,
+            min_batch_actions: 2,
+            min_msm_size: 4096,
+        };
+        let mut context = Halo2BatchAccelContext::default();
+        context.observe_actions(3, &config);
+
+        let recorder = GaugeRecorder::default();
+        metrics::with_local_recorder(&recorder, || context.record_selection_metrics());
+
+        let gauges = recorder.gauges();
+        assert!(gauges.iter().any(|gauge| {
+            gauge.name == "zebra.consensus.halo2.accel.backend"
+                && gauge.value == 1.0
+                && gauge
+                    .labels
+                    .iter()
+                    .any(|(key, value)| key == "backend" && value == "avx512")
+                && gauge
+                    .labels
+                    .iter()
+                    .any(|(key, value)| key == "mode" && value == "crosscheck")
+        }));
+        assert!(gauges.iter().any(|gauge| {
+            gauge.name == "zebra.consensus.halo2.accel.mode"
+                && gauge.value == 1.0
+                && gauge
+                    .labels
+                    .iter()
+                    .any(|(key, value)| key == "backend" && value == "avx512")
+                && gauge
+                    .labels
+                    .iter()
+                    .any(|(key, value)| key == "mode" && value == "crosscheck")
+        }));
     }
 
     #[cfg(feature = "halo2-accel-verify")]
