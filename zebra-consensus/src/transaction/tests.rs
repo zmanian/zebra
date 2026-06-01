@@ -40,7 +40,9 @@ use zebra_node_services::mempool;
 use zebra_state::ValidateContextError;
 use zebra_test::mock_service::MockService;
 
-use crate::{error::TransactionError, transaction::POLL_MEMPOOL_DELAY};
+#[cfg(feature = "halo2-accel-verify")]
+use crate::config::{Halo2AccelBackend, Halo2AccelMode};
+use crate::{config::Halo2AccelConfig, error::TransactionError, transaction::POLL_MEMPOOL_DELAY};
 
 use super::{check, Request, Verifier};
 
@@ -3661,6 +3663,53 @@ async fn mempool_zip317_ok() {
 /// Ensure a block with a transaction with garbage Orchard proofs is rejected, even if the mempool has a valid version of the same transaction.
 #[tokio::test(flavor = "multi_thread")]
 async fn block_with_garbage_orchard_proofs_is_rejected() {
+    assert_garbage_orchard_proofs_rejected_with_config(Halo2AccelConfig::default()).await;
+}
+
+#[cfg(feature = "halo2-accel-verify")]
+#[tokio::test(flavor = "multi_thread")]
+async fn block_with_garbage_orchard_proofs_is_rejected_in_crosscheck_mode() {
+    assert_garbage_orchard_proofs_rejected_with_config(Halo2AccelConfig {
+        enabled: true,
+        backend: Halo2AccelBackend::Auto,
+        mode: Halo2AccelMode::Crosscheck,
+        min_batch_actions: 1,
+        min_msm_size: 1,
+    })
+    .await;
+}
+
+#[cfg(all(
+    feature = "halo2-accel-verify",
+    not(feature = "experimental-verifier-accept")
+))]
+#[tokio::test(flavor = "multi_thread")]
+async fn block_with_garbage_orchard_proofs_is_rejected_in_experimental_mode_without_accept_feature()
+{
+    assert_garbage_orchard_proofs_rejected_with_config(Halo2AccelConfig {
+        enabled: true,
+        backend: Halo2AccelBackend::Auto,
+        mode: Halo2AccelMode::ExperimentalAccept,
+        min_batch_actions: 1,
+        min_msm_size: 1,
+    })
+    .await;
+}
+
+#[cfg(feature = "experimental-verifier-accept")]
+#[tokio::test(flavor = "multi_thread")]
+async fn block_with_garbage_orchard_proofs_is_rejected_in_experimental_accept_mode() {
+    assert_garbage_orchard_proofs_rejected_with_config(Halo2AccelConfig {
+        enabled: true,
+        backend: Halo2AccelBackend::Auto,
+        mode: Halo2AccelMode::ExperimentalAccept,
+        min_batch_actions: 1,
+        min_msm_size: 1,
+    })
+    .await;
+}
+
+async fn assert_garbage_orchard_proofs_rejected_with_config(halo2_accel_config: Halo2AccelConfig) {
     use zebra_chain::{primitives::Halo2Proof, transaction::VerifiedUnminedTx};
 
     let _init_guard = zebra_test::init();
@@ -3668,7 +3717,12 @@ async fn block_with_garbage_orchard_proofs_is_rejected() {
     let mempool: MockService<_, _, _, _> = MockService::build().for_prop_tests();
     let state: MockService<_, _, _, _> = MockService::build().for_prop_tests();
     let (mempool_setup_tx, mempool_setup_rx) = tokio::sync::oneshot::channel();
-    let verifier = Verifier::new(&Network::Mainnet, state.clone(), mempool_setup_rx);
+    let verifier = Verifier::new_with_config(
+        &Network::Mainnet,
+        state.clone(),
+        mempool_setup_rx,
+        halo2_accel_config,
+    );
     let verifier = Buffer::new(verifier, 1);
 
     mempool_setup_tx
