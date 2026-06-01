@@ -36,6 +36,7 @@ tx_v6 = ["zebra-chain/tx_v6", "zebra-state/tx_v6"]
 
 # Test-only features
 proptest-impl = ["proptest", "proptest-derive", "zebra-chain/proptest-impl", "zebra-state/proptest-impl"]
+fuzz-impl = []
 
 [dependencies]
 blake2b_simd = { workspace = true }

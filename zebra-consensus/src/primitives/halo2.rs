@@ -367,6 +367,60 @@ impl Halo2BatchAccelContext {
     }
 }
 
+#[cfg(feature = "fuzz-impl")]
+pub mod fuzz {
+    //! Fuzz-only helpers for exercising Halo2 batch-item selection logic.
+
+    use crate::config::Halo2AccelConfig;
+
+    use super::{Halo2BatchAccelContext, Item};
+
+    /// Summary of the acceleration metadata derived from a batch of Halo2 items.
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct BatchItemSummary {
+        /// Total Orchard actions represented by the batch items.
+        pub batch_actions: usize,
+
+        /// Number of items that meet the acceleration candidate threshold.
+        pub candidate_items: usize,
+
+        /// Whether any item in the batch is an acceleration candidate.
+        pub has_accel_candidate: bool,
+
+        /// Whether Zebra would run CPU crosscheck protection for this batch.
+        pub should_crosscheck: bool,
+
+        /// Whether this build and backend can accept accelerated results directly.
+        pub should_experimental_accept: bool,
+    }
+
+    /// Clone a real Halo2 item while replacing its acceleration configuration.
+    pub fn clone_item_with_accel_config(item: &Item, halo2_accel_config: Halo2AccelConfig) -> Item {
+        Item {
+            bundle: item.bundle.clone(),
+            sighash: item.sighash.clone(),
+            halo2_accel_config,
+        }
+    }
+
+    /// Summarize the batch acceleration decisions Zebra derives from real Halo2 items.
+    pub fn summarize_batch_items(items: &[Item]) -> BatchItemSummary {
+        let mut context = Halo2BatchAccelContext::default();
+
+        for item in items {
+            context.observe_item(item);
+        }
+
+        BatchItemSummary {
+            batch_actions: context.batch_actions,
+            candidate_items: context.candidate_items,
+            has_accel_candidate: context.has_accel_candidate(),
+            should_crosscheck: context.should_crosscheck(),
+            should_experimental_accept: context.should_experimental_accept(),
+        }
+    }
+}
+
 trait QueueBatchVerify {
     fn queue(&mut self, item: Item);
 }

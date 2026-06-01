@@ -1,0 +1,30 @@
+[package]
+name = "zebra-consensus-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+tower-batch-control = { path = "../../tower-batch-control" }
+zebra-chain = { path = "../../zebra-chain" }
+zebra-consensus = { path = "..", features = ["fuzz-impl"] }
+zebra-test = { path = "../../zebra-test" }
+
+[features]
+halo2-accel-verify = ["zebra-consensus/halo2-accel-verify"]
+
+[patch.crates-io]
+halo2_proofs = { path = "../../../halo2/halo2_proofs" }
+
+[[bin]]
+name = "halo2_batch_items"
+path = "fuzz_targets/halo2_batch_items.rs"
+test = false
+doc = false
+bench = false
