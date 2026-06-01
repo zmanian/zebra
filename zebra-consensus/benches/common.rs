@@ -10,7 +10,7 @@ use std::sync::Arc;
 use zebra_chain::{
     block::Block, parameters::NetworkUpgrade, serialization::ZcashDeserializeInto, transparent,
 };
-use zebra_consensus::halo2::Item;
+use zebra_consensus::{config::Halo2AccelConfig, halo2::Item};
 
 /// Creates a batch of `n` items by cycling through `source`.
 ///
@@ -31,6 +31,14 @@ pub fn cycled<T: Clone>(source: &[T], n: usize) -> Vec<T> {
 /// in the test vectors. Orchard-only and Sapling-to-Orchard transactions
 /// work with an empty previous outputs set.
 pub fn extract_halo2_items_from_blocks() -> Vec<Item> {
+    extract_halo2_items_from_blocks_with_accel_config(Halo2AccelConfig::default())
+}
+
+/// Extracts valid Halo2 items from NU5+ mainnet test blocks and attaches
+/// `halo2_accel_config` to each replay item.
+pub fn extract_halo2_items_from_blocks_with_accel_config(
+    halo2_accel_config: Halo2AccelConfig,
+) -> Vec<Item> {
     let mut items = Vec::new();
 
     for bytes in zebra_test::vectors::MAINNET_BLOCKS.values() {
@@ -57,7 +65,11 @@ pub fn extract_halo2_items_from_blocks() -> Vec<Item> {
 
             let sighash = sighasher.sighash(zebra_chain::transaction::HashType::ALL, None);
 
-            items.push(Item::new(bundle, sighash));
+            items.push(Item::new_with_accel_config(
+                bundle,
+                sighash,
+                halo2_accel_config.clone(),
+            ));
         }
     }
 

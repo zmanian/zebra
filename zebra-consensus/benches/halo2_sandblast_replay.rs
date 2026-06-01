@@ -15,6 +15,8 @@ use futures::{stream::FuturesUnordered, StreamExt};
 use tokio::runtime::Runtime;
 use tower::ServiceExt;
 use tower_batch_control::RequestWeight;
+#[cfg(feature = "halo2-accel-verify")]
+use zebra_consensus::config::{Halo2AccelBackend, Halo2AccelConfig, Halo2AccelMode};
 use zebra_consensus::halo2::{self, Item, VERIFYING_KEY};
 
 const REPLAY_BUNDLE_COUNTS: &[usize] = &[64, 128, 256];
@@ -36,14 +38,17 @@ fn total_actions(items: &[Item]) -> u64 {
 }
 
 fn bench_halo2_sandblast_replay(c: &mut Criterion) {
-    // Keep the initial replay mode pinned to the current CPU accept path. Later
-    // crosscheck and experimental-accept series should be added only when Zebra
-    // has runtime support for those modes.
-    std::env::set_var("ZCASH_ACCEL", "off");
-    std::env::set_var("ZCASH_ACCEL_VERIFY_MODE", "cpu");
-
     let vk = &*VERIFYING_KEY;
     let source_items = common::extract_halo2_items_from_blocks();
+    #[cfg(feature = "halo2-accel-verify")]
+    let crosscheck_source_items =
+        common::extract_halo2_items_from_blocks_with_accel_config(Halo2AccelConfig {
+            enabled: true,
+            backend: Halo2AccelBackend::Auto,
+            mode: Halo2AccelMode::Crosscheck,
+            min_batch_actions: 1,
+            min_msm_size: 1,
+        });
     let runtime = Runtime::new().expect("tokio runtime builds");
 
     let mut group = c.benchmark_group("halo2_sandblast_replay");
@@ -73,6 +78,22 @@ fn bench_halo2_sandblast_replay(c: &mut Criterion) {
                 })
             },
         );
+
+        #[cfg(feature = "halo2-accel-verify")]
+        {
+            let crosscheck_items = common::cycled(&crosscheck_source_items, bundle_count);
+            group.throughput(Throughput::Elements(total_actions(&crosscheck_items)));
+
+            group.bench_with_input(
+                BenchmarkId::new("crosscheck_batch_service", bundle_count),
+                &crosscheck_items,
+                |b, items| {
+                    b.iter(|| {
+                        runtime.block_on(verify_with_batch_service(items));
+                    })
+                },
+            );
+        }
     }
 
     group.finish();
