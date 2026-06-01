@@ -369,11 +369,13 @@ impl Halo2BatchAccelContext {
 
 #[cfg(feature = "fuzz-impl")]
 pub mod fuzz {
-    //! Fuzz-only helpers for exercising Halo2 batch-item selection logic.
+    //! Fuzz-only helpers for exercising Halo2 batch-item selection and proof-rejection logic.
+
+    use orchard::{bundle::Authorized, Proof};
 
     use crate::config::Halo2AccelConfig;
 
-    use super::{Halo2BatchAccelContext, Item};
+    use super::{Halo2BatchAccelContext, Item, VERIFYING_KEY};
 
     /// Summary of the acceleration metadata derived from a batch of Halo2 items.
     #[derive(Clone, Debug, Eq, PartialEq)]
@@ -401,6 +403,49 @@ pub mod fuzz {
             sighash: item.sighash.clone(),
             halo2_accel_config,
         }
+    }
+
+    /// Clone a real Halo2 item while mutating one byte of its Orchard proof.
+    pub fn clone_item_with_proof_byte_mutation(
+        item: &Item,
+        byte_index: usize,
+        byte_value: u8,
+    ) -> Option<Item> {
+        let mut proof_bytes = item.bundle.authorization().proof().as_ref().to_vec();
+
+        if proof_bytes.is_empty() {
+            return None;
+        }
+
+        let byte_index = byte_index % proof_bytes.len();
+        if proof_bytes[byte_index] == byte_value {
+            proof_bytes[byte_index] ^= 1;
+        } else {
+            proof_bytes[byte_index] = byte_value;
+        }
+
+        let mut context = ();
+        let bundle = item.bundle.clone().map_authorization(
+            &mut context,
+            |_, _, spend_auth| spend_auth,
+            |_, authorization| {
+                Authorized::from_parts(
+                    Proof::new(proof_bytes),
+                    authorization.binding_signature().clone(),
+                )
+            },
+        );
+
+        Some(Item {
+            bundle,
+            sighash: item.sighash.clone(),
+            halo2_accel_config: item.halo2_accel_config.clone(),
+        })
+    }
+
+    /// Verify one Halo2 item against Zebra's Orchard verifying key.
+    pub fn verify_item(item: Item) -> bool {
+        item.verify_single(&VERIFYING_KEY)
     }
 
     /// Summarize the batch acceleration decisions Zebra derives from real Halo2 items.

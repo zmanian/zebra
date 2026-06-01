@@ -28,3 +28,10 @@ path = "fuzz_targets/halo2_batch_items.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "halo2_invalid_proofs"
+path = "fuzz_targets/halo2_invalid_proofs.rs"
+test = false
+doc = false
+bench = false
