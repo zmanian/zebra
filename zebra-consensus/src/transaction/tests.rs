@@ -3666,6 +3666,14 @@ async fn block_with_garbage_orchard_proofs_is_rejected() {
     assert_garbage_orchard_proofs_rejected_with_config(Halo2AccelConfig::default()).await;
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn block_with_individual_orchard_auth_data_mutations_is_rejected() {
+    for mutation in OrchardAuthMutation::INDIVIDUAL_CASES {
+        assert_orchard_auth_mutation_rejected_with_config(Halo2AccelConfig::default(), *mutation)
+            .await;
+    }
+}
+
 #[cfg(feature = "halo2-accel-verify")]
 #[tokio::test(flavor = "multi_thread")]
 async fn block_with_garbage_orchard_proofs_is_rejected_in_crosscheck_mode() {
@@ -3709,8 +3717,61 @@ async fn block_with_garbage_orchard_proofs_is_rejected_in_experimental_accept_mo
     .await;
 }
 
+/// Orchard auth data is excluded from the V5 transaction ID by ZIP-244.
+#[derive(Clone, Copy, Debug)]
+enum OrchardAuthMutation {
+    ProofBytes,
+    BindingSignature,
+    SpendAuthSignatures,
+    AllAuthData,
+}
+
+impl OrchardAuthMutation {
+    const INDIVIDUAL_CASES: &'static [Self] = &[
+        Self::ProofBytes,
+        Self::BindingSignature,
+        Self::SpendAuthSignatures,
+    ];
+
+    fn apply(self, tx: &mut Transaction) {
+        use zebra_chain::primitives::Halo2Proof;
+
+        let orchard_data = tx
+            .orchard_shielded_data_mut()
+            .expect("test transaction has Orchard shielded data");
+
+        match self {
+            Self::ProofBytes => orchard_data.proof = Halo2Proof(vec![0xDE, 0xAD, 0xBE, 0xEF]),
+            Self::BindingSignature => orchard_data.binding_sig = [0xFF; 64].into(),
+            Self::SpendAuthSignatures => {
+                for action in orchard_data.actions.iter_mut() {
+                    action.spend_auth_sig = [0xFF; 64].into();
+                }
+            }
+            Self::AllAuthData => {
+                orchard_data.proof = Halo2Proof(vec![0xDE, 0xAD, 0xBE, 0xEF]);
+                orchard_data.binding_sig = [0xFF; 64].into();
+                for action in orchard_data.actions.iter_mut() {
+                    action.spend_auth_sig = [0xFF; 64].into();
+                }
+            }
+        }
+    }
+}
+
 async fn assert_garbage_orchard_proofs_rejected_with_config(halo2_accel_config: Halo2AccelConfig) {
-    use zebra_chain::{primitives::Halo2Proof, transaction::VerifiedUnminedTx};
+    assert_orchard_auth_mutation_rejected_with_config(
+        halo2_accel_config,
+        OrchardAuthMutation::AllAuthData,
+    )
+    .await;
+}
+
+async fn assert_orchard_auth_mutation_rejected_with_config(
+    halo2_accel_config: Halo2AccelConfig,
+    mutation: OrchardAuthMutation,
+) {
+    use zebra_chain::transaction::VerifiedUnminedTx;
 
     let _init_guard = zebra_test::init();
 
@@ -3760,12 +3821,7 @@ async fn assert_garbage_orchard_proofs_rejected_with_config(halo2_accel_config: 
 
     // corrupt only auth data, txid stays the same (ZIP-244)
     let mut garbage_tx = tx.clone();
-    let od = garbage_tx.orchard_shielded_data_mut().unwrap();
-    od.proof = Halo2Proof(vec![0xDE, 0xAD, 0xBE, 0xEF]);
-    od.binding_sig = [0xFF; 64].into();
-    for action in od.actions.iter_mut() {
-        action.spend_auth_sig = [0xFF; 64].into();
-    }
+    mutation.apply(&mut garbage_tx);
     assert_eq!(tx.hash(), garbage_tx.hash());
 
     // simulate valid version in mempool
@@ -3809,7 +3865,10 @@ async fn assert_garbage_orchard_proofs_rejected_with_config(halo2_accel_config: 
         })
         .await;
 
-    assert!(resp.is_err(), "garbage proof must be rejected");
+    assert!(
+        resp.is_err(),
+        "{mutation:?} Orchard auth-data mutation must be rejected"
+    );
 }
 
 /// Regression test for the mempool-cache expiry bypass vulnerability.
