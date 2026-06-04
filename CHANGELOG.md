@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org).
   `sync.stall_restart_timeout`, instead of waiting for the multi-minute
   block-verify timeout
   ([#5709](https://github.com/ZcashFoundation/zebra/issues/5709)).
+- Retry missing block downloads inside the active sync round, avoiding long
+  stalls when a peer reports `notfound` for a required block hash
+  (valargroup/zebra#10).
 
 ## [Zebra 5.0.0](https://github.com/ZcashFoundation/zebra/releases/tag/v5.0.0) - 2026-06-02
 
