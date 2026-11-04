@@ -5710,3 +5710,16 @@ async fn rpc_getnetworkinfo_does_not_block_on_address_book_contention() {
         .expect("RPC should succeed");
     assert_eq!(response.connections, 0);
 }
+
+/// RPC parameter descriptions come from the `PARAM_*_DESC` constants in `methods.rs`, so method
+/// docs shouldn't repeat them in a `# Parameters` section, where they would drift out of date.
+#[test]
+fn rpc_method_docs_have_no_parameters_section() {
+    for (name, method) in crate::methods::METHODS.into_iter() {
+        assert!(
+            !method.description.contains("# Parameters"),
+            "the `{name}` RPC docs should describe parameters in `PARAM_*_DESC` constants \
+             in `methods.rs`, not in a `# Parameters` section",
+        );
+    }
+}

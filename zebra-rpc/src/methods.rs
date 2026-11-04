@@ -140,37 +140,56 @@ use types::{
 
 include!(concat!(env!("OUT_DIR"), "/rpc_openrpc.rs"));
 
-// TODO: Review the parameter descriptions below, and update them as needed:
-// https://github.com/ZcashFoundation/zebra/issues/10320
-pub(super) const PARAM_VERBOSE_DESC: &str =
-    "Boolean flag to indicate verbosity, true for a json object, false for hex encoded data.";
+// Descriptions of RPC method parameters, used in the generated OpenRPC document.
+//
+// `openrpsee` looks up each parameter's description by the parameter's name, so methods with
+// the same parameter name share one description. Keep each description accurate for every
+// method that uses the name, and put method-specific details in that method's `# Notes`.
+pub(super) const PARAM_VERBOSE_DESC: &str = "Whether to return a JSON object instead of the \
+    compact form. See the method's notes for the default and the compact form.";
 pub(super) const PARAM_POOL_DESC: &str =
-    "The pool from which subtrees should be returned. Either \"sapling\" or \"orchard\".";
+    "The pool from which subtrees should be returned: \"sapling\", \"orchard\", or \"ironwood\".";
 pub(super) const PARAM_START_INDEX_DESC: &str =
     "The index of the first 2^16-leaf subtree to return.";
-pub(super) const PARAM_LIMIT_DESC: &str = "The maximum number of subtrees to return.";
-pub(super) const PARAM_REQUEST_DESC: &str = "The request object containing the parameters.";
-pub(super) const PARAM_INDEX_DESC: &str = "The index of the subtree to return.";
-pub(super) const PARAM_RAW_TRANSACTION_HEX_DESC: &str = "The hex-encoded raw transaction bytes.";
+pub(super) const PARAM_LIMIT_DESC: &str =
+    "The maximum number of subtrees to return. If omitted, there is no limit.";
+pub(super) const PARAM_REQUEST_DESC: &str = "A single transparent address, or an object with \
+    an `addresses` list and optional filters. See the method's notes for the filters.";
+pub(super) const PARAM_INDEX_DESC: &str = "The height of a block in the best chain. A negative \
+    index counts back from the tip, where -1 is the tip.";
+pub(super) const PARAM_RAW_TRANSACTION_HEX_DESC: &str = "The signed transaction, as hex.";
 #[allow(non_upper_case_globals)]
-pub(super) const PARAM__ALLOW_HIGH_FEES_DESC: &str = "Whether to allow high fees.";
-pub(super) const PARAM_NUM_BLOCKS_DESC: &str = "The number of blocks to return.";
-pub(super) const PARAM_HEIGHT_DESC: &str = "The height of the block to return.";
-pub(super) const PARAM_COMMAND_DESC: &str = "The command to execute.";
+pub(super) const PARAM__ALLOW_HIGH_FEES_DESC: &str =
+    "Ignored. Accepted for compatibility with zcashd's `allowhighfees` parameter.";
+pub(super) const PARAM_NUM_BLOCKS_DESC: &str = "The number of blocks to mine for `generate` and \
+    `generatetoaddress`, or to average over for `getnetworksolps` and `getnetworkhashps`.";
+pub(super) const PARAM_HEIGHT_DESC: &str =
+    "A block height. If omitted, uses the height of the best chain tip.";
+pub(super) const PARAM_COMMAND_DESC: &str =
+    "The address book command. Zebra only supports \"add\".";
 #[allow(non_upper_case_globals)]
-pub(super) const PARAM__PARAMETERS_DESC: &str = "The parameters for the command.";
-pub(super) const PARAM_BLOCK_HASH_DESC: &str = "The hash of the block to return.";
-pub(super) const PARAM_ADDRESS_DESC: &str = "The address to return.";
-pub(super) const PARAM_ADDRESS_STRINGS_DESC: &str = "The addresses to return.";
-pub(super) const PARAM_ADDR_DESC: &str = "The address to return.";
-pub(super) const PARAM_HEX_DATA_DESC: &str = "The hex-encoded data to return.";
-pub(super) const PARAM_TXID_DESC: &str = "The transaction ID to return.";
-pub(super) const PARAM_HASH_OR_HEIGHT_DESC: &str = "The block hash or height to return.";
-pub(super) const PARAM_PARAMETERS_DESC: &str = "The parameters for the command.";
-pub(super) const PARAM_VERBOSITY_DESC: &str = "Whether to include verbose output.";
-pub(super) const PARAM_N_DESC: &str = "The output index in the transaction.";
-pub(super) const PARAM_INCLUDE_MEMPOOL_DESC: &str =
-    "Whether to include mempool transactions in the response.";
+pub(super) const PARAM__PARAMETERS_DESC: &str =
+    "An object with the `workid` from the block template. Zebra currently ignores it.";
+pub(super) const PARAM_BLOCK_HASH_DESC: &str = "A block hash, as hex.";
+pub(super) const PARAM_ADDRESS_DESC: &str =
+    "A Zcash address. The method description says which address types it accepts.";
+pub(super) const PARAM_ADDRESS_STRINGS_DESC: &str = "An object with an `addresses` list of \
+    transparent addresses, or a single transparent address.";
+pub(super) const PARAM_ADDR_DESC: &str = "The socket address of the peer, as `IP:port`.";
+pub(super) const PARAM_HEX_DATA_DESC: &str = "The serialized block, as hex.";
+pub(super) const PARAM_TXID_DESC: &str = "A transaction ID, as hex.";
+pub(super) const PARAM_HASH_OR_HEIGHT_DESC: &str =
+    "A block hash, as hex, or a block height, as a decimal string.";
+pub(super) const PARAM_PARAMETERS_DESC: &str = "An optional request object. Set `mode` to \
+    \"proposal\" and `data` to a block to validate it, or set `longpollid` to wait for a new \
+    template.";
+pub(super) const PARAM_VERBOSITY_DESC: &str = "0 for hex-encoded data, 1 for a JSON object, 2 \
+    for a JSON object with transaction data, and 3 for a JSON object with transaction data \
+    including prevout information for inputs. Defaults to 1.";
+pub(super) const PARAM_N_DESC: &str = "The index of the output in the transaction.";
+pub(super) const PARAM_INCLUDE_MEMPOOL_DESC: &str = "Whether to check the mempool: outputs \
+    created by mempool transactions are returned, and outputs they spend are treated as spent. \
+    Defaults to true.";
 
 #[cfg(test)]
 mod tests;
@@ -236,15 +255,10 @@ pub trait Rpc {
     /// method: post
     /// tags: address
     ///
-    /// # Parameters
-    ///
-    /// - `address_strings`: (object, example={"addresses": ["tmYXBYJj1K7vhejSec5osXK2QsGa5MTisUQ"]}) A JSON map with a single entry
-    ///     - `addresses`: (array of strings) A list of base-58 encoded addresses.
-    ///
     /// # Notes
     ///
-    /// zcashd also accepts a single string parameter instead of an array of strings, but Zebra
-    /// doesn't because lightwalletd always calls this RPC with an array of addresses.
+    /// Example request object: `{"addresses": ["tmYXBYJj1K7vhejSec5osXK2QsGa5MTisUQ"]}`.
+    /// As in zcashd, a single address string is also accepted.
     ///
     /// zcashd also returns the total amount of Zatoshis received by the addresses, but Zebra
     /// doesn't because lightwalletd doesn't use that information.
@@ -265,11 +279,6 @@ pub trait Rpc {
     /// method: post
     /// tags: transaction
     ///
-    /// # Parameters
-    ///
-    /// - `raw_transaction_hex`: (string, required, example="signedhex") The hex-encoded raw transaction bytes.
-    /// - `allow_high_fees`: (bool, optional) A legacy parameter accepted by zcashd but ignored by Zebra.
-    ///
     /// # Notes
     ///
     /// zcashd accepts an optional `allowhighfees` parameter. Zebra doesn't support this parameter,
@@ -289,11 +298,6 @@ pub trait Rpc {
     /// zcashd reference: [`getblock`](https://zcash.github.io/rpc/getblock.html)
     /// method: post
     /// tags: blockchain
-    ///
-    /// # Parameters
-    ///
-    /// - `hash_or_height`: (string, required, example="1") The hash or height for the block to be returned.
-    /// - `verbosity`: (number, optional, default=1, example=1) 0 for hex encoded data, 1 for a json object, 2 for a json object with transaction data, and 3 for a json object with transaction data including prevout information for inputs.
     ///
     /// # Notes
     ///
@@ -322,12 +326,10 @@ pub trait Rpc {
     /// method: post
     /// tags: blockchain
     ///
-    /// # Parameters
-    ///
-    /// - `hash_or_height`: (string, required, example="1") The hash or height for the block to be returned.
-    /// - `verbose`: (bool, optional, default=false, example=true) false for hex encoded data, true for a json object
-    ///
     /// # Notes
+    ///
+    /// `verbose` defaults to true, which returns a JSON object. false returns the hex-encoded
+    /// block header.
     ///
     /// The undocumented `chainwork` field is not returned.
     #[method(name = "getblockheader")]
@@ -361,13 +363,14 @@ pub trait Rpc {
 
     /// Returns all transaction ids in the memory pool, as a JSON array.
     ///
-    /// # Parameters
-    ///
-    /// - `verbose`: (boolean, optional, default=false) true for a json object, false for array of transaction ids.
-    ///
     /// zcashd reference: [`getrawmempool`](https://zcash.github.io/rpc/getrawmempool.html)
     /// method: post
     /// tags: blockchain
+    ///
+    /// # Notes
+    ///
+    /// `verbose` defaults to false, which returns an array of transaction ids. true returns a
+    /// JSON object with details for each transaction.
     #[method(name = "getrawmempool")]
     async fn get_raw_mempool(&self, verbose: Option<bool>) -> Result<GetRawMempoolResponse>;
 
@@ -376,10 +379,6 @@ pub trait Rpc {
     /// zcashd reference: [`z_gettreestate`](https://zcash.github.io/rpc/z_gettreestate.html)
     /// method: post
     /// tags: blockchain
-    ///
-    /// # Parameters
-    ///
-    /// - `hash | height`: (string, required, example="00000000febc373a1da2bd9f887b105ad79ddc26ac26c2b28652d64e5207c5b5") The block hash or height.
     ///
     /// # Notes
     ///
@@ -390,17 +389,11 @@ pub trait Rpc {
     #[method(name = "z_gettreestate")]
     async fn z_get_treestate(&self, hash_or_height: String) -> Result<GetTreestateResponse>;
 
-    /// Returns information about a range of Sapling or Orchard subtrees.
+    /// Returns information about a range of Sapling, Orchard, or Ironwood subtrees.
     ///
     /// zcashd reference: [`z_getsubtreesbyindex`](https://zcash.github.io/rpc/z_getsubtreesbyindex.html) - TODO: fix link
     /// method: post
     /// tags: blockchain
-    ///
-    /// # Parameters
-    ///
-    /// - `pool`: (string, required) The pool from which subtrees should be returned. Either "sapling" or "orchard".
-    /// - `start_index`: (number, required) The index of the first 2^16-leaf subtree to return.
-    /// - `limit`: (number, optional) The maximum number of subtree values to return.
     ///
     /// # Notes
     ///
@@ -422,11 +415,13 @@ pub trait Rpc {
     /// method: post
     /// tags: transaction
     ///
-    /// # Parameters
+    /// # Notes
     ///
-    /// - `txid`: (string, required, example="mytxid") The transaction ID of the transaction to be returned.
-    /// - `verbose`: (number, optional, default=0, example=1) If 0, return a string of hex-encoded data, otherwise return a JSON object.
-    /// - `blockhash` (string, optional) The block in which to look for the transaction
+    /// As in zcashd, `verbose` is a number: 0, the default, returns hex-encoded data, and any
+    /// other value returns a JSON object.
+    ///
+    /// If `block_hash` is provided, the transaction must be in that block, and the mempool is
+    /// not searched.
     #[method(name = "getrawtransaction")]
     async fn get_raw_transaction(
         &self,
@@ -441,14 +436,13 @@ pub trait Rpc {
     /// method: post
     /// tags: address
     ///
-    /// # Parameters
+    /// # Notes
     ///
-    /// - `request`: (required) Either:
-    ///     - A single address string (e.g., `"tmYXBYJj1K7vhejSec5osXK2QsGa5MTisUQ"`), or
-    ///     - An object with the following named fields:
-    ///         - `addresses`: (array of strings, required) The addresses to get transactions from.
-    ///         - `start`: (numeric, optional) The lower height to start looking for transactions (inclusive).
-    ///         - `end`: (numeric, optional) The upper height to stop looking for transactions (inclusive).
+    /// `request` is either a single address string, such as
+    /// `"tmYXBYJj1K7vhejSec5osXK2QsGa5MTisUQ"`, or an object with these fields:
+    /// - `addresses`: (array of strings, required) The addresses to get transactions from.
+    /// - `start`: (numeric, optional) The lower height to start looking for transactions (inclusive).
+    /// - `end`: (numeric, optional) The upper height to stop looking for transactions (inclusive).
     ///
     /// Example of the object form:
     /// ```json
@@ -459,9 +453,7 @@ pub trait Rpc {
     /// }
     /// ```
     ///
-    /// # Notes
-    ///
-    /// - Only the multi-argument format is used by lightwalletd and this is what we currently support:
+    /// - lightwalletd uses the object form:
     /// <https://github.com/zcash/lightwalletd/blob/631bb16404e3d8b045e74a7c5489db626790b2f6/common/common.go#L97-L102>
     /// - It is recommended that users call the method with start/end heights such that the response can't be too large.
     /// - At most 10,000 addresses are accepted, and a query matching more than 100,000
@@ -475,17 +467,14 @@ pub trait Rpc {
     /// method: post
     /// tags: address
     ///
-    /// # Parameters
-    ///
-    /// - `request`: (required) Either:
-    ///     - A single address string (e.g., `"tmYXBYJj1K7vhejSec5osXK2QsGa5MTisUQ"`), or
-    ///     - An object with the following named fields:
-    ///         - `addresses`: (array, required, example=[\"tmYXBYJj1K7vhejSec5osXK2QsGa5MTisUQ\"]) The addresses to get outputs from.
-    ///         - `chaininfo`: (boolean, optional, default=false) Include chain info with results
-    ///         - `startHeight`: (numeric, optional, default=0) Only return outputs at or above this height
-    ///         - `maxEntries`: (numeric, optional, default=0) Return at most this many outputs, zero for up to 100,000
-    ///
     /// # Notes
+    ///
+    /// `request` is either a single address string, such as
+    /// `"tmYXBYJj1K7vhejSec5osXK2QsGa5MTisUQ"`, or an object with these fields:
+    /// - `addresses`: (array of strings, required) The addresses to get outputs from.
+    /// - `chainInfo`: (boolean, optional, default=false) Include chain info with results.
+    /// - `startHeight`: (numeric, optional, default=0) Only return outputs at or above this height.
+    /// - `maxEntries`: (numeric, optional, default=0) Return at most this many outputs, zero for up to 100,000.
     ///
     /// `startHeight` and `maxEntries` bound the index scan, not just the response, so a client
     /// that pages through a large address does not make the node read the whole UTXO set each
@@ -531,23 +520,10 @@ pub trait Rpc {
     /// zcashd reference: [`getblockhash`](https://zcash-rpc.github.io/getblockhash.html)
     /// method: post
     /// tags: blockchain
-    ///
-    /// # Parameters
-    ///
-    /// - `index`: (numeric, required, example=1) The block index.
-    ///
-    /// # Notes
-    ///
-    /// - If `index` is positive then index = block height.
-    /// - If `index` is negative then -1 is the last known valid block.
     #[method(name = "getblockhash")]
     async fn get_block_hash(&self, index: i32) -> Result<GetBlockHashResponse>;
 
     /// Returns a block template for mining new Zcash blocks.
-    ///
-    /// # Parameters
-    ///
-    /// - `jsonrequestobject`: (string, optional) A JSON object containing arguments.
     ///
     /// zcashd reference: [`getblocktemplate`](https://zcash-rpc.github.io/getblocktemplate.html)
     /// method: post
@@ -555,8 +531,7 @@ pub trait Rpc {
     ///
     /// # Notes
     ///
-    /// Arguments to this RPC are currently ignored.
-    /// Long polling, block proposals, server lists, and work IDs are not supported.
+    /// Block proposals and long polling are supported. Server lists and work IDs are not.
     ///
     /// Miners can make arbitrary changes to blocks, as long as:
     /// - the data sent to `submitblock` is a valid Zcash block, and
@@ -577,14 +552,10 @@ pub trait Rpc {
     /// method: post
     /// tags: mining
     ///
-    /// # Parameters
-    ///
-    /// - `hexdata`: (string, required)
-    /// - `jsonparametersobject`: (string, optional) - currently ignored
-    ///
     /// # Notes
     ///
-    ///  - `jsonparametersobject` holds a single field, workid, that must be included in submissions if provided by the server.
+    /// zcashd calls the optional second parameter `jsonparametersobject`. It holds a single
+    /// field, `workid`, that must be included in submissions if provided by the server.
     #[method(name = "submitblock")]
     async fn submit_block(
         &self,
@@ -665,10 +636,6 @@ pub trait Rpc {
     /// zcashd reference: [`validateaddress`](https://zcash.github.io/rpc/validateaddress.html)
     /// method: post
     /// tags: util
-    ///
-    /// # Parameters
-    ///
-    /// - `address`: (string, required) The zcash address to validate.
     #[method(name = "validateaddress")]
     async fn validate_address(&self, address: String) -> Result<ValidateAddressResponse>;
 
@@ -678,14 +645,6 @@ pub trait Rpc {
     /// zcashd reference: [`z_validateaddress`](https://zcash.github.io/rpc/z_validateaddress.html)
     /// method: post
     /// tags: util
-    ///
-    /// # Parameters
-    ///
-    /// - `address`: (string, required) The zcash address to validate.
-    ///
-    /// # Notes
-    ///
-    /// - No notes
     #[method(name = "z_validateaddress")]
     async fn z_validate_address(&self, address: String) -> Result<ZValidateAddressResponse>;
 
@@ -694,10 +653,6 @@ pub trait Rpc {
     /// zcashd reference: [`z_converttex`](https://zcash.github.io/rpc/z_converttex.html)
     /// method: post
     /// tags: util
-    ///
-    /// # Parameters
-    ///
-    /// - `address`: (string, required) The transparent P2PKH address to convert.
     ///
     /// # Notes
     ///
@@ -729,14 +684,10 @@ pub trait Rpc {
     /// method: post
     /// tags: mining
     ///
-    /// # Parameters
-    ///
-    /// - `height`: (numeric, optional, example=1) A valid height; future heights are supported only
-    ///   when their subsidy does not depend on an unknown parent reserve.
-    ///
     /// # Notes
     ///
-    /// If `height` is not supplied, uses the tip height.
+    /// If `height` is not supplied, uses the tip height. Future heights are supported only when
+    /// their subsidy does not depend on an unknown parent reserve.
     #[method(name = "getblocksubsidy")]
     async fn get_block_subsidy(&self, height: Option<u32>) -> Result<GetBlockSubsidyResponse>;
 
@@ -753,14 +704,6 @@ pub trait Rpc {
     /// zcashd reference: [`z_listunifiedreceivers`](https://zcash.github.io/rpc/z_listunifiedreceivers.html)
     /// method: post
     /// tags: wallet
-    ///
-    /// # Parameters
-    ///
-    /// - `address`: (string, required) The zcash unified address to get the list from.
-    ///
-    /// # Notes
-    ///
-    /// - No notes
     #[method(name = "z_listunifiedreceivers")]
     async fn z_list_unified_receivers(
         &self,
@@ -769,28 +712,16 @@ pub trait Rpc {
 
     /// Invalidates a block if it is not yet finalized, removing it from the non-finalized
     /// state if it is present and rejecting it during contextual validation if it is submitted.
-    ///
-    /// # Parameters
-    ///
-    /// - `block_hash`: (hex-encoded block hash, required) The block hash to invalidate.
     // TODO: Invalidate block hashes even if they're not present in the non-finalized state (#9553).
     #[method(name = "invalidateblock")]
     async fn invalidate_block(&self, block_hash: String) -> Result<()>;
 
     /// Reconsiders a previously invalidated block if it exists in the cache of previously invalidated blocks.
-    ///
-    /// # Parameters
-    ///
-    /// - `block_hash`: (hex-encoded block hash, required) The block hash to reconsider.
     #[method(name = "reconsiderblock")]
     async fn reconsider_block(&self, block_hash: String) -> Result<Vec<block::Hash>>;
 
     #[method(name = "generate")]
     /// Mine blocks immediately. Returns the block hashes of the generated blocks.
-    ///
-    /// # Parameters
-    ///
-    /// - `num_blocks`: (numeric, required, example=1) Number of blocks to be generated.
     ///
     /// # Notes
     ///
@@ -805,15 +736,10 @@ pub trait Rpc {
     /// Mine blocks immediately, paying the coinbase to `address`. Returns the
     /// block hashes of the generated blocks.
     ///
-    /// # Parameters
-    ///
-    /// - `num_blocks`: (numeric, required, example=1) Number of blocks to generate.
-    /// - `address`: (string, required) The transparent or shielded address to
-    ///   pay the coinbase subsidy and fees to.
-    ///
     /// # Notes
     ///
     /// Only works if the network of the running zebrad process is `Regtest`.
+    /// `address` can be a transparent or shielded address.
     /// Unlike [`Self::generate`], the coinbase is paid to `address` instead of
     /// the configured `mining.miner_address`, which lets a test harness fund
     /// several wallets from one node.
@@ -837,11 +763,6 @@ pub trait Rpc {
     #[method(name = "addnode")]
     /// Add or remove a node from the address book.
     ///
-    /// # Parameters
-    ///
-    /// - `addr`: (string, required) The address of the node to add or remove.
-    /// - `command`: (string, required) The command to execute, either "add", "onetry", or "remove".
-    ///
     /// # Notes
     ///
     /// Only the "add" command is currently supported.
@@ -859,12 +780,6 @@ pub trait Rpc {
     /// zcashd reference: [`gettxout`](https://zcash.github.io/rpc/gettxout.html)
     /// method: post
     /// tags: transaction
-    ///
-    /// # Parameters
-    ///
-    /// - `txid`: (string, required, example="mytxid") The transaction ID that contains the output.
-    /// - `n`: (number, required) The output index number.
-    /// - `include_mempool` (bool, optional, default=true) Whether to include the mempool in the search.
     #[method(name = "gettxout")]
     async fn get_tx_out(
         &self,
